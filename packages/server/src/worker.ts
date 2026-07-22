@@ -10,7 +10,7 @@ export interface SyncFetchOptions<Env> {
    */
   authorize?: (
     request: Request,
-    params: { workspaceId: string; clientId: string },
+    params: { workspaceId: string; clientId: string; env: Env },
   ) => boolean | Response | Promise<boolean | Response>
   /** URL prefix for sync routes. Default: "/sync" (routes are `${prefix}/<workspaceId>`). */
   pathPrefix?: string
@@ -30,7 +30,7 @@ export function createSyncFetch<Env>(opts: SyncFetchOptions<Env>) {
     if (!clientId) return new Response('missing clientId', { status: 400 })
 
     if (opts.authorize) {
-      const verdict = await opts.authorize(request, { workspaceId, clientId })
+      const verdict = await opts.authorize(request, { workspaceId, clientId, env })
       if (verdict instanceof Response) return verdict
       if (!verdict) return new Response('unauthorized', { status: 403 })
     }
@@ -60,7 +60,7 @@ export interface AdminFetchOptions<Env> {
    */
   authorize: (
     request: Request,
-    params: { workspaceId: string; op: AdminOp },
+    params: { workspaceId: string; op: AdminOp; env: Env },
   ) => boolean | Response | Promise<boolean | Response>
   /** URL prefix. Default: "/admin" (routes are `${prefix}/<workspaceId>/<op>`). */
   pathPrefix?: string
@@ -84,7 +84,7 @@ export function createAdminFetch<Env>(opts: AdminFetchOptions<Env>) {
       return new Response('method not allowed', { status: 405 })
     }
 
-    const verdict = await opts.authorize(request, { workspaceId, op })
+    const verdict = await opts.authorize(request, { workspaceId, op, env })
     if (verdict instanceof Response) return verdict
     if (!verdict) return new Response('unauthorized', { status: 403 })
 
