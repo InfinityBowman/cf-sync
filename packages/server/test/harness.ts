@@ -36,17 +36,18 @@ export class TestClient {
   private constructor(
     readonly workspaceId: string,
     readonly clientId: string,
+    readonly prefix: string,
   ) {}
 
-  static async connect(workspaceId: string, clientId: string): Promise<TestClient> {
-    const client = new TestClient(workspaceId, clientId)
+  static async connect(workspaceId: string, clientId: string, prefix = '/sync'): Promise<TestClient> {
+    const client = new TestClient(workspaceId, clientId, prefix)
     await client.#open()
     return client
   }
 
   async #open(): Promise<void> {
     const response = await SELF.fetch(
-      `https://test/sync/${this.workspaceId}?clientId=${encodeURIComponent(this.clientId)}`,
+      `https://test${this.prefix}/${this.workspaceId}?clientId=${encodeURIComponent(this.clientId)}`,
       { headers: { Upgrade: 'websocket' } },
     )
     const ws = response.webSocket

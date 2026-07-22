@@ -2,6 +2,7 @@ import { AppError, createSyncFetch, createWorkspaceDO, crudMutators } from '../.
 
 interface Env {
   WORKSPACE: DurableObjectNamespace
+  COMPACT: DurableObjectNamespace
 }
 
 export const WorkspaceDO = createWorkspaceDO({
@@ -32,8 +33,19 @@ export const WorkspaceDO = createWorkspaceDO({
   },
 })
 
-const fetchHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE })
+// Same mutators, but tombstones compact immediately when the alarm fires.
+export const CompactingDO = createWorkspaceDO({
+  schemaVersion: 'test-1',
+  mutators: { ...crudMutators },
+  compaction: { tombstoneRetentionVersions: 0, intervalMs: 60 * 60 * 1000 },
+})
+
+const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE })
+const compactHandler = createSyncFetch<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact' })
 
 export default {
-  fetch: (request: Request, env: Env) => fetchHandler(request, env),
+  fetch: (request: Request, env: Env) => {
+    const { pathname } = new URL(request.url)
+    return pathname.startsWith('/compact/') ? compactHandler(request, env) : mainHandler(request, env)
+  },
 }
