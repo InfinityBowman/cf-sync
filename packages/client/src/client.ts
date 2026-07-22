@@ -9,6 +9,7 @@ import {
   type PatchOp,
   type PokeEndMsg,
 } from '@cf-sync/protocol'
+import type { PersistedOutboxEntry, PersistedRowOp, PersistedState, SyncStore } from './store'
 
 export type SyncStatus = 'idle' | 'connecting' | 'syncing' | 'synced' | 'reconnecting' | 'fatal'
 
@@ -53,6 +54,14 @@ export interface SyncClientOptions {
    */
   clientId: string
   schemaVersion: string
+  /**
+   * Durable storage for synced rows, the cursor, and the outbox. When set,
+   * start() hydrates registered tables from the store (collections show
+   * cached data before the socket connects), hello resumes from the
+   * persisted cursor, and unconfirmed mutations survive reloads. A schema
+   * version mismatch discards the cache and bootstraps fresh.
+   */
+  store?: SyncStore
   createSocket?: (url: string) => WebSocketLike
   /** Reject unconfirmed mutations after this long; TanStack DB then rolls back. */
   confirmTimeoutMs?: number
@@ -101,6 +110,8 @@ export class SyncClient {
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null
   #retryPushTimer: ReturnType<typeof setTimeout> | null = null
   #flushScheduled = false
+  #persistScheduled = false
+  #hydrating = false
 
   constructor(opts: SyncClientOptions) {
     this.#opts = opts
@@ -133,7 +144,19 @@ export class SyncClient {
     if (this.#started) return
     this.#started = true
     this.#setStatus('connecting')
-    this.#connect()
+    const store = this.#opts.store
+    if (store) {
+      this.#hydrating = true
+      void this.#hydrate(store).finally(() => {
+        this.#hydrating = false
+        // Flush mutations queued while hydrating; skip when empty so a
+        // discarded cache (schema mismatch) stays discarded.
+        if (this.#outbox.length > 0) this.#persistOutbox()
+        if (!this.#stopped) this.#connect()
+      })
+    } else {
+      this.#connect()
+    }
   }
 
   stop(): void {
@@ -155,6 +178,68 @@ export class SyncClient {
   }
 
   /**
+   * Restores persisted state before the first connection: outbox entries
+   * re-queue under their original ids (LMID makes replay exactly-once), and
+   * cached rows feed registered tables so collections are ready with data
+   * before any network I/O. Restored mutations have no awaiting caller, so
+   * they carry no confirm timeout — they stay queued until the server
+   * settles them.
+   */
+  async #hydrate(store: SyncStore): Promise<void> {
+    let state: PersistedState | null = null
+    try {
+      state = await store.load()
+    } catch (err) {
+      console.warn('[cf-sync] failed to load persisted state; bootstrapping fresh', err)
+      return
+    }
+    if (!state || this.#stopped) return
+    if (state.schemaVersion !== null && state.schemaVersion !== this.#opts.schemaVersion) {
+      // The cache (and any queued mutations) target a different app schema.
+      // Safest is to drop both and bootstrap from the server.
+      try {
+        await store.reset()
+      } catch (err) {
+        console.warn('[cf-sync] failed to reset persisted state', err)
+      }
+      return
+    }
+
+    this.#cursor = state.cursor
+    this.#confirmedLmid = state.confirmedLmid
+    const noop = (): void => {}
+    const restored: OutboxEntry[] = state.outbox.map((e) => ({
+      id: e.id,
+      name: e.name,
+      args: e.args,
+      resolve: noop,
+      reject: noop,
+      timer: null,
+      settled: false,
+    }))
+    // Mutations queued while hydration was in flight sort after restored ones.
+    this.#outbox = [...restored, ...this.#outbox]
+
+    if (state.cursor === null) return // outbox-only state: nothing to show yet
+    const byTable = new Map<string, PersistedState['rows']>()
+    for (const row of state.rows) {
+      let rows = byTable.get(row.tbl)
+      if (!rows) byTable.set(row.tbl, (rows = []))
+      rows.push(row)
+    }
+    for (const [tbl, hooks] of this.#tables) {
+      hooks.begin()
+      for (const row of byTable.get(tbl) ?? []) {
+        hooks.write({ type: 'put', id: row.id, value: row.value })
+      }
+      hooks.commit()
+      hooks.markReady()
+      byTable.delete(tbl)
+    }
+    for (const tbl of byTable.keys()) this.#warnUnregistered(tbl)
+  }
+
+  /**
    * Queues a named mutation. Resolves when the server confirms it (the
    * client's LMID reaches the mutation's id), rejects on permanent app error
    * or timeout. Callers apply optimistic state before calling (TanStack DB
@@ -168,13 +253,19 @@ export class SyncClient {
     return new Promise<void>((resolve, reject) => {
       const entry: OutboxEntry = { id: null, name, args, resolve, reject, timer: null, settled: false }
       entry.timer = setTimeout(() => {
-        this.#settleEntry(entry, new MutationError('Timeout', `mutation "${name}" unconfirmed after ${timeoutMs}ms`))
+        // With a durable store the timeout only settles the promise (so the
+        // caller's optimistic overlay rolls back); the mutation itself stays
+        // queued and still applies when connectivity returns.
+        this.#settleEntry(entry, new MutationError('Timeout', `mutation "${name}" unconfirmed after ${timeoutMs}ms`), {
+          keepQueued: this.#opts.store !== undefined,
+        })
       }, timeoutMs)
       this.#outbox.push(entry)
       if (this.#syncedThisConnection) {
         entry.id = this.#nextMutationId()
         this.#schedulePush()
       }
+      this.#persistOutbox()
     })
   }
 
@@ -372,6 +463,28 @@ export class SyncClient {
       this.#assignPendingIds()
     }
     this.#schedulePush()
+
+    // Durable mirror of what was just applied: rows, cursor, confirmedLmid,
+    // and the outbox commit together, so the persisted cursor can never be
+    // newer than the persisted rows (see SyncStore contract).
+    const store = this.#opts.store
+    if (store) {
+      const ops: PersistedRowOp[] = []
+      for (const op of poke.patch) {
+        if (op.op === 'put') ops.push({ op: 'put', tbl: op.tbl, id: op.id, value: op.value })
+        else if (op.op === 'del') ops.push({ op: 'del', tbl: op.tbl, id: op.id })
+      }
+      void store
+        .applyPoke({
+          ops,
+          clear: hasClear,
+          cursor: end.cursor,
+          schemaVersion: this.#opts.schemaVersion,
+          confirmedLmid: this.#confirmedLmid,
+          outbox: this.#outboxSnapshot(),
+        })
+        .catch((err) => console.warn('[cf-sync] failed to persist poke', err))
+    }
   }
 
   #onServerError(msg: ErrorMsg): void {
@@ -411,13 +524,17 @@ export class SyncClient {
     for (const entry of this.#outbox) {
       if (entry.id === null) entry.id = this.#nextMutationId()
     }
+    this.#persistOutbox()
   }
 
   #rebaseOutboxIds(): void {
+    // Everything still in the outbox is unpushed-or-unconfirmed (settled
+    // entries only stay queued to be replayed), so all of it renumbers.
     let next = this.#confirmedLmid
     for (const entry of this.#outbox) {
-      if (!entry.settled) entry.id = ++next
+      entry.id = ++next
     }
+    this.#persistOutbox()
   }
 
   #settleOutbox(results: MutationResult[]): void {
@@ -430,13 +547,20 @@ export class SyncClient {
     }
   }
 
-  #settleEntry(entry: OutboxEntry, error?: Error): void {
-    if (entry.settled) return
-    entry.settled = true
-    if (entry.timer) clearTimeout(entry.timer)
-    this.#outbox = this.#outbox.filter((e) => e !== entry)
-    if (error) entry.reject(error)
-    else entry.resolve()
+  #settleEntry(entry: OutboxEntry, error?: Error, opts?: { keepQueued?: boolean }): void {
+    if (!entry.settled) {
+      entry.settled = true
+      if (entry.timer) {
+        clearTimeout(entry.timer)
+        entry.timer = null
+      }
+      if (error) entry.reject(error)
+      else entry.resolve()
+    }
+    if (!opts?.keepQueued) {
+      this.#outbox = this.#outbox.filter((e) => e !== entry)
+      this.#persistOutbox()
+    }
   }
 
   #schedulePush(): void {
@@ -445,6 +569,28 @@ export class SyncClient {
     queueMicrotask(() => {
       this.#flushScheduled = false
       this.#flushPush()
+    })
+  }
+
+  #outboxSnapshot(): PersistedOutboxEntry[] {
+    return this.#outbox.map((e) => ({ id: e.id, name: e.name, args: e.args }))
+  }
+
+  /**
+   * Persists the outbox alone (microtask-coalesced). Suppressed during
+   * hydration (a partial snapshot would clobber restored entries) and after
+   * stop (stopping must not discard the durable outbox).
+   */
+  #persistOutbox(): void {
+    const store = this.#opts.store
+    if (!store || this.#hydrating || this.#stopped || this.#persistScheduled) return
+    this.#persistScheduled = true
+    queueMicrotask(() => {
+      this.#persistScheduled = false
+      if (this.#stopped) return
+      void store
+        .saveOutbox(this.#outboxSnapshot(), this.#confirmedLmid)
+        .catch((err) => console.warn('[cf-sync] failed to persist outbox', err))
     })
   }
 
