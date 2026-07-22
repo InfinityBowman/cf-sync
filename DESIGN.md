@@ -152,6 +152,11 @@ and per-client LMIDs must never move backward.
 - `cursor.backendId` mismatch, or `cursor.version < minCursorVersion` (compaction
   horizon), or unknown cursor → server replies `pokeStart(baseCursor: null)` +
   `clear` + full snapshot. Reset is not an error; it's the bootstrap path.
+- A poke whose patch contains `clear` is a complete state replacement, so clients
+  apply it from **any** base (admin import/reset converge live clients in one trip).
+  Any other base-mismatched poke means a missed poke → resync by cursor. A changed
+  `backendId` in `pokeEnd.cursor` is a new history: the client resets its confirmed
+  LMID and renumbers its unconfirmed outbox from the new baseline.
 
 ## 5. Durable Object storage schema
 
@@ -358,8 +363,14 @@ first milestone, not an afterthought:
    poke parts), tombstone compaction + horizon resets, DO-eviction fault tests
    (restart preserves backendId/version/LMIDs), close-code hygiene, append-only
    migration runner.
-3. **M2 — operability.** R2 mutation-log export, workspace export/import, metrics
-   (poke fan-out latency, push rate, DO storage size), admin reset.
+3. **M2 — operability** *(done)*. R2 mutation-log export (ndjson objects keyed by
+   log_seq range, cursor advances only after a successful put — idempotent by
+   construction), admin surface via `createAdminFetch` with a mandatory authorize
+   hook (GET stats / GET export / POST import / POST reset), per-DO metrics (SQL
+   gauges + since-start counters; no server-side wall-clock latency — workers freeze
+   `Date.now()` during execution, so latency is measured from clients). Import
+   replaces state at one new version and bumps `min_cursor_version`; reset mints a
+   new `backendId`.
 4. **M3 — product hardening for corates.** Client persistence
    (`db-sqlite-persistence` + offline outbox), schema-version rollout drill,
    per-document Yjs DO integration for text.

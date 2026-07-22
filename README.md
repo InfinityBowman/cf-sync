@@ -83,6 +83,22 @@ issues.insert({ id: ulid(), title: 'ship it' })   // optimistic, confirmed by th
 await client.mutate('issue.move', { id, column }) // intent-based mutation
 ```
 
+## Operations
+
+`createAdminFetch({ namespace, authorize })` exposes a per-workspace admin surface
+(authorize is mandatory — these endpoints read and destroy whole workspaces):
+
+```
+GET  /admin/<workspaceId>/stats    gauges + counters (rows, versions, connections, db size)
+GET  /admin/<workspaceId>/export   JSON snapshot of live rows
+POST /admin/<workspaceId>/import   replace state from a snapshot (live clients converge via reset poke)
+POST /admin/<workspaceId>/reset    wipe the workspace; new history (backendId)
+```
+
+With `export: { bucket: (env) => env.EXPORT_BUCKET }` on the DO config, a periodic
+alarm streams the mutation log to R2 as ndjson (`cf-sync/<workspaceId>/mutation-log/
+<from>-<to>.ndjson`) for archive and analytics.
+
 ## Status
 
 M0 (protocol core) is complete: push/pull/poke over hibernating WebSockets, the LMID

@@ -5,5 +5,6 @@
   "durable_objects": {
     "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] }],
+  "r2_buckets": [{ "binding": "EXPORT_BUCKET", "bucket_name": "cf-sync-demo-export" }]
 }
