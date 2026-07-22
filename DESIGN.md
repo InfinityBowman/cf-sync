@@ -24,7 +24,7 @@ grounded in prior art cloned into `reference/` (file:line citations throughout):
 **Non-goals (v1)**
 
 - Row-level read permissions / partial sync. v1 syncs a whole workspace to any member (§10).
-- Collaborative text editing. Character-level editing goes through per-document CRDT (Yjs) DOs, outside this engine. The row-sync engine stores document metadata and a pointer.
+- Collaborative text editing. Character-level merging never flows through the row-sync mutation log. See §14 for the tiered strategy (revised 2026-07: LWW rows by default, in-workspace-DO Yjs for fields that prove to need merging).
 - Cross-workspace transactions. Moving data between workspaces is an application-level saga.
 - General-purpose infrastructure. One partition scheme, one conflict strategy, one client (TanStack DB).
 
@@ -419,7 +419,8 @@ first milestone, not an afterthought:
    the `SyncStore` seam (§7.1) — IndexedDB-backed row mirror + cursor + durable
    outbox, instant hydration before connect, offline mutations replayed exactly
    once under the LMID contract. Remaining: schema-version rollout drill,
-   per-document Yjs DO integration for text.
+   collaborative text per the tiered strategy in §14 (built only when a field type
+   proves to need real merging).
 
 ## 13. Open questions (deliberately deferred)
 
@@ -431,4 +432,41 @@ first milestone, not an afterthought:
   pushes/sec per-DO ceiling is far above Linear-style human workloads; revisit only
   with evidence.
 - Presence/ephemeral state (cursors, "who's viewing") — likely a separate lightweight
-  channel on the same socket, never written to SQLite.
+  channel on the same socket, never written to SQLite. Note that §14 tier 1 (field
+  edit indicators) is the first concrete consumer.
+
+## 14. Collaborative text (revised 2026-07)
+
+The original plan was one Yjs DO per document, modeled on Linear/Notion-style
+products: a handful of long pages, opened one at a time, sometimes heavily
+co-edited. The actual corates workload is the opposite shape — **hundreds of small
+text fields per workspace, at most ~4 collaborators, low typing frequency** — and
+that shape inverts the tradeoff. A record view showing 30 fields would need 30
+sockets and 30 DO wakes just to render, and per-document isolation defends against
+write contention that 4 quiet users will never generate. DO granularity must match
+access granularity, and the unit of access here is the workspace, not the field.
+
+The revised strategy is tiered; each tier is built only when the previous one
+demonstrably falls short:
+
+1. **Default: text fields are ordinary rows (LWW).** Full-row last-write-wins
+   through the existing mutation path. The failure mode — a true simultaneous edit
+   of one field loses one side's keystrokes — is rare at 4 collaborators with low
+   typing frequency. Mitigate with field-level presence ("X is editing this
+   field"), which discourages collisions instead of merging them. This covers most
+   of the hundreds of fields with zero new infrastructure.
+2. **Fields that prove to need real merging (long-form notes people actually
+   co-write): Yjs hosted *inside* the workspace DO.** A `yjs_updates` table in the
+   same SQLite keyed by fieldId; Yjs sync/awareness frames multiplexed over the
+   existing WebSocket as a new message type beside hello/push/poke; Y.Docs loaded
+   lazily per field behind an LRU; update logs compacted into snapshots by the
+   existing alarm. One socket, one DO, one authorize hook. Single-threading is not
+   a concern at this scale — a DO sustains hundreds of messages/sec and 4 slow
+   typists produce a fraction of that. CRDT state stays out of the rows table and
+   the mutation log (the non-goal in §1 stands); the row for a field holds
+   metadata and a fieldId pointer only.
+3. **Back pocket: per-document Yjs DOs**, if a future feature reintroduces the
+   big-shared-page shape (many concurrent editors on one hot document). This
+   composes cleanly alongside tiers 1–2 — a second DO class and a `/doc/<docId>`
+   route — and nothing in the workspace DO changes. Do not build it on
+   speculation.
