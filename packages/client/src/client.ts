@@ -59,6 +59,8 @@ export interface SyncClientOptions {
   maxBackoffMs?: number
   onStatusChange?: (status: SyncStatus) => void
   onFatal?: (error: Error) => void
+  /** Progress during large pokes (bootstrap): ops received so far vs. still to come. */
+  onSyncProgress?: (progress: { receivedOps: number; remainingOps: number }) => void
 }
 
 interface OutboxEntry {
@@ -274,6 +276,9 @@ export class SyncClient {
           poke.patch.push(...msg.patch)
           Object.assign(poke.lastMutationIdChanges, msg.lastMutationIdChanges)
           if (msg.mutationResults) poke.mutationResults.push(...msg.mutationResults)
+          if (msg.remaining !== undefined) {
+            this.#opts.onSyncProgress?.({ receivedOps: poke.patch.length, remainingOps: msg.remaining })
+          }
         }
         break
       }
