@@ -1,8 +1,9 @@
-import { AppError, createSyncFetch, createWorkspaceDO, crudMutators } from '../../src/index'
+import { AppError, createAdminFetch, createSyncFetch, createWorkspaceDO, crudMutators } from '../../src/index'
 
 interface Env {
   WORKSPACE: DurableObjectNamespace
   COMPACT: DurableObjectNamespace
+  EXPORT_BUCKET: R2Bucket
 }
 
 export const WorkspaceDO = createWorkspaceDO({
@@ -31,6 +32,10 @@ export const WorkspaceDO = createWorkspaceDO({
       throw new AppError('Nope', 'wrote then failed')
     },
   },
+  export: {
+    bucket: (env) => (env as Env).EXPORT_BUCKET,
+    maxBatchRows: 5, // small batches so tests exercise multi-object runs
+  },
 })
 
 // Same mutators, but tombstones compact immediately when the alarm fires.
@@ -42,10 +47,16 @@ export const CompactingDO = createWorkspaceDO({
 
 const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE })
 const compactHandler = createSyncFetch<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact' })
+const adminHandler = createAdminFetch<Env>({
+  namespace: (env) => env.WORKSPACE,
+  authorize: (request) => request.headers.get('x-test-admin') === 'yes',
+})
 
 export default {
   fetch: (request: Request, env: Env) => {
     const { pathname } = new URL(request.url)
-    return pathname.startsWith('/compact/') ? compactHandler(request, env) : mainHandler(request, env)
+    if (pathname.startsWith('/admin/')) return adminHandler(request, env)
+    if (pathname.startsWith('/compact/')) return compactHandler(request, env)
+    return mainHandler(request, env)
   },
 }

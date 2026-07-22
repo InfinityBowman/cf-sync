@@ -219,6 +219,44 @@ describe('SyncClient', () => {
     expect(push).toMatchObject({ type: 'push', mutations: [{ id: 1, name: 'sync.put' }] })
   })
 
+  it('applies a clear poke from any base and renumbers the outbox on a new history', async () => {
+    const { client, latest } = makeClient()
+    client.registerTable('todos', recorder.hooks)
+    client.start()
+    const socket = latest()
+    socket.open()
+    bootstrap(socket, {
+      patch: [{ op: 'put', tbl: 'todos', id: 't1', value: { title: 'old' } }],
+      version: 3,
+    })
+    socket.takeSent()
+
+    // A mutation is pushed but never confirmed before the server resets.
+    void client.mutate('sync.put', { tbl: 'todos', id: 't2', data: {} }).catch(() => {})
+    await flushMicrotasks()
+    socket.takeSent()
+
+    // Admin reset: clear poke, base null (mismatch), NEW backendId.
+    const pokeId = 'poke-reset'
+    socket.receive({ type: 'pokeStart', pokeId, baseCursor: null })
+    socket.receive({ type: 'pokePart', pokeId, patch: [{ op: 'clear' }] })
+    socket.receive({
+      type: 'pokeEnd',
+      pokeId,
+      cursor: { backendId: 'b2', version: 0 },
+      pageInfo: { more: false },
+    })
+
+    expect(recorder.rows.size).toBe(0)
+    expect(client.cursor).toEqual({ backendId: 'b2', version: 0 })
+
+    // The unconfirmed mutation renumbers from the new history's baseline
+    // and re-pushes with id 1.
+    await flushMicrotasks()
+    const [push] = socket.takeSent()
+    expect(push).toMatchObject({ type: 'push', mutations: [{ id: 1, name: 'sync.put' }] })
+  })
+
   it('goes fatal on VersionNotSupported and settles everything', async () => {
     let fatal: Error | null = null
     const { client, latest } = makeClient({ onFatal: (e) => (fatal = e) })

@@ -4,5 +4,6 @@ declare namespace Cloudflare {
   interface Env {
     WORKSPACE: DurableObjectNamespace
     COMPACT: DurableObjectNamespace
+    EXPORT_BUCKET: R2Bucket
   }
 }

@@ -8,5 +8,6 @@
       { "name": "COMPACT", "class_name": "CompactingDO" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO", "CompactingDO"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO", "CompactingDO"] }],
+  "r2_buckets": [{ "binding": "EXPORT_BUCKET", "bucket_name": "cf-sync-test-export" }]
 }
