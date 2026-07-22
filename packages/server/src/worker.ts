@@ -1,3 +1,5 @@
+import { WORKSPACE_HEADER } from './do'
+
 export interface SyncFetchOptions<Env> {
   namespace: (env: Env) => DurableObjectNamespace
   /**
@@ -35,6 +37,65 @@ export function createSyncFetch<Env>(opts: SyncFetchOptions<Env>) {
 
     const namespace = opts.namespace(env)
     const stub = namespace.get(namespace.idFromName(workspaceId))
-    return stub.fetch(request)
+    const headers = new Headers(request.headers)
+    headers.set(WORKSPACE_HEADER, workspaceId)
+    return stub.fetch(request.url, { headers })
+  }
+}
+
+export type AdminOp = 'stats' | 'export' | 'import' | 'reset'
+
+const ADMIN_METHODS: Record<AdminOp, string> = {
+  stats: 'GET',
+  export: 'GET',
+  import: 'POST',
+  reset: 'POST',
+}
+
+export interface AdminFetchOptions<Env> {
+  namespace: (env: Env) => DurableObjectNamespace
+  /**
+   * Required — admin operations read and destroy whole workspaces. Return
+   * false or a Response to reject.
+   */
+  authorize: (
+    request: Request,
+    params: { workspaceId: string; op: AdminOp },
+  ) => boolean | Response | Promise<boolean | Response>
+  /** URL prefix. Default: "/admin" (routes are `${prefix}/<workspaceId>/<op>`). */
+  pathPrefix?: string
+}
+
+/**
+ * Routes `${prefix}/<workspaceId>/<op>` to the workspace DO's admin surface:
+ * GET stats, GET export, POST import (snapshot body), POST reset.
+ */
+export function createAdminFetch<Env>(opts: AdminFetchOptions<Env>) {
+  const prefix = opts.pathPrefix ?? '/admin'
+  return async (request: Request, env: Env): Promise<Response> => {
+    const url = new URL(request.url)
+    if (!url.pathname.startsWith(`${prefix}/`)) return new Response('not found', { status: 404 })
+    const parts = url.pathname.slice(prefix.length + 1).split('/')
+    if (parts.length !== 2) return new Response('not found', { status: 404 })
+    const workspaceId = decodeURIComponent(parts[0]!)
+    const op = parts[1] as AdminOp
+    if (!workspaceId || !(op in ADMIN_METHODS)) return new Response('not found', { status: 404 })
+    if (request.method !== ADMIN_METHODS[op]) {
+      return new Response('method not allowed', { status: 405 })
+    }
+
+    const verdict = await opts.authorize(request, { workspaceId, op })
+    if (verdict instanceof Response) return verdict
+    if (!verdict) return new Response('unauthorized', { status: 403 })
+
+    const namespace = opts.namespace(env)
+    const stub = namespace.get(namespace.idFromName(workspaceId))
+    const headers = new Headers(request.headers)
+    headers.set(WORKSPACE_HEADER, workspaceId)
+    return stub.fetch(`https://do/admin/${op}`, {
+      method: request.method,
+      headers,
+      body: request.method === 'POST' ? request.body : null,
+    })
   }
 }
