@@ -75,7 +75,7 @@ interface OutboxEntry {
 
 interface PokeBuffer {
   pokeId: string
-  discard: boolean
+  baseMismatch: boolean
   patch: PatchOp[]
   lastMutationIdChanges: Record<string, number>
   mutationResults: MutationResult[]
@@ -258,7 +258,7 @@ export class SyncClient {
       case 'pokeStart': {
         this.#poke = {
           pokeId: msg.pokeId,
-          discard: !cursorEquals(msg.baseCursor, this.#cursor),
+          baseMismatch: !cursorEquals(msg.baseCursor, this.#cursor),
           patch: [],
           lastMutationIdChanges: {},
           mutationResults: [],
@@ -272,13 +272,11 @@ export class SyncClient {
           this.#requestResync()
           break
         }
-        if (!poke.discard) {
-          poke.patch.push(...msg.patch)
-          Object.assign(poke.lastMutationIdChanges, msg.lastMutationIdChanges)
-          if (msg.mutationResults) poke.mutationResults.push(...msg.mutationResults)
-          if (msg.remaining !== undefined) {
-            this.#opts.onSyncProgress?.({ receivedOps: poke.patch.length, remainingOps: msg.remaining })
-          }
+        poke.patch.push(...msg.patch)
+        Object.assign(poke.lastMutationIdChanges, msg.lastMutationIdChanges)
+        if (msg.mutationResults) poke.mutationResults.push(...msg.mutationResults)
+        if (msg.remaining !== undefined && !poke.baseMismatch) {
+          this.#opts.onSyncProgress?.({ receivedOps: poke.patch.length, remainingOps: msg.remaining })
         }
         break
       }
@@ -289,9 +287,11 @@ export class SyncClient {
           this.#requestResync()
           break
         }
-        if (poke.discard) {
-          // A poke based on a cursor we don't hold: we missed something.
-          // While a catch-up is in flight this is expected — drop silently.
+        // A clear poke is a complete state replacement (server reset/import):
+        // it is safe to apply from ANY base. Anything else based on a cursor
+        // we don't hold means we missed a poke — resync by cursor instead.
+        const isReset = poke.patch.some((op) => op.op === 'clear')
+        if (poke.baseMismatch && !isReset) {
           this.#requestResync()
           break
         }
@@ -344,11 +344,19 @@ export class SyncClient {
       }
     }
 
+    // A new backendId is a new history (admin reset / wiped DO): the server
+    // no longer knows our LMID, so the outbox renumbers from the new baseline.
+    const backendChanged = this.#cursor !== null && this.#cursor.backendId !== end.cursor.backendId
     this.#cursor = end.cursor
     this.#awaitingCatchUp = false
 
-    const confirmed = poke.lastMutationIdChanges[this.#opts.clientId]
-    if (confirmed !== undefined && confirmed > this.#confirmedLmid) this.#confirmedLmid = confirmed
+    if (backendChanged) {
+      this.#confirmedLmid = poke.lastMutationIdChanges[this.#opts.clientId] ?? 0
+      this.#rebaseOutboxIds()
+    } else {
+      const confirmed = poke.lastMutationIdChanges[this.#opts.clientId]
+      if (confirmed !== undefined && confirmed > this.#confirmedLmid) this.#confirmedLmid = confirmed
+    }
     this.#settleOutbox(poke.mutationResults)
 
     if (this.#needsRebase) {
