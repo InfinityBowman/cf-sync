@@ -5,9 +5,13 @@
   "durable_objects": {
     "bindings": [
       { "name": "WORKSPACE", "class_name": "WorkspaceDO" },
-      { "name": "COMPACT", "class_name": "CompactingDO" }
+      { "name": "COMPACT", "class_name": "CompactingDO" },
+      { "name": "ROLLOUT", "class_name": "RolloutDO" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO", "CompactingDO"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["WorkspaceDO", "CompactingDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["RolloutDO"] }
+  ],
   "r2_buckets": [{ "binding": "EXPORT_BUCKET", "bucket_name": "cf-sync-test-export" }]
 }

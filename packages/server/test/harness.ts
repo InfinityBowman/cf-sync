@@ -26,6 +26,8 @@ export class TestClient {
   readonly rows = new Map<string, Record<string, unknown>>()
   cursor: Cursor | null = null
   lmid = 0
+  /** The app schema this client claims at hello (rollout tests override it). */
+  schemaVersion = 'test-1'
   errors: Extract<ServerMsg, { type: 'error' }>[] = []
 
   #ws!: WebSocket
@@ -71,7 +73,7 @@ export class TestClient {
   }
 
   hello(): void {
-    this.send({ type: 'hello', protocolVersion: PROTOCOL_VERSION, schemaVersion: 'test-1', cursor: this.cursor })
+    this.send({ type: 'hello', protocolVersion: PROTOCOL_VERSION, schemaVersion: this.schemaVersion, cursor: this.cursor })
   }
 
   push(mutations: Mutation[]): void {

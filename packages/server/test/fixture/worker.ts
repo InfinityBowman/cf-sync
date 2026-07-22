@@ -1,8 +1,16 @@
-import { AppError, createAdminFetch, createSyncFetch, createWorkspaceDO, crudMutators } from '../../src/index'
+import {
+  AppError,
+  createAdminFetch,
+  createSyncFetch,
+  createWorkspaceDO,
+  crudMutators,
+  type WorkspaceEngineConfig,
+} from '../../src/index'
 
 interface Env {
   WORKSPACE: DurableObjectNamespace
   COMPACT: DurableObjectNamespace
+  ROLLOUT: DurableObjectNamespace
   EXPORT_BUCKET: R2Bucket
 }
 
@@ -45,8 +53,19 @@ export const CompactingDO = createWorkspaceDO({
   compaction: { tombstoneRetentionVersions: 0, intervalMs: 60 * 60 * 1000 },
 })
 
+// Schema-rollout drill fixture: tests mutate this config ("deploy v2"), then
+// evict the DO so the next wake constructs against the new version. Works
+// because tests and DOs share one isolate under vitest-pool-workers, and
+// createWorkspaceDO reads config properties at use time.
+export const rolloutConfig: WorkspaceEngineConfig = {
+  schemaVersion: 'test-1',
+  mutators: { ...crudMutators },
+}
+export const RolloutDO = createWorkspaceDO(rolloutConfig)
+
 const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE })
 const compactHandler = createSyncFetch<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact' })
+const rolloutHandler = createSyncFetch<Env>({ namespace: (env) => env.ROLLOUT, pathPrefix: '/rollout' })
 const adminHandler = createAdminFetch<Env>({
   namespace: (env) => env.WORKSPACE,
   authorize: (request) => request.headers.get('x-test-admin') === 'yes',
@@ -57,6 +76,7 @@ export default {
     const { pathname } = new URL(request.url)
     if (pathname.startsWith('/admin/')) return adminHandler(request, env)
     if (pathname.startsWith('/compact/')) return compactHandler(request, env)
+    if (pathname.startsWith('/rollout/')) return rolloutHandler(request, env)
     return mainHandler(request, env)
   },
 }
