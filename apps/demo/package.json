@@ -6,6 +6,8 @@
   "scripts": {
     "dev:worker": "wrangler dev",
     "dev:web": "vite",
+    "build": "vite build",
+    "deploy": "vite build && wrangler deploy",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

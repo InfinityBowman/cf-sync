@@ -3,7 +3,11 @@ import { createCollection } from '@tanstack/react-db'
 import { ulid } from 'ulidx'
 import { SCHEMA_VERSION, type Todo } from './schema'
 
-const WORKER_URL = import.meta.env.VITE_SYNC_URL ?? 'ws://localhost:8787'
+// Dev runs vite (:5173) and wrangler (:8787) separately; the deployed build
+// is served by the worker itself, so the sync socket is same-origin.
+const WORKER_URL =
+  import.meta.env.VITE_SYNC_URL ??
+  (import.meta.env.DEV ? 'ws://localhost:8787' : location.origin.replace(/^http/, 'ws'))
 const workspaceId = location.hash.slice(1) || 'demo'
 
 // One clientId per tab/session: the clientId names a contiguous mutation

@@ -101,7 +101,8 @@ alarm streams the mutation log to R2 as ndjson (`cf-sync/<workspaceId>/mutation-
 
 ## Status
 
-M0 (protocol core) is complete: push/pull/poke over hibernating WebSockets, the LMID
-idempotency contract, chunked bootstrap, catch-up by cursor, TanStack DB adapter, and
-a seeded multi-client convergence simulation. See DESIGN.md §12 for the roadmap
-(compaction, R2 export, client persistence).
+M0 (protocol core), M1 (resilience), and M2 (operability) are complete: push/pull/poke
+over hibernating WebSockets, the LMID idempotency contract, chunked bootstrap, catch-up
+by cursor, TanStack DB adapter, a seeded multi-client convergence simulation, tombstone
+compaction, migrations, R2 mutation-log export, and the admin surface. See DESIGN.md §12
+for the roadmap (next: M3 — client persistence and offline outbox).

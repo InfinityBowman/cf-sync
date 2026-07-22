@@ -4,6 +4,8 @@ import { SCHEMA_VERSION } from '../src/schema'
 interface Env {
   WORKSPACE: DurableObjectNamespace
   EXPORT_BUCKET: R2Bucket
+  /** Set via `wrangler secret put ADMIN_TOKEN`. Unset = admin surface disabled. */
+  ADMIN_TOKEN?: string
 }
 
 export const WorkspaceDO = createWorkspaceDO({
@@ -30,11 +32,26 @@ const syncHandler = createSyncFetch<Env>({
   authorize: () => true,
 })
 
-// DANGER: open admin surface for local development. Gate this behind real
-// auth (or remove it) before deploying anywhere shared.
+function timingSafeEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder()
+  const aBytes = encoder.encode(a)
+  const bBytes = encoder.encode(b)
+  if (aBytes.byteLength !== bBytes.byteLength) return false
+  let diff = 0
+  for (let i = 0; i < aBytes.byteLength; i++) diff |= aBytes[i]! ^ bBytes[i]!
+  return diff === 0
+}
+
+// Admin operations read and destroy whole workspaces: locked behind a bearer
+// token (`curl -H "Authorization: Bearer $TOKEN" .../admin/<ws>/stats`).
 const adminHandler = createAdminFetch<Env>({
   namespace: (env) => env.WORKSPACE,
-  authorize: () => true,
+  authorize: (request, { env }) => {
+    if (!env.ADMIN_TOKEN) return false
+    const header = request.headers.get('authorization')
+    if (!header?.startsWith('Bearer ')) return false
+    return timingSafeEqual(header.slice('Bearer '.length), env.ADMIN_TOKEN)
+  },
 })
 
 export default {

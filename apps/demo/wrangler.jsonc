@@ -6,5 +6,9 @@
     "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] }],
-  "r2_buckets": [{ "binding": "EXPORT_BUCKET", "bucket_name": "cf-sync-demo-export" }]
+  "r2_buckets": [{ "binding": "EXPORT_BUCKET", "bucket_name": "cf-sync-demo-export" }],
+  // The built web UI is served from the same worker: requests that match a
+  // built file get the asset, everything else (/sync/*, /admin/*) runs here.
+  "assets": { "directory": "./dist" },
+  "observability": { "enabled": true }
 }
