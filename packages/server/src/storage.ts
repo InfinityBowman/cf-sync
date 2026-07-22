@@ -6,6 +6,12 @@ export interface Meta {
   workspaceId: string
   /** Highest mutation_log.log_seq already exported to R2. */
   lastExportedSeq: number
+  /**
+   * The schema version the stored data was written under. May differ from the
+   * configured version when the DO first wakes after a deploy — the engine
+   * then runs the schema migration (do.ts) and restamps it.
+   */
+  schemaVersion: string
 }
 
 // Storage schema per DESIGN.md §5. mutation_log has its own sequence because a
@@ -92,18 +98,24 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string): Meta {
       backendId,
       schemaVersion,
     )
-    return { backendId, currentVersion: 0, minCursorVersion: 0, workspaceId: '', lastExportedSeq: 0 }
+    return {
+      backendId,
+      currentVersion: 0,
+      minCursorVersion: 0,
+      workspaceId: '',
+      lastExportedSeq: 0,
+      schemaVersion,
+    }
   }
-  if (row.schema_version !== schemaVersion) {
-    // The server is the authority on the live schema version; old clients are
-    // rejected at hello. Data migration hooks are out of scope for M0.
-    sql.exec(`UPDATE meta SET schema_version = ? WHERE id = 1`, schemaVersion)
-  }
+  // A stored schema version differing from the configured one is surfaced to
+  // the caller (the DO runs the migration hook and restamps) — never silently
+  // overwritten here.
   return {
     backendId: row.backend_id,
     currentVersion: Number(row.current_version),
     minCursorVersion: Number(row.min_cursor_version),
     workspaceId: row.workspace_id,
     lastExportedSeq: Number(row.last_exported_seq),
+    schemaVersion: row.schema_version,
   }
 }

@@ -53,6 +53,18 @@ export interface WorkspaceEngineConfig {
   compaction?: CompactionConfig
   /** Stream the mutation log to R2 for archive/analytics (DESIGN.md D3). */
   export?: ExportConfig
+  /**
+   * Runs once, before any traffic, when the DO wakes with data stored under a
+   * different schema version than the configured one (DESIGN.md §9). Rewrite
+   * rows through tx; all rewrites commit atomically at a single new data
+   * version together with the version restamp, and `min_cursor_version`
+   * advances to it so every pre-migration cursor re-bootstraps. Additive
+   * schema changes can omit this hook — the stored version is restamped with
+   * no data rewrite. Throwing aborts initialization: the DO keeps serving
+   * nothing rather than serving old-shaped data as the new version, and the
+   * next wake retries (guard `from` if a rollback deploy is a possibility).
+   */
+  migrateSchema?: (tx: MutatorTx, versions: { from: string; to: string }) => void
 }
 
 const DEFAULT_TOMBSTONE_RETENTION = 10_000
@@ -220,10 +232,54 @@ export function createWorkspaceDO(config: WorkspaceEngineConfig) {
       ctx.blockConcurrencyWhile(async () => {
         migrate(this.#sql)
         this.#meta = loadOrInitMeta(this.#sql, config.schemaVersion)
+        if (this.#meta.schemaVersion !== config.schemaVersion) this.#migrateAppSchema()
         if (this.#maintenanceEnabled() && (await ctx.storage.getAlarm()) === null) {
           await ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
         }
       })
+    }
+
+    /**
+     * App-schema rollout (distinct from the engine's own storage migrations in
+     * storage.ts). Runs the migrateSchema hook and restamps the stored schema
+     * version in one transaction; a throw rolls back both, so a failed
+     * migration is retried on the next wake instead of being half-applied.
+     */
+    #migrateAppSchema(): void {
+      const from = this.#meta.schemaVersion
+      const to = config.schemaVersion
+      let migratedVersion: number | null = null
+      this.ctx.storage.transactionSync(() => {
+        if (config.migrateSchema) {
+          const writes = new WriteSet(this.#sql)
+          config.migrateSchema(writes.tx, { from, to })
+          const candidate = this.#meta.currentVersion + 1
+          if (writes.flush(candidate) > 0) {
+            migratedVersion = candidate
+            // Rewritten rows are a new data version, and no cursor issued
+            // before the migration may catch up from it — force bootstrap.
+            this.#sql.exec(
+              `UPDATE meta SET current_version = ?, min_cursor_version = ? WHERE id = 1`,
+              candidate,
+              candidate,
+            )
+          }
+        }
+        this.#sql.exec(`UPDATE meta SET schema_version = ? WHERE id = 1`, to)
+        // Audit trail: the exported log explains the version jump.
+        this.#sql.exec(
+          `INSERT INTO mutation_log (version, client_id, mutation_id, name, args, result, created_at)
+           VALUES (?, '$system', 0, '$schema.migrate', ?, 'ok', ?)`,
+          migratedVersion,
+          JSON.stringify({ from, to }),
+          new Date().toISOString(),
+        )
+      })
+      this.#meta.schemaVersion = to
+      if (migratedVersion !== null) {
+        this.#meta.currentVersion = migratedVersion
+        this.#meta.minCursorVersion = migratedVersion
+      }
     }
 
     #maintenanceEnabled(): boolean {
