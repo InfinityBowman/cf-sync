@@ -2,6 +2,10 @@ export interface Meta {
   backendId: string
   currentVersion: number
   minCursorVersion: number
+  /** The DO's own name; ctx.id.name can be absent on alarm wakes, so it's persisted. */
+  workspaceId: string
+  /** Highest mutation_log.log_seq already exported to R2. */
+  lastExportedSeq: number
 }
 
 // Storage schema per DESIGN.md §5. mutation_log has its own sequence because a
@@ -47,6 +51,12 @@ const MIGRATIONS: ReadonlyArray<readonly string[]> = [
   ],
   // v2 — wall-clock timestamps on the mutation log (R2 export, debugging)
   [`ALTER TABLE mutation_log ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`],
+  // v3 — workspace identity (a DO can't rely on ctx.id.name on alarm wakes)
+  //      and the R2 export cursor
+  [
+    `ALTER TABLE meta ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE meta ADD COLUMN last_exported_seq INTEGER NOT NULL DEFAULT 0`,
+  ],
 ]
 
 export function migrate(sql: SqlStorage): void {
@@ -61,19 +71,28 @@ export function migrate(sql: SqlStorage): void {
 
 export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string): Meta {
   const rows = sql
-    .exec<{ backend_id: string; current_version: number; min_cursor_version: number; schema_version: string }>(
-      `SELECT backend_id, current_version, min_cursor_version, schema_version FROM meta WHERE id = 1`,
+    .exec<{
+      backend_id: string
+      current_version: number
+      min_cursor_version: number
+      schema_version: string
+      workspace_id: string
+      last_exported_seq: number
+    }>(
+      `SELECT backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq
+       FROM meta WHERE id = 1`,
     )
     .toArray()
   const row = rows[0]
   if (!row) {
     const backendId = crypto.randomUUID()
     sql.exec(
-      `INSERT INTO meta (id, backend_id, current_version, min_cursor_version, schema_version) VALUES (1, ?, 0, 0, ?)`,
+      `INSERT INTO meta (id, backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq)
+       VALUES (1, ?, 0, 0, ?, '', 0)`,
       backendId,
       schemaVersion,
     )
-    return { backendId, currentVersion: 0, minCursorVersion: 0 }
+    return { backendId, currentVersion: 0, minCursorVersion: 0, workspaceId: '', lastExportedSeq: 0 }
   }
   if (row.schema_version !== schemaVersion) {
     // The server is the authority on the live schema version; old clients are
@@ -84,5 +103,7 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string): Meta {
     backendId: row.backend_id,
     currentVersion: Number(row.current_version),
     minCursorVersion: Number(row.min_cursor_version),
+    workspaceId: row.workspace_id,
+    lastExportedSeq: Number(row.last_exported_seq),
   }
 }
