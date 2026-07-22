@@ -23,6 +23,15 @@ export const WorkspaceDO = createWorkspaceDO({
   export: {
     bucket: (env) => (env as Env).EXPORT_BUCKET,
   },
+  // demo-1 -> demo-2: todos gain a priority field. Runs once per workspace,
+  // atomically, on the first wake after deploy; old clients are rejected at
+  // hello and reload into the new bundle.
+  migrateSchema: (tx, { from }) => {
+    if (from !== 'demo-1') return // fresh workspaces and rollbacks: nothing to do
+    for (const { id, data } of tx.list('todos')) {
+      tx.put('todos', id, { priority: 'normal', ...data })
+    }
+  },
 })
 
 const syncHandler = createSyncFetch<Env>({

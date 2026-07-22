@@ -367,6 +367,23 @@ settled:
   **Never remove a mutator name that shipped under a live schema version** (§3 D10).
 - Storage-format changes inside the DO are ordinary SQLite migrations in `onStart`,
   invisible to the protocol.
+- **App-schema rollout (drilled, M3):** exact-match policy — the server rejects any
+  other `schemaVersion` at hello with `VersionNotSupported`; the client goes fatal
+  and the app reloads into the new bundle, whose `SyncStore` cache is discarded on
+  the version mismatch (§7.1) and re-bootstraps. Server-side data rewrites go
+  through the `migrateSchema` config hook: it runs once per workspace on the first
+  wake under the new version, before any traffic; rewrites commit atomically with
+  the version restamp at a single new data version; `min_cursor_version` advances
+  to it so no pre-migration cursor can catch up; `backendId` is untouched (same
+  history — no outbox renumbering); per-client LMIDs survive, so mutations queued
+  in old-bundle tabs still dedupe correctly after their tab upgrades. A migration
+  with no row changes (additive) just restamps and leaves cursors valid. A throwing
+  hook aborts DO initialization — old-shaped data is never served under the new
+  version — and retries on the next wake; guard on `from` if rollback deploys are
+  possible. The log records `$schema.migrate` under client `$system` for the audit
+  trail. Deploy order: worker before (or atomically with) web assets, so no client
+  ever speaks a schema the server hasn't reached. The full chain is enforced by
+  `schema-rollout.test.ts` and was exercised live (demo-1 → demo-2, 2026-07).
 
 ## 10. Permissions (v1 scope)
 

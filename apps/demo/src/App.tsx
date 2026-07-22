@@ -21,7 +21,7 @@ export function App() {
   const addTodo = () => {
     const trimmed = title.trim()
     if (!trimmed) return
-    todos.insert({ id: ulid(), title: trimmed, completed: false, createdAt: new Date().toISOString() })
+    todos.insert({ id: ulid(), title: trimmed, completed: false, createdAt: new Date().toISOString(), priority: 'normal' })
     setTitle('')
   }
 
