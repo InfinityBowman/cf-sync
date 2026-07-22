@@ -65,13 +65,17 @@ export default {
 ## Consuming it from the client
 
 ```ts
-import { SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
+import { IndexedDBSyncStore, SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
 import { createCollection } from '@tanstack/react-db'
 
 const client = new SyncClient({
   url: `wss://your-worker/sync/${workspaceId}?clientId=${clientId}`,
   clientId, // unique per tab/session — never share across tabs
   schemaVersion: 'app-1',
+  // Optional: durable local mirror. Reloads hydrate instantly from cache and
+  // resume by cursor; mutations made offline survive reloads and replay
+  // exactly once (the LMID contract makes replay idempotent).
+  store: new IndexedDBSyncStore({ workspaceId, clientId }),
 })
 
 const issues = createCollection(
@@ -101,8 +105,10 @@ alarm streams the mutation log to R2 as ndjson (`cf-sync/<workspaceId>/mutation-
 
 ## Status
 
-M0 (protocol core), M1 (resilience), and M2 (operability) are complete: push/pull/poke
-over hibernating WebSockets, the LMID idempotency contract, chunked bootstrap, catch-up
-by cursor, TanStack DB adapter, a seeded multi-client convergence simulation, tombstone
-compaction, migrations, R2 mutation-log export, and the admin surface. See DESIGN.md §12
-for the roadmap (next: M3 — client persistence and offline outbox).
+M0 (protocol core), M1 (resilience), M2 (operability), and M3 phase 1 (client
+persistence) are complete: push/pull/poke over hibernating WebSockets, the LMID
+idempotency contract, chunked bootstrap, catch-up by cursor, TanStack DB adapter, a
+seeded multi-client convergence simulation, tombstone compaction, migrations, R2
+mutation-log export, the admin surface, and an IndexedDB-backed local mirror with a
+durable offline outbox. See DESIGN.md §12 for the roadmap (remaining: schema rollout
+drill, per-document Yjs DOs).

@@ -1,4 +1,4 @@
-import { SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
+import { IndexedDBSyncStore, SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
 import { createCollection } from '@tanstack/react-db'
 import { ulid } from 'ulidx'
 import { SCHEMA_VERSION, type Todo } from './schema'
@@ -21,6 +21,9 @@ export const syncClient = new SyncClient({
   url: `${WORKER_URL}/sync/${encodeURIComponent(workspaceId)}?clientId=${clientId}`,
   clientId,
   schemaVersion: SCHEMA_VERSION,
+  // Durable local mirror: reloads hydrate instantly from IndexedDB and
+  // resume by cursor; mutations made offline replay on reconnect.
+  store: new IndexedDBSyncStore({ workspaceId, clientId }),
   onStatusChange: (status) => {
     document.dispatchEvent(new CustomEvent('sync-status', { detail: status }))
   },

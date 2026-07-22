@@ -266,7 +266,7 @@ The adapter is a collection options creator implementing `SyncConfig.sync`
 | `pokeStart` | `begin()` |
 | `pokePart` patch op `put`/`del` | `write({type, value…})` — one collection per `tbl` |
 | `pokePart` patch op `clear` | `truncate()` (preserves optimistic overlay via its snapshot mechanism, `sync.ts:214-248`) |
-| `pokeEnd` | `commit()`; persist cursor via `metadata.collection.set('sync:cursor', …)` (Electric persists its resume state exactly this way, `electric.ts:1488-1508`) |
+| `pokeEnd` | `commit()`; the cursor is persisted by the client-level `SyncStore` (§7.1), not per-collection metadata — one workspace cursor spans every table |
 | first `pokeEnd` with `more: false` | `markReady()` — also called in the error path so `preload()` never hangs |
 
 **Mutation path (Pattern B — the adapter owns the handlers):** `onInsert/onUpdate/onDelete`
@@ -283,9 +283,53 @@ deep-equal existing rows into updates (`sync.ts:133-164`), and the collection gu
 mandates buffer-then-dedup between bootstrap and live events
 (`collection-options-creator.md`).
 
-Offline durability (later, not v1): layer `persistedCollectionOptions` from
-`@tanstack/db-sqlite-persistence-core` over the same sync config, and evaluate
-`@tanstack/offline-transactions` for the outbox instead of a bespoke one.
+### 7.1 Offline durability: the `SyncStore` seam (M3, decided)
+
+We evaluated `@tanstack/db-sqlite-persistence-core` (0.2.x alpha) and
+`@tanstack/offline-transactions` (1.0.x) and decided to own this layer. Rationale:
+
+- **The cursor is per-workspace; their persistence is per-collection.** One poke
+  spans many tables and commits against one cursor. TanStack's model has no
+  transaction covering "all tables' rows + the cursor". IndexedDB does: one
+  transaction spans object stores, so rows, cursor, `confirmedLmid`, and the outbox
+  commit atomically — the client-side mirror of invariant §6.1.
+- **offline-transactions duplicates the LMID contract.** It brings its own
+  idempotency keys, retry scheduler, and replay; ours is the protocol itself
+  (contiguous per-client ids, server dedup). Its `mutationFn` would wrap
+  `SyncClient.mutate`, nesting one outbox inside another, and its optimistic
+  restore reaches into `collection._state` internals.
+- What we *did* adopt from their design: delay `markReady` until hydration
+  completes, and hydrate before any network I/O.
+
+`SyncClient` takes an optional `store: SyncStore` (`packages/client/src/store.ts`);
+`IndexedDBSyncStore` is the browser implementation, `MemorySyncStore` the test
+double. If TanStack's sqlite stack matures, it can implement `SyncStore` without
+touching the protocol.
+
+**Invariant: the persisted cursor is never newer than the persisted rows.** Behind
+is always safe — patches are idempotent full-row puts/dels, so re-applying a delta
+converges. Ahead would silently skip deltas.
+
+**Multi-tab.** Rows + cursor are shared per workspace (db `cf-sync:<workspaceId>`);
+outbox records are partitioned by clientId (each tab replays only its own
+mutations; stale records GC'd after 30 days). Concurrent writers need no leader
+election: catch-up patches carry *current row state as of the poke's end cursor*,
+not historical deltas, so a poke that doesn't advance the stored cursor is wholly
+subsumed by what a newer writer already stored and is skipped (the subsumption
+guard in `applyPoke`).
+
+**Semantics locked in:**
+- After a reload, replayed-but-unconfirmed mutations do not show optimistically —
+  the UI shows last-synced state until the server confirms. Avoiding this would
+  require client-side mutator implementations for rewind/replay, which the
+  server-authoritative design deliberately rejects.
+- With a store, a confirm timeout settles the caller's promise (rejects, so the
+  optimistic overlay rolls back) but keeps the mutation queued: durable intent
+  outlives the UI signal. Without a store, timeout still discards.
+- `stop()` rejects in-flight callers but leaves the durable outbox intact; a
+  schema-version mismatch at hydration discards cache *and* queued mutations
+  (they target the old schema); a `backendId` change flows through naturally as
+  a clear poke.
 
 ## 8. Connections, hibernation, lifecycle
 
@@ -371,8 +415,10 @@ first milestone, not an afterthought:
    `Date.now()` during execution, so latency is measured from clients). Import
    replaces state at one new version and bumps `min_cursor_version`; reset mints a
    new `backendId`.
-4. **M3 — product hardening for corates.** Client persistence
-   (`db-sqlite-persistence` + offline outbox), schema-version rollout drill,
+4. **M3 — product hardening for corates.** Phase 1 *(done)*: client persistence via
+   the `SyncStore` seam (§7.1) — IndexedDB-backed row mirror + cursor + durable
+   outbox, instant hydration before connect, offline mutations replayed exactly
+   once under the LMID contract. Remaining: schema-version rollout drill,
    per-document Yjs DO integration for text.
 
 ## 13. Open questions (deliberately deferred)
