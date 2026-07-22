@@ -1,0 +1,9 @@
+{
+  "name": "cf-sync-test-fixture",
+  "main": "./worker.ts",
+  "compatibility_date": "2025-08-01",
+  "durable_objects": {
+    "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] }]
+}

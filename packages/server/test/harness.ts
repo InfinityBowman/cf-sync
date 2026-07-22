@@ -1,0 +1,180 @@
+import {
+  PROTOCOL_VERSION,
+  serverMsgSchema,
+  type Cursor,
+  type Mutation,
+  type PokeEndMsg,
+  type PokePartMsg,
+  type ServerMsg,
+} from '@cf-sync/protocol'
+import { SELF } from 'cloudflare:test'
+
+export interface Poke {
+  baseCursor: Cursor | null
+  patch: PokePartMsg['patch']
+  lastMutationIdChanges: Record<string, number>
+  mutationResults: NonNullable<PokePartMsg['mutationResults']>
+  cursor: Cursor
+  end: PokeEndMsg
+}
+
+/**
+ * A raw protocol client for exercising the DO contract from tests. It keeps a
+ * materialized row map so convergence can be asserted structurally.
+ */
+export class TestClient {
+  readonly rows = new Map<string, Record<string, unknown>>()
+  cursor: Cursor | null = null
+  lmid = 0
+  errors: Extract<ServerMsg, { type: 'error' }>[] = []
+
+  #ws!: WebSocket
+  #queue: ServerMsg[] = []
+  #waiters: Array<(msg: ServerMsg) => void> = []
+  #partial: { pokeId: string; baseCursor: Cursor | null; parts: PokePartMsg[] } | null = null
+
+  private constructor(
+    readonly workspaceId: string,
+    readonly clientId: string,
+  ) {}
+
+  static async connect(workspaceId: string, clientId: string): Promise<TestClient> {
+    const client = new TestClient(workspaceId, clientId)
+    await client.#open()
+    return client
+  }
+
+  async #open(): Promise<void> {
+    const response = await SELF.fetch(
+      `https://test/sync/${this.workspaceId}?clientId=${encodeURIComponent(this.clientId)}`,
+      { headers: { Upgrade: 'websocket' } },
+    )
+    const ws = response.webSocket
+    if (!ws) throw new Error(`upgrade failed: ${response.status}`)
+    ws.accept()
+    this.#ws = ws
+    ws.addEventListener('message', (event: MessageEvent) => {
+      if (this.#ws !== ws) return // stale socket after a reconnect
+      const parsed = serverMsgSchema.safeParse(JSON.parse(String(event.data)))
+      if (!parsed.success) return
+      const msg = parsed.data
+      if (msg.type === 'error') this.errors.push(msg)
+      const waiter = this.#waiters.shift()
+      if (waiter) waiter(msg)
+      else this.#queue.push(msg)
+    })
+  }
+
+  send(msg: unknown): void {
+    this.#ws.send(JSON.stringify(msg))
+  }
+
+  hello(): void {
+    this.send({ type: 'hello', protocolVersion: PROTOCOL_VERSION, schemaVersion: 'test-1', cursor: this.cursor })
+  }
+
+  push(mutations: Mutation[]): void {
+    this.send({ type: 'push', mutations })
+  }
+
+  close(): void {
+    this.#ws.close(1000, 'test done')
+  }
+
+  async reconnect(): Promise<void> {
+    this.close()
+    // Discard anything from the old connection, including a half-received
+    // poke: the post-reconnect catch-up supersedes it.
+    this.#queue = []
+    this.#partial = null
+    await this.#open()
+  }
+
+  next(timeoutMs = 2_000): Promise<ServerMsg> {
+    const queued = this.#queue.shift()
+    if (queued) return Promise.resolve(queued)
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`timed out waiting for a message (client ${this.clientId})`)), timeoutMs)
+      this.#waiters.push((msg) => {
+        clearTimeout(timer)
+        resolve(msg)
+      })
+    })
+  }
+
+  /** Reads one complete poke (start → parts → end) and applies it to `rows`. */
+  async nextPoke(timeoutMs = 2_000): Promise<Poke> {
+    for (;;) {
+      const msg = await this.next(timeoutMs)
+      if (msg.type === 'error') throw new Error(`server error: ${msg.code} ${msg.message ?? ''}`)
+      if (msg.type === 'pokeStart') {
+        this.#partial = { pokeId: msg.pokeId, baseCursor: msg.baseCursor, parts: [] }
+        continue
+      }
+      if (msg.type === 'pokePart') {
+        if (this.#partial?.pokeId !== msg.pokeId) throw new Error('pokePart without matching pokeStart')
+        this.#partial.parts.push(msg)
+        continue
+      }
+      // pokeEnd
+      const partial = this.#partial
+      this.#partial = null
+      if (partial?.pokeId !== msg.pokeId) throw new Error('pokeEnd without matching pokeStart')
+      const poke: Poke = {
+        baseCursor: partial.baseCursor,
+        patch: partial.parts.flatMap((p) => p.patch),
+        lastMutationIdChanges: Object.assign({}, ...partial.parts.map((p) => p.lastMutationIdChanges ?? {})),
+        mutationResults: partial.parts.flatMap((p) => p.mutationResults ?? []),
+        cursor: msg.cursor,
+        end: msg,
+      }
+      this.#apply(poke)
+      return poke
+    }
+  }
+
+  /** Waits for pokes until this client's confirmed LMID reaches `target`. */
+  async pokeUntilLmid(target: number, timeoutMs = 2_000): Promise<void> {
+    while (this.lmid < target) await this.nextPoke(timeoutMs)
+  }
+
+  /** Waits for pokes until the cursor reaches at least `version`. */
+  async pokeUntilVersion(version: number, timeoutMs = 2_000): Promise<void> {
+    while ((this.cursor?.version ?? -1) < version) await this.nextPoke(timeoutMs)
+  }
+
+  async syncOnce(): Promise<Poke> {
+    this.hello()
+    return this.nextPoke()
+  }
+
+  async expectNoMessage(waitMs = 150): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, waitMs))
+    if (this.#queue.length > 0) {
+      throw new Error(`expected silence, got ${JSON.stringify(this.#queue[0])}`)
+    }
+  }
+
+  #apply(poke: Poke): void {
+    for (const op of poke.patch) {
+      if (op.op === 'clear') this.rows.clear()
+      else if (op.op === 'put') this.rows.set(`${op.tbl}/${op.id}`, op.value)
+      else this.rows.delete(`${op.tbl}/${op.id}`)
+    }
+    this.cursor = poke.cursor
+    const confirmed = poke.lastMutationIdChanges[this.clientId]
+    if (confirmed !== undefined && confirmed > this.lmid) this.lmid = confirmed
+  }
+}
+
+/** Deterministic PRNG for the convergence simulation. */
+export function mulberry32(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
