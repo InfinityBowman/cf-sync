@@ -113,6 +113,7 @@ type PokePartMsg  = {
   type: 'pokePart'
   pokeId: string
   patch: PatchOp[]                              // chunked ≤ 900KB per frame
+  remaining?: number                             // ops still to come (bootstrap progress)
   lastMutationIdChanges?: Record<string, number> // clientId -> confirmed LMID
   mutationResults?: MutationResult[]             // per-mutation app errors (§6)
 }
@@ -203,9 +204,16 @@ Pull-after-cursor is a single indexed scan: `SELECT ... FROM rows WHERE version 
 (tombstones included). This is the per-space-version strategy's O(index scan) pull —
 the reason we chose it over CVR/row-version diffing.
 
-Compaction: a DO alarm periodically hard-deletes tombstones with
-`version <= current_version - HORIZON` and advances `min_cursor_version`. Clients under
-the horizon re-bootstrap (§4.3). `backend_id` changes only if the DO is wiped entirely.
+Compaction (implemented in M1): a DO alarm periodically hard-deletes tombstones with
+`version <= current_version - retention` and advances `min_cursor_version` to the
+youngest deleted tombstone — any client at or past it already received every delete
+being discarded. Clients under the horizon re-bootstrap (§4.3). Configured per DO
+class via `compaction: { tombstoneRetentionVersions, intervalMs }` (defaults: 10k
+versions, 6h). `backend_id` changes only if the DO is wiped entirely.
+
+Storage-format changes run through an append-only migration list tracked in a
+`_migrations` table (DO SQLite doesn't expose `PRAGMA user_version`), applied once
+per DO inside the constructor's `blockConcurrencyWhile`.
 
 ## 6. Server mutation processing
 
@@ -342,11 +350,14 @@ first milestone, not an afterthought:
 
 ## 12. Milestones
 
-1. **M0 — protocol core.** Workspace DO (schema §5, push path §6), `hello`/catch-up,
-   chunked pokes, TanStack DB adapter, two browser tabs converging through optimistic
-   mutations. Simulation harness with convergence + idempotency invariants.
-2. **M1 — resilience.** Reconnect/backoff, bootstrap progress (`pageInfo`), tombstone
-   compaction + horizon resets, DO-eviction fault tests, close-code hygiene.
+1. **M0 — protocol core** *(done)*. Workspace DO (schema §5, push path §6),
+   `hello`/catch-up, chunked pokes, TanStack DB adapter, two browser tabs converging
+   through optimistic mutations. Simulation harness with convergence + idempotency
+   invariants.
+2. **M1 — resilience** *(done)*. Reconnect/backoff, bootstrap progress (`remaining` on
+   poke parts), tombstone compaction + horizon resets, DO-eviction fault tests
+   (restart preserves backendId/version/LMIDs), close-code hygiene, append-only
+   migration runner.
 3. **M2 — operability.** R2 mutation-log export, workspace export/import, metrics
    (poke fan-out latency, push rate, DO storage size), admin reset.
 4. **M3 — product hardening for corates.** Client persistence

@@ -84,6 +84,8 @@ export const pokePartMsgSchema = z.object({
   type: z.literal('pokePart'),
   pokeId: z.string().min(1),
   patch: z.array(patchOpSchema),
+  /** Patch ops still to come after this part — bootstrap progress reporting. */
+  remaining: z.number().int().nonnegative().optional(),
   lastMutationIdChanges: z.record(z.string(), z.number().int().nonnegative()).optional(),
   mutationResults: z.array(mutationResultSchema).optional(),
 })
