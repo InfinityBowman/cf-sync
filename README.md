@@ -137,8 +137,7 @@ export default {
 ## Consuming it from the client
 
 ```ts
-import { SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
-import { createCollection } from '@tanstack/react-db'
+import { SyncClient, createCollections } from '@cf-sync/client'
 import { app } from './schema'
 
 const client = new SyncClient({
@@ -149,16 +148,27 @@ const client = new SyncClient({
   // from cache and resume by cursor; mutations made offline survive reloads
   // and replay exactly once (the LMID contract makes replay idempotent).
   // The clientId lifecycle (one per tab/session) is managed for you; pass
-  // `clientId`/`store` explicitly to take either over.
+  // `clientId`/`store` explicitly to take either over. Fatal errors
+  // (VersionNotSupported after a deploy) reload the page, throttled to once
+  // per minute so a bad deploy window can't reload-loop; pass `onFatal` to
+  // customize.
   persist: true,
 })
 
-// Row type, runtime validation, and the key function derive from the schema.
-const issues = createCollection(workspaceCollectionOptions({ client, table: 'issues' }))
+// One typed collection per schema table: row types, runtime validation, and
+// keys all derive from the schema. (Per-table control: workspaceCollectionOptions.)
+const { issues } = createCollections(client)
 client.start()
 
 issues.insert({ id: ulid(), title: 'ship it' })   // optimistic; `column` filled by its default
 await client.mutate('issue.move', { id, column }) // typed: a typo'd name or bad args is a compile error
+```
+
+Sync status is observable via `client.subscribeStatus` (returns an
+unsubscribe function, safe to pass unbound) — in React:
+
+```ts
+const status = useSyncExternalStore(client.subscribeStatus, () => client.status)
 ```
 
 ## Operations

@@ -1,5 +1,5 @@
-import type { AnySyncSchema, RowOf, StandardSchemaV1, TableName, TableSchema } from '@cf-sync/protocol'
-import type { CollectionConfig } from '@tanstack/db'
+import type { AnySyncSchema, RowInputOf, RowOf, StandardSchemaV1, TableName, TableSchema } from '@cf-sync/protocol'
+import { createCollection, type Collection, type CollectionConfig } from '@tanstack/db'
 import type { SyncClient } from './client'
 
 export type WorkspaceCollectionConfig<S extends AnySyncSchema, K extends TableName<S>> = {
@@ -42,6 +42,18 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
       `workspaceCollectionOptions: table "${table}" is not in the schema passed to SyncClient — ` +
         `known tables: ${Object.keys(client.schema.tables).join(', ') || '(none)'}`,
     )
+  }
+  // Collections write through sync.put / sync.del. Fail at setup when the
+  // registry lacks them — the alternative is every insert rejecting at
+  // runtime with UnknownMutator and silently rolling back its optimistic row.
+  for (const required of ['sync.put', 'sync.del'] as const) {
+    if (!(client.app.mutators as Record<string, unknown>)[required]) {
+      throw new Error(
+        `workspaceCollectionOptions: the app's mutator registry has no "${required}", which ` +
+          `collections emit for local writes — spread crudMutators(schema) into the mutators ` +
+          `passed to defineApp`,
+      )
+    }
   }
   const getKey =
     cfg.getKey ??
@@ -112,4 +124,45 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
       )
     },
   }
+}
+
+/** One live TanStack DB collection per table in the app's schema. */
+export type WorkspaceCollections<S extends AnySyncSchema> = {
+  [K in TableName<S>]: Collection<
+    RowOf<S, K> & object,
+    string,
+    {},
+    S['tables'][K] & StandardSchemaV1,
+    RowInputOf<S, K> & object
+  >
+}
+
+/**
+ * Creates one collection per table in the client's schema, fully typed —
+ * the one-line alternative to a `createCollection(workspaceCollectionOptions(…))`
+ * block per table:
+ *
+ * ```ts
+ * const { todos, issues } = createCollections(client, { startSync: true })
+ * ```
+ *
+ * Rows are keyed by their `id` field (this engine's row model); a table whose
+ * rows key differently needs an individual `workspaceCollectionOptions` call
+ * with its own `getKey`.
+ */
+export function createCollections<S extends AnySyncSchema>(
+  client: SyncClient<S, any>,
+  options?: { startSync?: boolean },
+): WorkspaceCollections<S> {
+  const collections: Record<string, unknown> = {}
+  for (const table of Object.keys(client.schema.tables)) {
+    // The per-table conditional getKey type can't resolve over a table-name
+    // union; the runtime default (row.id) is exactly what we document here.
+    const config = { client, table, startSync: options?.startSync } as WorkspaceCollectionConfig<
+      S,
+      TableName<S>
+    >
+    collections[table] = createCollection(workspaceCollectionOptions(config))
+  }
+  return collections as WorkspaceCollections<S>
 }

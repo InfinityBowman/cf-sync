@@ -7,7 +7,12 @@ export {
   type TableWriteOp,
   type WebSocketLike,
 } from './client'
-export { workspaceCollectionOptions, type WorkspaceCollectionConfig } from './collection'
+export {
+  createCollections,
+  workspaceCollectionOptions,
+  type WorkspaceCollectionConfig,
+  type WorkspaceCollections,
+} from './collection'
 // The schema/mutator definition kit lives in @cf-sync/protocol so app code
 // shared between worker and browser can import it from one place; re-exported
 // here for browser-only code.

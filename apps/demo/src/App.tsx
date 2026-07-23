@@ -1,18 +1,12 @@
 import { useLiveQuery } from '@tanstack/react-db'
-import { useEffect, useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { ulid } from 'ulidx'
-import type { SyncStatus } from '@cf-sync/client'
 import { syncClient, todos, workspaceId } from './sync'
 
 export function App() {
   const [title, setTitle] = useState('')
-  const [status, setStatus] = useState<SyncStatus>(syncClient.status)
-
-  useEffect(() => {
-    const onStatus = (event: Event) => setStatus((event as CustomEvent<SyncStatus>).detail)
-    document.addEventListener('sync-status', onStatus)
-    return () => document.removeEventListener('sync-status', onStatus)
-  }, [])
+  // subscribeStatus is a stable arrow property, so it works unbound here.
+  const status = useSyncExternalStore(syncClient.subscribeStatus, () => syncClient.status)
 
   const { data: items } = useLiveQuery((q) =>
     q.from({ todo: todos }).orderBy(({ todo }) => todo.createdAt, 'asc'),

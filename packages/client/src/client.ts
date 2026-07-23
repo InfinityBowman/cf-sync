@@ -120,7 +120,16 @@ export interface SyncClientOptions<
    * event. Default: 2×pingInterval + 5s.
    */
   idleTimeoutMs?: number
+  /** Constructor-time convenience; for dynamic subscribers use `subscribeStatus`. */
   onStatusChange?: (status: SyncStatus) => void
+  /**
+   * Called when the server permanently rejects this client
+   * (VersionNotSupported, Unauthorized). Default in the browser: reload the
+   * page — the designed recovery for a version mismatch is loading the new
+   * bundle — throttled to once per minute per workspace so a bad deploy
+   * window (e.g. stale web assets) degrades to a slow retry instead of a
+   * reload loop. Pass a handler to customize, or a no-op to disable.
+   */
   onFatal?: (error: Error) => void
   /** Progress during large pokes (bootstrap): ops received so far vs. still to come. */
   onSyncProgress?: (progress: { receivedOps: number; remainingOps: number }) => void
@@ -151,6 +160,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   readonly #store: SyncStore | undefined
   readonly #tables = new Map<string, TableHooks>()
   readonly #warnedTables = new Set<string>()
+  readonly #statusListeners = new Set<(status: SyncStatus) => void>()
 
   #socket: WebSocketLike | null = null
   #status: SyncStatus = 'idle'
@@ -201,9 +211,26 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     return this.#clientId
   }
 
+  /** The app definition this client was constructed with. */
+  get app(): AppDefinition<S, M> {
+    return this.#opts.app
+  }
+
   /** The table schema from the app definition (used by collections). */
   get schema(): S {
     return this.#opts.app.schema
+  }
+
+  /**
+   * Subscribes to status changes; returns an unsubscribe function. An arrow
+   * property, so it can be passed around unbound — it plugs directly into
+   * React: `useSyncExternalStore(client.subscribeStatus, () => client.status)`.
+   */
+  readonly subscribeStatus = (listener: (status: SyncStatus) => void): (() => void) => {
+    this.#statusListeners.add(listener)
+    return () => {
+      this.#statusListeners.delete(listener)
+    }
   }
 
   /**
@@ -814,6 +841,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (this.#status === status) return
     this.#status = status
     this.#opts.onStatusChange?.(status)
+    for (const listener of this.#statusListeners) listener(status)
   }
 
   #fatal(error: Error): void {
@@ -828,7 +856,8 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
       // already closed
     }
     this.#socket = null
-    this.#opts.onFatal?.(error)
+    if (this.#opts.onFatal) this.#opts.onFatal(error)
+    else defaultFatalRecovery(this.#opts.workspaceId, error)
   }
 
   #warnUnregistered(tbl: string): void {
@@ -866,6 +895,44 @@ function defaultClientId(workspaceId: string): string {
   } catch {
     return crypto.randomUUID()
   }
+}
+
+const FATAL_RELOAD_MIN_INTERVAL_MS = 60_000
+
+/**
+ * Default fatal handling: reload into the (presumably newer) bundle — the
+ * protocol's designed recovery for VersionNotSupported — throttled per
+ * workspace so a bad deploy window (stale web assets, a rollback that left
+ * the client ahead of the server) degrades to one reload per minute instead
+ * of a reload loop. Outside the browser there is nothing to reload; the
+ * client just stays stopped in 'fatal'.
+ */
+function defaultFatalRecovery(workspaceId: string, error: Error): void {
+  if (typeof location === 'undefined') {
+    console.warn('[cf-sync] fatal, and no onFatal handler to recover:', error)
+    return
+  }
+  const key = `cf-sync:fatal-reload:${encodeURIComponent(workspaceId)}`
+  let lastReloadAt = 0
+  try {
+    lastReloadAt = Number(sessionStorage.getItem(key)) || 0
+  } catch {
+    // storage blocked: fall through with 0 — reloading is still the best move
+  }
+  if (Date.now() - lastReloadAt < FATAL_RELOAD_MIN_INTERVAL_MS) {
+    console.warn(
+      '[cf-sync] fatal again within a minute of reloading — waiting instead of looping (deploy skew?):',
+      error,
+    )
+    return
+  }
+  try {
+    sessionStorage.setItem(key, String(Date.now()))
+  } catch {
+    // best effort; without storage the throttle just resets per load
+  }
+  console.warn('[cf-sync] fatal; reloading to pick up the current bundle:', error)
+  location.reload()
 }
 
 function createDefaultStore(workspaceId: string, clientId: string): SyncStore | undefined {

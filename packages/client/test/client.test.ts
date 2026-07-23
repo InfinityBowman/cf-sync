@@ -276,4 +276,36 @@ describe('SyncClient', () => {
     expect(fatal).not.toBeNull()
     expect(recorder.ready).toBe(true) // markReady even on fatal so preload settles
   })
+
+  it('a fatal with no onFatal handler is survivable outside the browser', () => {
+    // Default fatal recovery reloads the page; with no `location` (SSR,
+    // tests) it must degrade to a warning, never a throw.
+    const { client, latest } = makeClient()
+    client.registerTable('todos', recorder.hooks)
+    client.start()
+    const socket = latest()
+    socket.open()
+    socket.receive({ type: 'error', code: 'Unauthorized' })
+    expect(client.status).toBe('fatal')
+  })
+
+  it('subscribeStatus notifies on transitions and stops after unsubscribe', () => {
+    const { client, latest } = makeClient()
+    const seen: string[] = []
+    // Passed unbound on purpose — the arrow property keeps `this`.
+    const subscribe = client.subscribeStatus
+    const unsubscribe = subscribe((status) => seen.push(status))
+
+    client.registerTable('todos', recorder.hooks)
+    client.start()
+    const socket = latest()
+    socket.open()
+    bootstrap(socket)
+    expect(seen).toEqual(['connecting', 'syncing', 'synced'])
+
+    unsubscribe()
+    socket.dropConnection()
+    expect(client.status).toBe('reconnecting')
+    expect(seen).toEqual(['connecting', 'syncing', 'synced']) // no longer notified
+  })
 })

@@ -1,5 +1,4 @@
-import { SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
-import { createCollection } from '@tanstack/react-db'
+import { SyncClient, createCollections } from '@cf-sync/client'
 import { app } from './schema'
 
 // Dev runs vite (:5173) and wrangler (:8787) separately; the deployed build
@@ -17,22 +16,14 @@ export const syncClient = new SyncClient({
   app,
   // Durable local mirror in IndexedDB: reloads hydrate instantly and resume
   // by cursor; mutations made offline replay on reconnect. The clientId
-  // lifecycle (one per tab/session) is managed by the client.
+  // lifecycle (one per tab/session) is managed by the client, and so is
+  // fatal recovery (throttled reload into the current bundle).
   persist: true,
-  onStatusChange: (status) => {
-    document.dispatchEvent(new CustomEvent('sync-status', { detail: status }))
-  },
-  onFatal: () => location.reload(),
 })
 
-export const todos = createCollection(
-  // Row type and key come from the schema; no generics, no getKey.
-  workspaceCollectionOptions({
-    client: syncClient,
-    table: 'todos',
-    startSync: true,
-  }),
-)
+// One typed collection per schema table; components subscribe to status via
+// useSyncExternalStore(syncClient.subscribeStatus, () => syncClient.status).
+export const { todos } = createCollections(syncClient, { startSync: true })
 
 syncClient.start()
 

@@ -2,7 +2,7 @@ import { createCollection } from '@tanstack/db'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import { z } from 'zod'
 import { MutationError, SyncClient } from '../src/client'
-import { workspaceCollectionOptions } from '../src/collection'
+import { createCollections, workspaceCollectionOptions } from '../src/collection'
 import { crudMutators, defineApp, defineMutators, defineSchema } from '../src/index'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
@@ -173,5 +173,77 @@ describe('typed mutate', () => {
     await expect(
       (client as SyncClient).mutate('no.such.mutator', {}),
     ).rejects.toSatisfy((e) => e instanceof MutationError && e.code === 'UnknownMutator')
+  })
+
+  it('fails at setup when the registry lacks the crud mutators collections emit', () => {
+    const client = new SyncClient({
+      url: 'ws://test',
+      workspaceId: 'w1',
+      clientId: CLIENT_ID,
+      // Intent-only registry: no sync.put / sync.del.
+      app: defineApp({
+        version: 'test-1',
+        schema,
+        mutators: defineMutators(schema, { 'todos.clearCompleted': { apply: () => {} } }),
+      }),
+      createSocket: () => new FakeSocket(),
+    })
+    expect(() => workspaceCollectionOptions({ client, table: 'todos' })).toThrow(/crudMutators/)
+    expect(() => createCollections(client)).toThrow(/sync\.put/)
+  })
+})
+
+describe('createCollections', () => {
+  it('creates one typed collection per schema table, synced end to end', async () => {
+    const sockets: FakeSocket[] = []
+    const multiSchema = defineSchema({
+      todos: z.object({ id: z.string(), title: z.string(), completed: z.boolean() }),
+      notes: z.object({ id: z.string(), body: z.string(), pinned: z.boolean().default(false) }),
+    })
+    const client = new SyncClient({
+      url: 'ws://test',
+      workspaceId: 'w1',
+      clientId: CLIENT_ID,
+      app: defineApp({ version: 'test-1', schema: multiSchema, mutators: crudMutators(multiSchema) }),
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    const { todos, notes } = createCollections(client, { startSync: true })
+    client.start()
+    const socket = sockets[sockets.length - 1]!
+    socket.open()
+
+    // One poke fans out to both collections.
+    const pokeId = 'poke-multi'
+    socket.receive({ type: 'pokeStart', pokeId, baseCursor: null })
+    socket.receive({
+      type: 'pokePart',
+      pokeId,
+      patch: [
+        { op: 'clear' },
+        { op: 'put', tbl: 'todos', id: 't1', value: { id: 't1', title: 'a', completed: false } },
+        { op: 'put', tbl: 'notes', id: 'n1', value: { id: 'n1', body: 'hi', pinned: true } },
+      ],
+      lastMutationIdChanges: { [CLIENT_ID]: 0 },
+    })
+    socket.receive({ type: 'pokeEnd', pokeId, cursor: { backendId: 'b1', version: 1 }, pageInfo: { more: false } })
+    await Promise.all([todos.preload(), notes.preload()])
+
+    expect(todos.get('t1')).toMatchObject({ title: 'a' })
+    expect(notes.get('n1')).toMatchObject({ body: 'hi', pinned: true })
+    expectTypeOf(todos.get('t1')).toExtend<Todo | undefined>()
+
+    // Insert typing comes from the schema's input shape: `pinned` (defaulted)
+    // is omissible, and the write flows out as an ordinary sync.put.
+    socket.takeSent()
+    notes.insert({ id: 'n2', body: 'new' })
+    await flushMicrotasks()
+    const pushes = socket.takeSent().filter((m) => m.type === 'push')
+    expect(pushes[0]).toMatchObject({
+      mutations: [{ id: 1, name: 'sync.put', args: { tbl: 'notes', id: 'n2' } }],
+    })
   })
 })
