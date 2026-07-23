@@ -11,10 +11,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cf-sync/protocol": "workspace:*",
+    "@cf-sync/protocol": "workspace:*"
+  },
+  "peerDependencies": {
     "@tanstack/db": "^0.6.16"
   },
   "devDependencies": {
+    "@tanstack/db": "^0.6.16",
     "fake-indexeddb": "^6.2.5",
     "typescript": "^5.6.0",
     "vitest": "^4.1.10",

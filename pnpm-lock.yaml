@@ -66,10 +66,10 @@ importers:
       '@cf-sync/protocol':
         specifier: workspace:*
         version: link:../protocol
+    devDependencies:
       '@tanstack/db':
         specifier: ^0.6.16
         version: 0.6.16(typescript@5.9.3)
-    devDependencies:
       fake-indexeddb:
         specifier: ^6.2.5
         version: 6.2.5
