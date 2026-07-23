@@ -30,6 +30,7 @@ import {
 } from '@cf-sync/protocol'
 import { DurableObject } from 'cloudflare:workers'
 import { z } from 'zod'
+import { schemaFingerprint } from './fingerprint'
 import { loadOrInitMeta, migrate, type Meta } from './storage'
 
 /** Set by the worker routers so the DO can learn its own workspace id. */
@@ -297,8 +298,26 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG))
       ctx.blockConcurrencyWhile(async () => {
         migrate(this.#sql)
-        this.#meta = loadOrInitMeta(this.#sql, config.app.version)
-        if (this.#meta.schemaVersion !== config.app.version) this.#migrateAppSchema()
+        const fingerprint = schemaFingerprint(config.app.schema)
+        this.#meta = loadOrInitMeta(this.#sql, config.app.version, fingerprint)
+        if (this.#meta.schemaVersion !== config.app.version) {
+          this.#migrateAppSchema(fingerprint)
+        } else if (this.#meta.schemaHash !== fingerprint) {
+          // Same version, different table schemas: additive drift is allowed
+          // (DESIGN.md §9), anything else is silent skew — say so, once per
+          // change. '' predates the fingerprint column; backfill quietly.
+          if (this.#meta.schemaHash !== '') {
+            console.warn(
+              `[cf-sync] table schemas changed under schema version "${config.app.version}" ` +
+                `(fingerprint ${this.#meta.schemaHash} -> ${fingerprint}). Additive changes are fine ` +
+                `within a version; renames, removals, or type changes need a version bump and a ` +
+                `migration step in defineApp — without one, old clients and cached rows keep being ` +
+                `accepted as "${config.app.version}".`,
+            )
+          }
+          this.#sql.exec(`UPDATE meta SET schema_hash = ? WHERE id = 1`, fingerprint)
+          this.#meta.schemaHash = fingerprint
+        }
         if (this.#maintenanceEnabled() && (await ctx.storage.getAlarm()) === null) {
           await ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
         }
@@ -314,7 +333,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
      * chain throws before the transaction opens (migrationPath) — the DO
      * aborts initialization rather than restamp data it cannot interpret.
      */
-    #migrateAppSchema(): void {
+    #migrateAppSchema(fingerprint: string): void {
       const from = this.#meta.schemaVersion
       const to = config.app.version
       const steps = migrationPath(config.app, from)
@@ -336,7 +355,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
             candidate,
           )
         }
-        this.#sql.exec(`UPDATE meta SET schema_version = ? WHERE id = 1`, to)
+        this.#sql.exec(`UPDATE meta SET schema_version = ?, schema_hash = ? WHERE id = 1`, to, fingerprint)
         // Audit trail: the exported log explains the version jump.
         this.#sql.exec(
           `INSERT INTO mutation_log (version, client_id, mutation_id, name, args, result, created_at)
@@ -347,6 +366,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
         )
       })
       this.#meta.schemaVersion = to
+      this.#meta.schemaHash = fingerprint
       if (migratedVersion !== null) {
         this.#meta.currentVersion = migratedVersion
         this.#meta.minCursorVersion = migratedVersion
@@ -619,7 +639,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
           const workspaceId = this.#meta.workspaceId
           await this.ctx.storage.deleteAll()
           migrate(this.#sql)
-          this.#meta = loadOrInitMeta(this.#sql, config.app.version)
+          this.#meta = loadOrInitMeta(this.#sql, config.app.version, schemaFingerprint(config.app.schema))
           if (workspaceId) {
             this.#sql.exec(`UPDATE meta SET workspace_id = ? WHERE id = 1`, workspaceId)
             this.#meta.workspaceId = workspaceId

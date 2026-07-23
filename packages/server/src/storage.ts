@@ -12,6 +12,13 @@ export interface Meta {
    * then runs the schema migration (do.ts) and restamps it.
    */
   schemaVersion: string
+  /**
+   * Structural fingerprint of the table schemas last seen for schemaVersion
+   * (fingerprint.ts). A changed fingerprint under an unchanged version means
+   * the schemas drifted without a bump — the engine warns once and restamps.
+   * '' on rows that predate the column (backfilled silently).
+   */
+  schemaHash: string
 }
 
 // Storage schema per DESIGN.md §5. mutation_log has its own sequence because a
@@ -63,6 +70,9 @@ const MIGRATIONS: ReadonlyArray<readonly string[]> = [
     `ALTER TABLE meta ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''`,
     `ALTER TABLE meta ADD COLUMN last_exported_seq INTEGER NOT NULL DEFAULT 0`,
   ],
+  // v4 — schema fingerprint for drift detection (schemas changed, version not
+  //      bumped). '' = predates the column; backfilled without warning.
+  [`ALTER TABLE meta ADD COLUMN schema_hash TEXT NOT NULL DEFAULT ''`],
 ]
 
 export function migrate(sql: SqlStorage): void {
@@ -75,7 +85,7 @@ export function migrate(sql: SqlStorage): void {
   }
 }
 
-export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string): Meta {
+export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string, schemaHash: string): Meta {
   const rows = sql
     .exec<{
       backend_id: string
@@ -84,8 +94,9 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string): Meta {
       schema_version: string
       workspace_id: string
       last_exported_seq: number
+      schema_hash: string
     }>(
-      `SELECT backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq
+      `SELECT backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq, schema_hash
        FROM meta WHERE id = 1`,
     )
     .toArray()
@@ -93,10 +104,11 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string): Meta {
   if (!row) {
     const backendId = crypto.randomUUID()
     sql.exec(
-      `INSERT INTO meta (id, backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq)
-       VALUES (1, ?, 0, 0, ?, '', 0)`,
+      `INSERT INTO meta (id, backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq, schema_hash)
+       VALUES (1, ?, 0, 0, ?, '', 0, ?)`,
       backendId,
       schemaVersion,
+      schemaHash,
     )
     return {
       backendId,
@@ -105,10 +117,11 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string): Meta {
       workspaceId: '',
       lastExportedSeq: 0,
       schemaVersion,
+      schemaHash,
     }
   }
   // A stored schema version differing from the configured one is surfaced to
-  // the caller (the DO runs the migration hook and restamps) — never silently
+  // the caller (the DO runs the migration chain and restamps) — never silently
   // overwritten here.
   return {
     backendId: row.backend_id,
@@ -117,5 +130,6 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string): Meta {
     workspaceId: row.workspace_id,
     lastExportedSeq: Number(row.last_exported_seq),
     schemaVersion: row.schema_version,
+    schemaHash: row.schema_hash,
   }
 }

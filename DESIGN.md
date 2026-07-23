@@ -417,6 +417,11 @@ settled:
 - `schemaVersion` (string): identifies the app-data shape + mutator set. Policy:
   additive-only changes within a version; renames/removals require a new version.
   **Never remove a mutator name that shipped under a live schema version** (§3 D10).
+  The policy is backstopped by drift detection: the DO stores a structural
+  fingerprint of the table schemas (JSON-Schema-derived for zod tables,
+  `fingerprint.ts`) next to the stored version, and a wake that sees the same
+  version with a different fingerprint warns once — the engine can't tell
+  additive from breaking, so it names the policy and restamps rather than guess.
 - Storage-format changes inside the DO are ordinary SQLite migrations in `onStart`,
   invisible to the protocol.
 - **App-schema rollout (drilled, M3):** exact-match policy — the server rejects any
