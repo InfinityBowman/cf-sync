@@ -142,6 +142,23 @@ export default {
 }
 ```
 
+And the matching `wrangler.jsonc` (this is the demo's working config):
+
+```jsonc
+{
+  "name": "my-sync-worker",
+  "main": "./worker/worker.ts",
+  "compatibility_date": "2025-08-01",
+  "durable_objects": {
+    "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }]
+  },
+  // new_sqlite_classes, NOT new_classes: the workspace DO requires
+  // SQLite-backed storage. Using new_classes here is the classic footgun —
+  // the DO deploys fine and then fails at runtime on its first SQL access.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] }]
+}
+```
+
 ## Consuming it from the client
 
 ```ts
@@ -212,10 +229,12 @@ alarm streams the mutation log to R2 as ndjson (`cf-sync/<workspaceId>/mutation-
 
 ## Status
 
-M0 (protocol core), M1 (resilience), M2 (operability), and M3 phase 1 (client
-persistence) are complete: push/pull/poke over hibernating WebSockets, the LMID
-idempotency contract, chunked bootstrap, catch-up by cursor, TanStack DB adapter, a
-seeded multi-client convergence simulation, tombstone compaction, migrations, R2
-mutation-log export, the admin surface, and an IndexedDB-backed local mirror with a
-durable offline outbox. See DESIGN.md §12 for the roadmap (remaining: schema rollout
-drill, per-document Yjs DOs).
+M0 (protocol core), M1 (resilience), M2 (operability), and M3 phases 1–2 (client
+persistence, optimistic intent mutators) are complete: push/pull/poke over
+hibernating WebSockets, the LMID idempotency contract, chunked bootstrap, catch-up
+by cursor, TanStack DB adapter, a seeded multi-client convergence simulation,
+tombstone compaction, schema-version rollout with migration chains, R2 mutation-log
+export, the admin surface, an IndexedDB-backed local mirror with a durable offline
+outbox, and optimistic execution of intent mutations via the shared mutator
+registry. See DESIGN.md §12 for the roadmap (remaining: startup replay of queued
+intents, collaborative text per §14's tiered strategy).

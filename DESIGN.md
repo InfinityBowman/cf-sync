@@ -131,8 +131,9 @@ type PatchOp =
 
 type ErrorMsg = {
   type: 'error'
-  code: 'VersionNotSupported' | 'CursorInvalid' | 'Unauthorized' | 'PushInvalid'
-  detail?: Json
+  code: 'VersionNotSupported' | 'CursorInvalid' | 'BadMessage' | 'PushInvalid'
+      | 'Unauthorized' | 'Internal'
+  message?: string
 }
 ```
 
@@ -663,9 +664,12 @@ first milestone, not an afterthought:
 4. **M3 — product hardening for corates.** Phase 1 *(done)*: client persistence via
    the `SyncStore` seam (§7.1) — IndexedDB-backed row mirror + cursor + durable
    outbox, instant hydration before connect, offline mutations replayed exactly
-   once under the LMID contract. Remaining: optimistic intent mutators (§7.2,
-   designed), collaborative text per the tiered strategy in §14 (built only when a
-   field type proves to need real merging).
+   once under the LMID contract. Phase 2 *(done)*: optimistic intent mutators
+   (§7.2) — `mutate` runs the shared `apply` locally as one atomic overlay, and
+   collection hooks register at creation behind a compacting gate (no
+   late-registration resync). Remaining: startup replay of queued intents (§7.2's
+   deferred phase), collaborative text per the tiered strategy in §14 (built only
+   when a field type proves to need real merging).
 
 ## 13. Open questions (deliberately deferred)
 
