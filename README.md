@@ -8,7 +8,7 @@ architecture, locked decisions, and invariants.
 
 | Package | What it is |
 |---|---|
-| `@cf-sync/protocol` | Wire types (hello / push / poke), frame chunking, and the shared definition kit: `defineSchema`, `defineMutators`, `crudMutators`, `AppError` — importable from both worker and browser |
+| `@cf-sync/protocol` | Wire types (hello / push / poke), frame chunking, and the shared definition kit: `defineApp`, `defineSchema`, `defineMutators`, `crudMutators`, `AppError` — importable from both worker and browser |
 | `@cf-sync/server` | `createWorkspaceDO` — the per-workspace Durable Object — and `createSyncFetch`, the worker router with an `authorize` hook |
 | `@cf-sync/client` | `SyncClient` (socket, outbox, poke application, reconnect) and `workspaceCollectionOptions`, a TanStack DB collection adapter |
 | `apps/demo` | Two-tab todo demo (React + `@tanstack/react-db`) |
@@ -33,18 +33,20 @@ Open the vite URL in **two tabs** — mutations apply optimistically and converg
 through the server. Use a URL hash (`#team-a`) to switch workspaces (each workspace is
 its own Durable Object).
 
-## Defining the schema and mutations (shared)
+## Defining the app (shared)
 
 One definition file, imported by both the worker and the web app, drives
-everything: server-side row and args validation, collection row types, and
-typed `mutate` calls.
+everything: server-side row and args validation, collection row types, typed
+`mutate` calls, and the schema-version rollout. `defineApp` bundles the
+version, schema, mutators, and migration history into one object — the server
+and every client are configured with the *same value*, so they can't disagree.
 
 ```ts
 // src/schema.ts — shared between worker and browser
-import { defineSchema, defineMutators, crudMutators, AppError } from '@cf-sync/protocol'
+import { defineApp, defineSchema, defineMutators, crudMutators, AppError } from '@cf-sync/protocol'
 import { z } from 'zod'
 
-export const schema = defineSchema({
+const schema = defineSchema({
   issues: z.object({
     id: z.string(),
     title: z.string(),
@@ -52,7 +54,7 @@ export const schema = defineSchema({
   }),
 })
 
-export const mutators = defineMutators(schema, {
+const mutators = defineMutators(schema, {
   ...crudMutators(schema), // full-row LWW: sync.put / sync.del (what collections emit)
   'issue.move': {
     args: z.object({ id: z.string(), column: z.string() }),
@@ -63,23 +65,54 @@ export const mutators = defineMutators(schema, {
     },
   },
 })
+
+export const app = defineApp({ version: 'app-1', schema, mutators })
 ```
 
 The server validates every row write against the table's schema and every
 mutation's args against its `args` schema before `apply` runs — a client can
 never write a shape the schema doesn't allow, no matter what it sends.
 
+### Evolving the schema
+
+Bump `version` and append a migration step in the same object. Steps chain,
+so a workspace that slept through several deploys replays every hop; the chain
+is validated at startup (in both bundles), so bumping the version without a
+step is a loud error, not silent skew.
+
+```ts
+export const app = defineApp({
+  version: 'app-2',
+  schema, // issues now also have `priority`
+  mutators,
+  migrations: [
+    {
+      from: 'app-1',
+      to: 'app-2',
+      migrate: (tx) => {
+        for (const { id, data } of tx.list('issues')) {
+          tx.put('issues', id, { priority: 'normal', ...data })
+        }
+      },
+    },
+    // additive change, no data rewrite: { from: 'app-2', to: 'app-3' }
+  ],
+})
+```
+
+On the first wake after a deploy, the workspace DO replays the chain from its
+stored version atomically — the *net result* is validated against the current
+schema, old clients are rejected at hello and reload into the new bundle, and
+a stored version outside the chain (e.g. a rollback deploy) aborts
+initialization instead of restamping data it can't interpret.
+
 ## Defining a workspace server
 
 ```ts
 import { createWorkspaceDO, createSyncFetch } from '@cf-sync/server'
-import { schema, mutators } from '../src/schema'
+import { app } from '../src/schema'
 
-export const WorkspaceDO = createWorkspaceDO({
-  schemaVersion: 'app-1',
-  schema,
-  mutators,
-})
+export const WorkspaceDO = createWorkspaceDO({ app })
 
 export default {
   fetch: createSyncFetch({
@@ -97,14 +130,12 @@ export default {
 ```ts
 import { SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
 import { createCollection } from '@tanstack/react-db'
-import { schema, mutators } from './schema'
+import { app } from './schema'
 
 const client = new SyncClient({
   url: 'wss://your-worker', // the client appends /sync/<workspaceId>?clientId=…
   workspaceId,
-  schemaVersion: 'app-1',
-  schema,
-  mutators,
+  app,
   // Optional: durable local mirror in IndexedDB. Reloads hydrate instantly
   // from cache and resume by cursor; mutations made offline survive reloads
   // and replay exactly once (the LMID contract makes replay idempotent).

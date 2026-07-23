@@ -1,7 +1,7 @@
 import type { Cursor, PatchOp } from '@cf-sync/protocol'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { MutationError, SyncClient, type TableWriteOp } from '../src/client'
-import { testSchema } from './test-schema'
+import { testApp } from './test-schema'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
 const SCHEMA = 'test-1'
@@ -50,8 +50,7 @@ function makeClient(overrides: Partial<ConstructorParameters<typeof SyncClient>[
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: CLIENT_ID,
-    schemaVersion: SCHEMA,
-    schema: testSchema,
+    app: testApp,
     createSocket: () => {
       const socket = new FakeSocket()
       sockets.push(socket)
@@ -151,7 +150,8 @@ describe('SyncClient', () => {
     socket.open()
     bootstrap(socket)
 
-    const confirmed = client.mutate('bad.mutator', {})
+    // Locally valid — the *server* rejects it as a permanent app error.
+    const confirmed = client.mutate('sync.put', { tbl: 'todos', id: 't1', data: {} })
     await flushMicrotasks()
 
     const pokeId = 'poke-err'
@@ -161,7 +161,7 @@ describe('SyncClient', () => {
       pokeId,
       patch: [],
       lastMutationIdChanges: { [CLIENT_ID]: 1 },
-      mutationResults: [{ id: 1, error: { code: 'UnknownMutator', message: 'nope' } }],
+      mutationResults: [{ id: 1, error: { code: 'Nope', message: 'server said no' } }],
     })
     socket.receive({ type: 'pokeEnd', pokeId, cursor: cursor(0), pageInfo: { more: false } })
 

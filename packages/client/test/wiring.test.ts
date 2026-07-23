@@ -1,7 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SyncClient, type TableWriteOp } from '../src/client'
-import { testSchema } from './test-schema'
+import { testApp } from './test-schema'
 import { FakeSocket } from './fake-socket'
 
 const SCHEMA = 'test-1'
@@ -13,8 +13,7 @@ function makeClient(overrides: Partial<ConstructorParameters<typeof SyncClient>[
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: 'client-a',
-    schemaVersion: SCHEMA,
-    schema: testSchema,
+    app: testApp,
     createSocket: (url) => {
       urls.push(url)
       const socket = new FakeSocket()

@@ -123,7 +123,10 @@ export type CrudPutArgs<S extends AnySyncSchema> = {
 /** `sync.del` args: any declared table (deleting is shape-free). */
 export type CrudDelArgs<S extends AnySyncSchema> = { tbl: TableName<S>; id: string }
 
-export interface CrudMutators<S extends AnySyncSchema> {
+// A type alias, not an interface: aliases get implicit index signatures, so a
+// bare `crudMutators(schema)` result is assignable wherever a mutator
+// registry (`Record<string, MutatorDef>`) is expected — e.g. `defineApp`.
+export type CrudMutators<S extends AnySyncSchema> = {
   'sync.put': { args: StandardSchemaV1<CrudPutArgs<S>, CrudPutArgs<S>>; apply(tx: MutatorTx<S>, args: CrudPutArgs<S>, ctx: MutatorContext): void }
   'sync.del': { args: StandardSchemaV1<CrudDelArgs<S>, CrudDelArgs<S>>; apply(tx: MutatorTx<S>, args: CrudDelArgs<S>, ctx: MutatorContext): void }
 }

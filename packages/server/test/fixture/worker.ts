@@ -5,6 +5,7 @@ import {
   createSyncFetch,
   createWorkspaceDO,
   crudMutators,
+  defineApp,
   defineMutators,
   defineSchema,
   type WorkspaceEngineConfig,
@@ -62,10 +63,14 @@ export const testMutators = defineMutators(testSchema, {
   },
 })
 
-export const WorkspaceDO = createWorkspaceDO({
-  schemaVersion: 'test-1',
+export const testApp = defineApp({
+  version: 'test-1',
   schema: testSchema,
   mutators: testMutators,
+})
+
+export const WorkspaceDO = createWorkspaceDO({
+  app: testApp,
   export: {
     bucket: (env: Env) => env.EXPORT_BUCKET,
     maxBatchRows: 5, // small batches so tests exercise multi-object runs
@@ -74,21 +79,20 @@ export const WorkspaceDO = createWorkspaceDO({
 
 // Same mutators, but tombstones compact immediately when the alarm fires.
 export const CompactingDO = createWorkspaceDO({
-  schemaVersion: 'test-1',
-  schema: testSchema,
-  mutators: { ...crudMutators(testSchema) },
+  app: defineApp({ version: 'test-1', schema: testSchema, mutators: { ...crudMutators(testSchema) } }),
   compaction: { tombstoneRetentionVersions: 0, intervalMs: 60 * 60 * 1000 },
 })
 
-// Schema-rollout drill fixture: tests mutate this config ("deploy v2"), then
+// Schema-rollout drill fixture: tests swap in a new app ("deploy v2"), then
 // evict the DO so the next wake constructs against the new version. Works
 // because tests and DOs share one isolate under vitest-pool-workers, and
 // createWorkspaceDO reads config properties at use time.
-export const rolloutConfig: WorkspaceEngineConfig = {
-  schemaVersion: 'test-1',
+export const rolloutApp = defineApp({
+  version: 'test-1',
   schema: testSchema,
   mutators: { ...crudMutators(testSchema) },
-}
+})
+export const rolloutConfig: WorkspaceEngineConfig = { app: rolloutApp }
 export const RolloutDO = createWorkspaceDO(rolloutConfig)
 
 const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE })

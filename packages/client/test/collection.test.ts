@@ -3,7 +3,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import { z } from 'zod'
 import { MutationError, SyncClient } from '../src/client'
 import { workspaceCollectionOptions } from '../src/collection'
-import { crudMutators, defineMutators, defineSchema } from '../src/index'
+import { crudMutators, defineApp, defineMutators, defineSchema } from '../src/index'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
 const schema = defineSchema({
@@ -29,9 +29,7 @@ function setup() {
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: CLIENT_ID,
-    schemaVersion: 'test-1',
-    schema,
-    mutators,
+    app: defineApp({ version: 'test-1', schema, mutators }),
     createSocket: () => {
       const socket = new FakeSocket()
       sockets.push(socket)

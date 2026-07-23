@@ -11,7 +11,9 @@ import {
   clientMsgSchema,
   formatIssues,
   jsonByteSize,
+  migrationPath,
   type AnySyncSchema,
+  type AppDefinition,
   type Cursor,
   type ErrorCode,
   type HelloMsg,
@@ -19,7 +21,6 @@ import {
   type MutationResult,
   type MutatorContext,
   type MutatorTx,
-  type MutatorsFor,
   type PatchOp,
   type PokeEndMsg,
   type PokePartMsg,
@@ -61,35 +62,34 @@ export interface ExportConfig<Env = unknown> {
 }
 
 export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, Env = unknown> {
-  schemaVersion: string
   /**
-   * The synced tables and their row schemas (`defineSchema`). Every `tx.put`
-   * — from mutators, schema migrations, and admin imports — is validated
-   * against the target table's schema; the validated output (defaults
-   * applied, unknown keys per the schema's policy) is what gets stored.
+   * The shared app definition (`defineApp`): version, table schemas, mutator
+   * registry, and the schema-version migration chain — the same object every
+   * client is constructed with. Every `tx.put` — from mutators, schema
+   * migrations, and admin imports — is validated against the target table's
+   * schema; the validated output (defaults applied) is what gets stored.
+   *
+   * When the DO wakes with data stored under an older version, the migration
+   * chain from that version replays before any traffic (DESIGN.md §9): all
+   * steps run against one write buffer, later steps read earlier steps'
+   * writes, and everything commits atomically at a single new data version
+   * together with the version restamp — `min_cursor_version` advances so
+   * every pre-migration cursor re-bootstraps. A replay of restamp-only steps
+   * (no rows written) keeps cursors valid. A stored version outside the
+   * declared chain (e.g. a rollback deploy), or a throwing step, aborts
+   * initialization: the DO serves nothing rather than serving old-shaped
+   * data as the new version, and the next wake retries.
+   *
+   * Migration txs are deliberately loosely typed: rows read mid-chain have
+   * whatever shape the previous step (or version) left, and tables removed
+   * from the schema can still be listed and deleted. The chain's *net result*
+   * is validated against the current schema at commit, so shipped steps never
+   * need editing when a later version reshapes the same table.
    */
-  schema: S
-  /** The mutator registry (`defineMutators`); args are validated before `apply` runs. */
-  mutators: MutatorsFor<S>
+  app: AppDefinition<S>
   compaction?: CompactionConfig
   /** Stream the mutation log to R2 for archive/analytics (DESIGN.md D3). */
   export?: ExportConfig<Env>
-  /**
-   * Runs once, before any traffic, when the DO wakes with data stored under a
-   * different schema version than the configured one (DESIGN.md §9). Rewrite
-   * rows through tx; all rewrites commit atomically at a single new data
-   * version together with the version restamp, and `min_cursor_version`
-   * advances to it so every pre-migration cursor re-bootstraps. Additive
-   * schema changes can omit this hook — the stored version is restamped with
-   * no data rewrite. Throwing aborts initialization: the DO keeps serving
-   * nothing rather than serving old-shaped data as the new version, and the
-   * next wake retries (guard `from` if a rollback deploy is a possibility).
-   *
-   * The tx is deliberately loosely typed: rows read during a migration have
-   * the *previous* schema's shape, and tables removed from the schema can
-   * still be listed and deleted. Writes are validated against the new schema.
-   */
-  migrateSchema?: (tx: MutatorTx, versions: { from: string; to: string }) => void
 }
 
 const DEFAULT_TOMBSTONE_RETENTION = 10_000
@@ -154,6 +154,13 @@ function validateRow(schema: AnySyncSchema, tbl: string, id: string, data: Recor
 /**
  * Buffers a single mutation's writes so they can be discarded on AppError
  * while the LMID advance still commits (DESIGN.md §6). Reads see the overlay.
+ *
+ * `validateAtFlush` defers row validation from `put` to `flush` — schema
+ * migration replays need it, because intermediate steps of a chain may write
+ * shapes that only become schema-valid after a later step rewrites them; only
+ * the chain's net result must parse. Mutations keep validating at `put` so a
+ * mutator reading back its own write sees the parsed output (defaults
+ * applied), exactly what a poke will carry.
  */
 class WriteSet {
   #puts = new Map<string, RowWrite>()
@@ -162,6 +169,7 @@ class WriteSet {
   constructor(
     private readonly sql: SqlStorage,
     private readonly schema: AnySyncSchema,
+    private readonly validateAtFlush = false,
   ) {}
 
   readonly tx: MutatorTx = {
@@ -192,14 +200,16 @@ class WriteSet {
     },
     put: (tbl, id, data) => {
       validateTarget(tbl, id)
-      const parsed = validateRow(this.schema, tbl, id, data)
-      const bytes = jsonByteSize(parsed)
+      const stored = this.validateAtFlush
+        ? (data as Record<string, unknown>)
+        : validateRow(this.schema, tbl, id, data)
+      const bytes = jsonByteSize(stored)
       if (bytes > MAX_ROW_BYTES) {
         throw new AppError('RowTooLarge', `row ${tbl}/${id} is ${bytes} bytes (max ${MAX_ROW_BYTES})`)
       }
       const k = rowKey(tbl, id)
       this.#dels.delete(k)
-      this.#puts.set(k, { tbl, id, data: structuredClone(parsed) })
+      this.#puts.set(k, { tbl, id, data: structuredClone(stored) })
     },
     del: (tbl, id) => {
       validateTarget(tbl, id)
@@ -213,12 +223,19 @@ class WriteSet {
   flush(version: number): number {
     let written = 0
     for (const { tbl, id, data } of this.#puts.values()) {
+      const stored = this.validateAtFlush ? validateRow(this.schema, tbl, id, data) : data
+      if (this.validateAtFlush) {
+        const bytes = jsonByteSize(stored)
+        if (bytes > MAX_ROW_BYTES) {
+          throw new AppError('RowTooLarge', `row ${tbl}/${id} is ${bytes} bytes (max ${MAX_ROW_BYTES})`)
+        }
+      }
       this.sql.exec(
         `INSERT INTO rows (tbl, id, data, version, deleted) VALUES (?, ?, ?, ?, 0)
          ON CONFLICT (tbl, id) DO UPDATE SET data = excluded.data, version = excluded.version, deleted = 0`,
         tbl,
         id,
-        JSON.stringify(data),
+        JSON.stringify(stored),
         version,
       )
       written++
@@ -280,8 +297,8 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG))
       ctx.blockConcurrencyWhile(async () => {
         migrate(this.#sql)
-        this.#meta = loadOrInitMeta(this.#sql, config.schemaVersion)
-        if (this.#meta.schemaVersion !== config.schemaVersion) this.#migrateAppSchema()
+        this.#meta = loadOrInitMeta(this.#sql, config.app.version)
+        if (this.#meta.schemaVersion !== config.app.version) this.#migrateAppSchema()
         if (this.#maintenanceEnabled() && (await ctx.storage.getAlarm()) === null) {
           await ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
         }
@@ -290,29 +307,34 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
 
     /**
      * App-schema rollout (distinct from the engine's own storage migrations in
-     * storage.ts). Runs the migrateSchema hook and restamps the stored schema
-     * version in one transaction; a throw rolls back both, so a failed
-     * migration is retried on the next wake instead of being half-applied.
+     * storage.ts). Replays the app's migration chain from the stored version
+     * and restamps the stored schema version in one transaction; a throw rolls
+     * back everything, so a failed migration is retried on the next wake
+     * instead of being half-applied. A stored version outside the declared
+     * chain throws before the transaction opens (migrationPath) — the DO
+     * aborts initialization rather than restamp data it cannot interpret.
      */
     #migrateAppSchema(): void {
       const from = this.#meta.schemaVersion
-      const to = config.schemaVersion
+      const to = config.app.version
+      const steps = migrationPath(config.app, from)
       let migratedVersion: number | null = null
       this.ctx.storage.transactionSync(() => {
-        if (config.migrateSchema) {
-          const writes = new WriteSet(this.#sql, config.schema)
-          config.migrateSchema(writes.tx, { from, to })
-          const candidate = this.#meta.currentVersion + 1
-          if (writes.flush(candidate) > 0) {
-            migratedVersion = candidate
-            // Rewritten rows are a new data version, and no cursor issued
-            // before the migration may catch up from it — force bootstrap.
-            this.#sql.exec(
-              `UPDATE meta SET current_version = ?, min_cursor_version = ? WHERE id = 1`,
-              candidate,
-              candidate,
-            )
-          }
+        // One write buffer across the chain: later steps read earlier steps'
+        // writes, and the net result is validated against the current schema
+        // at flush (intermediate shapes are transient).
+        const writes = new WriteSet(this.#sql, config.app.schema, true)
+        for (const step of steps) step.migrate?.(writes.tx)
+        const candidate = this.#meta.currentVersion + 1
+        if (writes.flush(candidate) > 0) {
+          migratedVersion = candidate
+          // Rewritten rows are a new data version, and no cursor issued
+          // before the migration may catch up from it — force bootstrap.
+          this.#sql.exec(
+            `UPDATE meta SET current_version = ?, min_cursor_version = ? WHERE id = 1`,
+            candidate,
+            candidate,
+          )
         }
         this.#sql.exec(`UPDATE meta SET schema_version = ? WHERE id = 1`, to)
         // Audit trail: the exported log explains the version jump.
@@ -522,7 +544,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
             .map((r) => ({ tbl: r.tbl, id: r.id, data: JSON.parse(r.data) as Record<string, unknown> }))
           return json({
             formatVersion: 1,
-            schemaVersion: config.schemaVersion,
+            schemaVersion: config.app.version,
             workspaceId: this.#meta.workspaceId,
             exportedAt: new Date().toISOString(),
             version: this.#meta.currentVersion,
@@ -539,9 +561,9 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
           }
           if (!parsed.success) return json({ error: 'invalid snapshot', detail: parsed.error.message }, 400)
           const snapshot = parsed.data
-          if (snapshot.schemaVersion !== config.schemaVersion) {
+          if (snapshot.schemaVersion !== config.app.version) {
             return json(
-              { error: `snapshot is schema "${snapshot.schemaVersion}", server is "${config.schemaVersion}"` },
+              { error: `snapshot is schema "${snapshot.schemaVersion}", server is "${config.app.version}"` },
               400,
             )
           }
@@ -554,7 +576,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
             }
             let data: Record<string, unknown>
             try {
-              data = validateRow(config.schema, row.tbl, row.id, row.data)
+              data = validateRow(config.app.schema, row.tbl, row.id, row.data)
             } catch (err) {
               if (err instanceof AppError) return json({ error: err.message }, 400)
               throw err
@@ -597,7 +619,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
           const workspaceId = this.#meta.workspaceId
           await this.ctx.storage.deleteAll()
           migrate(this.#sql)
-          this.#meta = loadOrInitMeta(this.#sql, config.schemaVersion)
+          this.#meta = loadOrInitMeta(this.#sql, config.app.version)
           if (workspaceId) {
             this.#sql.exec(`UPDATE meta SET workspace_id = ? WHERE id = 1`, workspaceId)
             this.#meta.workspaceId = workspaceId
@@ -628,7 +650,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
       return {
         workspaceId: this.#meta.workspaceId,
         backendId: this.#meta.backendId,
-        schemaVersion: config.schemaVersion,
+        schemaVersion: config.app.version,
         currentVersion: this.#meta.currentVersion,
         minCursorVersion: this.#meta.minCursorVersion,
         lastExportedSeq: this.#meta.lastExportedSeq,
@@ -645,11 +667,11 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
     }
 
     #handleHello(ws: WebSocket, attachment: Attachment, msg: HelloMsg): void {
-      if (msg.protocolVersion !== PROTOCOL_VERSION || msg.schemaVersion !== config.schemaVersion) {
+      if (msg.protocolVersion !== PROTOCOL_VERSION || msg.schemaVersion !== config.app.version) {
         this.#sendError(
           ws,
           'VersionNotSupported',
-          `server speaks protocol ${PROTOCOL_VERSION}, schema "${config.schemaVersion}"`,
+          `server speaks protocol ${PROTOCOL_VERSION}, schema "${config.app.version}"`,
         )
         ws.close(4400, 'VersionNotSupported')
         return
@@ -736,7 +758,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
      * effects; transient errors throw and roll everything back.
      */
     #applyMutation(clientId: string, mutation: Mutation): { code: string; message: string } | undefined {
-      const mutator = config.mutators[mutation.name]
+      const mutator = config.app.mutators[mutation.name]
       const ctx: MutatorContext = { clientId }
       let appError: { code: string; message: string } | undefined
       let committedVersion: number | null = null
@@ -748,7 +770,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
           // hello, so this is a registry bug, and retrying can never succeed.
           appError = { code: 'UnknownMutator', message: `no mutator named "${mutation.name}"` }
         } else {
-          const writes = new WriteSet(this.#sql, config.schema)
+          const writes = new WriteSet(this.#sql, config.app.schema)
           try {
             // Args are validated (and parsed: defaults applied) before apply
             // runs; invalid args are permanent — retrying identical args can

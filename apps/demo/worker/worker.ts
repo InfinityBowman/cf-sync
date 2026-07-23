@@ -1,5 +1,5 @@
 import { createAdminFetch, createSyncFetch, createWorkspaceDO } from '@cf-sync/server'
-import { SCHEMA_VERSION, mutators, schema } from '../src/schema'
+import { app } from '../src/schema'
 
 interface Env {
   WORKSPACE: DurableObjectNamespace
@@ -8,22 +8,13 @@ interface Env {
   ADMIN_TOKEN?: string
 }
 
+// Version, schema, mutators, and migrations all travel inside `app` — the
+// same object the browser passes to SyncClient, so the two can't disagree.
 export const WorkspaceDO = createWorkspaceDO({
-  schemaVersion: SCHEMA_VERSION,
-  schema,
-  mutators,
+  app,
   export: {
     // Annotating the param types the whole DO's env — no cast.
     bucket: (env: Env) => env.EXPORT_BUCKET,
-  },
-  // demo-1 -> demo-2: todos gain a priority field. Runs once per workspace,
-  // atomically, on the first wake after deploy; old clients are rejected at
-  // hello and reload into the new bundle.
-  migrateSchema: (tx, { from }) => {
-    if (from !== 'demo-1') return // fresh workspaces and rollbacks: nothing to do
-    for (const { id, data } of tx.list('todos')) {
-      tx.put('todos', id, { priority: 'normal', ...data })
-    }
   },
 })
 

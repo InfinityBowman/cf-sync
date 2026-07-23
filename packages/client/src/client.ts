@@ -6,6 +6,7 @@ import {
   serverMsgSchema,
   type AnyMutators,
   type AnySyncSchema,
+  type AppDefinition,
   type ClientMsg,
   type Cursor,
   type ErrorMsg,
@@ -77,20 +78,16 @@ export interface SyncClientOptions<
    * sessionStorage is unavailable.
    */
   clientId?: string
-  schemaVersion: string
   /**
-   * The shared table schema (`defineSchema`) — the same value the server is
-   * configured with. Collections created via `workspaceCollectionOptions`
-   * derive their row types and runtime validation from it.
+   * The shared app definition (`defineApp`) — the same object the server is
+   * configured with: schema version, table schemas, and mutator registry.
+   * Collections created via `workspaceCollectionOptions` derive their row
+   * types and runtime validation from its schema; `mutate` is typed by
+   * mutator name and validates args locally before queueing, so bad calls
+   * fail immediately instead of surfacing as a server round-trip error (the
+   * server's validation remains authoritative).
    */
-  schema: S
-  /**
-   * The shared mutator registry (`defineMutators`). When provided, `mutate`
-   * is typed by mutator name and validates args locally before queueing —
-   * bad calls fail immediately instead of surfacing as a server round-trip
-   * error. The server's validation remains authoritative.
-   */
-  mutators?: M
+  app: AppDefinition<S, M>
   /**
    * Durable storage for synced rows, the cursor, and the outbox. When set,
    * start() hydrates registered tables from the store (collections show
@@ -204,9 +201,9 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     return this.#clientId
   }
 
-  /** The table schema this client was constructed with (used by collections). */
+  /** The table schema from the app definition (used by collections). */
   get schema(): S {
-    return this.#opts.schema
+    return this.#opts.app.schema
   }
 
   /**
@@ -291,7 +288,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
       return
     }
     if (!state || this.#stopped) return
-    if (state.schemaVersion !== null && state.schemaVersion !== this.#opts.schemaVersion) {
+    if (state.schemaVersion !== null && state.schemaVersion !== this.#opts.app.version) {
       // The cache (and any queued mutations) target a different app schema.
       // Safest is to drop both and bootstrap from the server.
       try {
@@ -351,25 +348,23 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (this.#status === 'fatal') {
       return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
     }
-    const registry = this.#opts.mutators as AnyMutators | undefined
-    if (registry) {
-      const def = registry[name]
-      if (!def) {
+    const registry = this.#opts.app.mutators as AnyMutators
+    const def = registry[name]
+    if (!def) {
+      return Promise.reject(
+        new MutationError('UnknownMutator', `no mutator named "${name}" in the app passed to SyncClient`),
+      )
+    }
+    if (def.args) {
+      const result = def.args['~standard'].validate(args)
+      if (result instanceof Promise) {
+        // Async validators can't gate a synchronous queue; the server
+        // rejects them authoritatively.
+        void result.catch(() => {})
+      } else if (result.issues) {
         return Promise.reject(
-          new MutationError('UnknownMutator', `no mutator named "${name}" in the registry passed to SyncClient`),
+          new MutationError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`),
         )
-      }
-      if (def.args) {
-        const result = def.args['~standard'].validate(args)
-        if (result instanceof Promise) {
-          // Async validators can't gate a synchronous queue; the server
-          // rejects them authoritatively.
-          void result.catch(() => {})
-        } else if (result.issues) {
-          return Promise.reject(
-            new MutationError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`),
-          )
-        }
       }
     }
     const timeoutMs = this.#opts.confirmTimeoutMs ?? 30_000
@@ -514,7 +509,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     this.#send({
       type: 'hello',
       protocolVersion: PROTOCOL_VERSION,
-      schemaVersion: this.#opts.schemaVersion,
+      schemaVersion: this.#opts.app.version,
       cursor: this.#cursor,
     })
   }
@@ -679,7 +674,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
           ops,
           clear: hasClear,
           cursor: end.cursor,
-          schemaVersion: this.#opts.schemaVersion,
+          schemaVersion: this.#opts.app.version,
           confirmedLmid: this.#confirmedLmid,
           outbox: this.#outboxSnapshot(),
         })

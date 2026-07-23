@@ -2,7 +2,7 @@ import type { Cursor } from '@cf-sync/protocol'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { SyncClient, type TableWriteOp } from '../src/client'
 import { MemorySyncStore } from '../src/store'
-import { testSchema } from './test-schema'
+import { testApp } from './test-schema'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
 const SCHEMA = 'test-1'
@@ -49,8 +49,7 @@ function makeClient(store: MemorySyncStore, overrides: Partial<ConstructorParame
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: CLIENT_ID,
-    schemaVersion: SCHEMA,
-    schema: testSchema,
+    app: testApp,
     store,
     createSocket: () => {
       const socket = new FakeSocket()

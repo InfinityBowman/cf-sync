@@ -262,19 +262,28 @@ carries the caller's original args — the server's parse is authoritative).
 Shared-mutator isomorphism for optimistic application is the Replicache/Zero model
 and stays open as a future step on the same registry.
 
+Version, schema, mutators, and the migration chain (§9) travel together as one
+`defineApp({ version, schema, mutators, migrations })` value — the single object
+passed to both `createWorkspaceDO` and `SyncClient`. This makes "client and server
+disagree about the shape or the mutator set" unrepresentable, and puts the version
+bump and its migration step in the same literal so forgetting one is a startup
+error in both bundles (the chain must end at `version`), not silent skew.
+
 ### 6a. Schema and shape authority
 
 `defineSchema` declares every synced table's row schema (standard schema, zod in
-practice) and is passed to both `createWorkspaceDO` and `SyncClient`. The engine
-enforces it at the only place rows enter storage — `tx.put`, shared by mutators,
-`migrateSchema`, and admin import:
+practice) and reaches both `createWorkspaceDO` and `SyncClient` inside the shared
+`defineApp` value. The engine enforces it at the only place rows enter storage —
+`tx.put`, shared by mutators, schema migrations, and admin import:
 
 - `put` to a table not in the schema, or with a payload that fails its schema, is a
   permanent `InvalidArgs` app error (LMID still advances, §6 invariant 2). What gets
   stored is the *parsed output* — schema defaults are applied server-side.
-- `get`/`list`/`del` stay schema-loose at runtime so `migrateSchema` can read and
+- `get`/`list`/`del` stay schema-loose at runtime so schema migrations can read and
   clean up tables that left the schema; reads return raw stored JSON (during a
-  migration that is the previous version's shape).
+  migration that is whatever shape the previous version — or previous chain step —
+  left). Migration replays defer `put` validation to commit: the chain's *net
+  result* must parse, intermediate shapes are transient (§9).
 - Validation must be synchronous (mutations commit inside `transactionSync`); a
   validator returning a Promise is rejected as a permanent error.
 
@@ -413,20 +422,28 @@ settled:
 - **App-schema rollout (drilled, M3):** exact-match policy — the server rejects any
   other `schemaVersion` at hello with `VersionNotSupported`; the client goes fatal
   and the app reloads into the new bundle, whose `SyncStore` cache is discarded on
-  the version mismatch (§7.1) and re-bootstraps. Server-side data rewrites go
-  through the `migrateSchema` config hook: it runs once per workspace on the first
-  wake under the new version, before any traffic; rewrites commit atomically with
-  the version restamp at a single new data version; `min_cursor_version` advances
-  to it so no pre-migration cursor can catch up; `backendId` is untouched (same
-  history — no outbox renumbering); per-client LMIDs survive, so mutations queued
-  in old-bundle tabs still dedupe correctly after their tab upgrades. A migration
-  with no row changes (additive) just restamps and leaves cursors valid. A throwing
-  hook aborts DO initialization — old-shaped data is never served under the new
-  version — and retries on the next wake; guard on `from` if rollback deploys are
-  possible. The log records `$schema.migrate` under client `$system` for the audit
-  trail. Deploy order: worker before (or atomically with) web assets, so no client
-  ever speaks a schema the server hasn't reached. The full chain is enforced by
-  `schema-rollout.test.ts` and was exercised live (demo-1 → demo-2, 2026-07).
+  the version mismatch (§7.1) and re-bootstraps. Server-side data rewrites are
+  declared as the app's **migration chain** (`defineApp`'s
+  `migrations: [{ from, to, migrate? }, …]`): an append-only version history,
+  validated at definition time (contiguous, acyclic, ending at `version`). On the
+  first wake under a new version, the DO replays every step from its stored
+  version, before any traffic — a workspace that slept through several deploys
+  replays multiple hops. All steps run against one write buffer (later steps read
+  earlier steps' writes); the net result is validated against the *current* schema
+  at commit, so shipped steps are never edited when a later version reshapes the
+  same table. Everything commits atomically at a single new data version with the
+  version restamp; `min_cursor_version` advances to it so no pre-migration cursor
+  can catch up; `backendId` is untouched (same history — no outbox renumbering);
+  per-client LMIDs survive, so mutations queued in old-bundle tabs still dedupe
+  correctly after their tab upgrades. A replay of migrate-less steps (additive
+  changes) just restamps and leaves cursors valid. A throwing step — or a stored
+  version outside the declared chain, e.g. a rollback deploy — aborts DO
+  initialization: old-shaped data is never served under the new version, and the
+  next wake retries. The log records one `$schema.migrate` entry under client
+  `$system` spanning the whole jump. Deploy order: worker before (or atomically
+  with) web assets, so no client ever speaks a schema the server hasn't reached.
+  The full chain is enforced by `schema-rollout.test.ts` and was exercised live
+  (demo-1 → demo-2, 2026-07).
 
 ## 10. Permissions (v1 scope)
 

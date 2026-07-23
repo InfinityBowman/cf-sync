@@ -1,7 +1,7 @@
 import type { Cursor } from '@cf-sync/protocol'
 import { describe, expect, it } from 'vitest'
 import { SyncClient } from '../src/client'
-import { testSchema } from './test-schema'
+import { testApp } from './test-schema'
 import { FakeSocket } from './fake-socket'
 
 const SCHEMA = 'test-1'
@@ -34,8 +34,7 @@ function makeClient(overrides: Partial<ConstructorParameters<typeof SyncClient>[
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: CLIENT_ID,
-    schemaVersion: SCHEMA,
-    schema: testSchema,
+    app: testApp,
     createSocket: () => {
       const socket = new FakeSocket()
       sockets.push(socket)

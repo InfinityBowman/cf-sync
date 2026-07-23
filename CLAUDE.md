@@ -5,7 +5,7 @@ changing protocol, storage schema, or sync semantics — it records the locked d
 and the invariants the tests enforce.
 
 Layout:
-- `packages/protocol` — wire types, zod schemas, frame chunking, and the shared app-definition kit (`defineSchema`, `defineMutators`, `crudMutators`, `AppError`) — the one package importable from both worker and browser. No runtime deps besides zod.
+- `packages/protocol` — wire types, zod schemas, frame chunking, and the shared app-definition kit (`defineApp`, `defineSchema`, `defineMutators`, `crudMutators`, `AppError`) — the one package importable from both worker and browser. No runtime deps besides zod. `defineApp` bundles version + schema + mutators + the migration chain into the one object both `createWorkspaceDO` and `SyncClient` take.
 - `packages/server` — `createWorkspaceDO` (the Workspace Durable Object) + `createSyncFetch` (worker router). Tests run in workerd via `@cloudflare/vitest-pool-workers`.
 - `packages/client` — `SyncClient` (socket, outbox, poke application) + `workspaceCollectionOptions` (TanStack DB collection adapter).
 - `apps/demo` — todo demo; `pnpm dev:worker` (wrangler) + `pnpm dev:web` (vite) in two terminals.
