@@ -17,9 +17,15 @@ architecture, locked decisions, and invariants.
 
 ```sh
 pnpm install
-pnpm test          # protocol + client (node) and server contract/convergence tests (workerd)
+pnpm test            # protocol + client (node) and server contract/convergence tests (workerd)
 pnpm typecheck
+pnpm build           # bundle each package to dist/ (tsdown: ESM + .d.ts)
+pnpm check:packages  # build, pack as publishing would, gate with publint + arethetypeswrong
 ```
+
+Packages are ESM-only. In the monorepo, `exports` point at TypeScript source
+(vite/wrangler/vitest consume it directly); `publishConfig` swaps them to
+`dist/` at pack time, and CI verifies the packed artifacts.
 
 Run the demo (two terminals):
 

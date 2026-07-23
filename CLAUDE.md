@@ -11,6 +11,8 @@ Layout:
 - `apps/demo` — todo demo; `pnpm dev:worker` (wrangler) + `pnpm dev:web` (vite) in two terminals.
 - `reference/` — shallow clones of prior art (gitignored). Cited by file:line in DESIGN.md.
 
+Packaging: ESM-only; `exports` point at `src/*.ts` for monorepo dev, `publishConfig.exports` swaps to `dist/` on `pnpm pack`/publish (built by tsdown). `pnpm check:packages` (also CI) packs each package and gates on publint + arethetypeswrong — run it after touching any package.json or public type surface. zod and @tanstack/db are peer dependencies, never regular ones.
+
 Invariants that must never break (see DESIGN.md §6):
 1. A mutation's data effects and the client's `last_mutation_id` advance commit in the same SQLite transaction.
 2. Permanent app errors still advance `last_mutation_id`.

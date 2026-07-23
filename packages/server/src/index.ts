@@ -3,6 +3,7 @@ export {
   WORKSPACE_HEADER,
   type CompactionConfig,
   type ExportConfig,
+  type WorkspaceDOClass,
   type WorkspaceEngineConfig,
 } from './do'
 export {

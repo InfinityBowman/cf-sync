@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      # protocol + client run in node; server contract tests run in workerd
+      # via @cloudflare/vitest-pool-workers.
+      - run: pnpm test
+      # Build each package (tsdown: ESM + .d.ts), pack it the way publishing
+      # would, and gate on publint + arethetypeswrong.
+      - run: pnpm check:packages

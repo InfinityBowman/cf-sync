@@ -171,7 +171,20 @@ class SqlRowStore implements EngineRowStore {
   }
 }
 
-export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config: WorkspaceEngineConfig<S, Env>) {
+/**
+ * What `createWorkspaceDO` returns: a Durable Object class to export from the
+ * worker entry (named per the wrangler binding). Deliberately opaque — the
+ * engine's surface is the sync protocol and the admin routes, not methods on
+ * the instance.
+ */
+export type WorkspaceDOClass<Env = unknown> = new (
+  ctx: DurableObjectState,
+  env: Env,
+) => DurableObject<Env>
+
+export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
+  config: WorkspaceEngineConfig<S, Env>,
+): WorkspaceDOClass<Env> {
   const maintenanceIntervalMs = Math.min(
     config.compaction?.intervalMs ?? DEFAULT_COMPACTION_INTERVAL_MS,
     config.export ? (config.export.intervalMs ?? DEFAULT_EXPORT_INTERVAL_MS) : Number.POSITIVE_INFINITY,
