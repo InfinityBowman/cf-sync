@@ -345,7 +345,18 @@ settled:
   (`serializeAttachment`): `{clientId, workspaceId, schemaVersion}`. Nothing about a
   connection is held only in DO memory, so hibernation eviction is free.
 - **`ctx.setWebSocketAutoResponse(ping, pong)`** so keepalives never wake the DO
-  (tldraw `TldrawDurableObject.ts:44`).
+  (tldraw `TldrawDurableObject.ts:44`). The ping/pong strings are the shared
+  `KEEPALIVE_PING`/`KEEPALIVE_PONG` constants in the protocol package.
+- **The client heartbeats** (added after live testing, 2026-07): `SyncClient` sends
+  `KEEPALIVE_PING` every 25s and force-reconnects if no frame of any kind arrives
+  within 55s. Live-observed rationale: idle edge connections die unpredictably
+  (one run lost a socket at ~75s idle, another survived 130s), and a half-open
+  socket emits no close event — sends just vanish. The missed-deadline check is
+  the only reliable dead-socket signal; recovery is the ordinary reconnect +
+  cursor catch-up. Configurable via `pingIntervalMs` (0 disables) and
+  `idleTimeoutMs`. A synchronously-throwing `WebSocket` constructor (malformed
+  URL, CSP) is likewise treated as an instant disconnect so the backoff loop
+  never dies.
 - **Once-only `onStart` under `blockConcurrencyWhile`** re-runs schema migrations and
   loads `meta` on wake (partyserver `#ensureInitialized`, `index.ts:875`).
 - **Reciprocate close frames** (except reserved codes 1005/1006/1015) or clients

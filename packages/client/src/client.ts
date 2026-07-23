@@ -1,4 +1,5 @@
 import {
+  KEEPALIVE_PING,
   PROTOCOL_VERSION,
   cursorEquals,
   serverMsgSchema,
@@ -66,6 +67,19 @@ export interface SyncClientOptions {
   /** Reject unconfirmed mutations after this long; TanStack DB then rolls back. */
   confirmTimeoutMs?: number
   maxBackoffMs?: number
+  /**
+   * Keepalive ping cadence. Pings keep idle edge connections alive (the
+   * server's auto-response answers without waking the DO) and give the
+   * heartbeat a liveness signal. 0 disables the heartbeat entirely.
+   * Default: 25s.
+   */
+  pingIntervalMs?: number
+  /**
+   * Force a reconnect when no frame of any kind has arrived for this long —
+   * the only way to detect a half-open socket, which never emits a close
+   * event. Default: 2×pingInterval + 5s.
+   */
+  idleTimeoutMs?: number
   onStatusChange?: (status: SyncStatus) => void
   onFatal?: (error: Error) => void
   /** Progress during large pokes (bootstrap): ops received so far vs. still to come. */
@@ -112,6 +126,8 @@ export class SyncClient {
   #flushScheduled = false
   #persistScheduled = false
   #hydrating = false
+  #heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  #lastFrameAt = 0
 
   constructor(opts: SyncClientOptions) {
     this.#opts = opts
@@ -163,6 +179,7 @@ export class SyncClient {
     this.#stopped = true
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer)
     if (this.#retryPushTimer) clearTimeout(this.#retryPushTimer)
+    this.#stopHeartbeat()
     const socket = this.#socket
     this.#socket = null
     try {
@@ -276,16 +293,33 @@ export class SyncClient {
   #connect(): void {
     if (this.#stopped) return
     const createSocket = this.#opts.createSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike)
-    const socket = createSocket(this.#opts.url)
+    let socket: WebSocketLike
+    try {
+      socket = createSocket(this.#opts.url)
+    } catch (err) {
+      // Browsers throw synchronously from `new WebSocket` for malformed URLs
+      // and some CSP blocks. Treat it as an instant disconnect — an uncaught
+      // throw here (especially from the reconnect timer) would kill the
+      // reconnect loop permanently.
+      console.warn('[cf-sync] failed to create socket; retrying', err)
+      this.#socket = null
+      this.#scheduleReconnect()
+      return
+    }
     this.#socket = socket
     this.#syncedThisConnection = false
     socket.addEventListener('open', () => {
       if (socket !== this.#socket) return
+      this.#lastFrameAt = Date.now()
+      this.#startHeartbeat()
       this.#setStatus('syncing')
       this.#sendHello()
     })
     socket.addEventListener('message', (event: { data: unknown }) => {
       if (socket !== this.#socket) return
+      // Any frame counts as liveness — including pongs and frames the
+      // message schema does not recognize.
+      this.#lastFrameAt = Date.now()
       this.#onMessage(String(event.data))
     })
     socket.addEventListener('close', () => {
@@ -301,12 +335,65 @@ export class SyncClient {
     this.#socket = null
     this.#poke = null
     this.#awaitingCatchUp = false
+    this.#stopHeartbeat()
+    this.#scheduleReconnect()
+  }
+
+  #scheduleReconnect(): void {
     if (this.#stopped || this.#status === 'fatal') return
     this.#setStatus('reconnecting')
     const cap = this.#opts.maxBackoffMs ?? 30_000
     const delay = Math.min(cap, 500 * 2 ** this.#attempt) * (0.5 + Math.random() * 0.5)
     this.#attempt++
     this.#reconnectTimer = setTimeout(() => this.#connect(), delay)
+  }
+
+  // -------------------------------------------------------------------------
+  // heartbeat
+  // -------------------------------------------------------------------------
+
+  /**
+   * Idle edge connections die unpredictably (NAT/edge timeouts, observed
+   * live anywhere from ~75s to >130s), and a half-open socket never emits a
+   * close event — send() just vanishes. Pings keep the path warm (the server
+   * runtime answers them without waking the DO), and a missed idle deadline
+   * is the only reliable dead-socket signal: declare it dead locally and
+   * run the normal reconnect + cursor catch-up.
+   */
+  #startHeartbeat(): void {
+    this.#stopHeartbeat()
+    const interval = this.#opts.pingIntervalMs ?? 25_000
+    if (interval <= 0) return
+    const deadline = this.#opts.idleTimeoutMs ?? interval * 2 + 5_000
+    this.#heartbeatTimer = setInterval(() => {
+      const socket = this.#socket
+      if (!socket) return
+      if (Date.now() - this.#lastFrameAt > deadline) {
+        this.#socket = null // ignore any late events from the dead socket
+        try {
+          socket.close(4408, 'heartbeat timeout')
+        } catch {
+          // already dead — that's the point
+        }
+        this.#poke = null
+        this.#awaitingCatchUp = false
+        this.#stopHeartbeat()
+        this.#scheduleReconnect()
+        return
+      }
+      try {
+        socket.send(KEEPALIVE_PING)
+      } catch {
+        // send failure surfaces via the close event or the next deadline check
+      }
+    }, interval)
+  }
+
+  #stopHeartbeat(): void {
+    if (this.#heartbeatTimer) {
+      clearInterval(this.#heartbeatTimer)
+      this.#heartbeatTimer = null
+    }
   }
 
   #sendHello(): void {
@@ -623,6 +710,7 @@ export class SyncClient {
 
   #fatal(error: Error): void {
     this.#setStatus('fatal')
+    this.#stopHeartbeat()
     // markReady so any pending collection.preload() settles instead of hanging.
     for (const hooks of this.#tables.values()) hooks.markReady()
     for (const entry of [...this.#outbox]) this.#settleEntry(entry, error)
