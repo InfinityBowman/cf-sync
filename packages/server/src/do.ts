@@ -1,26 +1,34 @@
 import {
+  AppError,
   KEEPALIVE_PING,
   KEEPALIVE_PONG,
+  MAX_ID_LENGTH,
   MAX_PART_PATCH_BYTES,
   MAX_ROW_BYTES,
   PROTOCOL_VERSION,
+  TABLE_NAME_RE,
   chunkBySize,
   clientMsgSchema,
+  formatIssues,
   jsonByteSize,
+  type AnySyncSchema,
   type Cursor,
   type ErrorCode,
   type HelloMsg,
   type Mutation,
   type MutationResult,
+  type MutatorContext,
+  type MutatorTx,
+  type MutatorsFor,
   type PatchOp,
   type PokeEndMsg,
   type PokePartMsg,
   type PokeStartMsg,
   type PushMsg,
+  type StandardSchemaV1,
 } from '@cf-sync/protocol'
 import { DurableObject } from 'cloudflare:workers'
 import { z } from 'zod'
-import { AppError, type Mutator, type MutatorContext, type MutatorTx } from './mutators'
 import { loadOrInitMeta, migrate, type Meta } from './storage'
 
 /** Set by the worker routers so the DO can learn its own workspace id. */
@@ -49,9 +57,17 @@ export interface ExportConfig {
   prefix?: string
 }
 
-export interface WorkspaceEngineConfig {
+export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema> {
   schemaVersion: string
-  mutators: Record<string, Mutator>
+  /**
+   * The synced tables and their row schemas (`defineSchema`). Every `tx.put`
+   * — from mutators, schema migrations, and admin imports — is validated
+   * against the target table's schema; the validated output (defaults
+   * applied, unknown keys per the schema's policy) is what gets stored.
+   */
+  schema: S
+  /** The mutator registry (`defineMutators`); args are validated before `apply` runs. */
+  mutators: MutatorsFor<S>
   compaction?: CompactionConfig
   /** Stream the mutation log to R2 for archive/analytics (DESIGN.md D3). */
   export?: ExportConfig
@@ -65,6 +81,10 @@ export interface WorkspaceEngineConfig {
    * no data rewrite. Throwing aborts initialization: the DO keeps serving
    * nothing rather than serving old-shaped data as the new version, and the
    * next wake retries (guard `from` if a rollback deploy is a possibility).
+   *
+   * The tx is deliberately loosely typed: rows read during a migration have
+   * the *previous* schema's shape, and tables removed from the schema can
+   * still be listed and deleted. Writes are validated against the new schema.
    */
   migrateSchema?: (tx: MutatorTx, versions: { from: string; to: string }) => void
 }
@@ -99,13 +119,33 @@ const PONG = KEEPALIVE_PONG
 /** Close codes with no peer to reciprocate to (RFC 6455 reserved). */
 const RESERVED_CLOSE_CODES = new Set([1005, 1006, 1015])
 
-const TBL_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
-const MAX_ID_LENGTH = 256
-
 interface RowWrite {
   tbl: string
   id: string
   data: Record<string, unknown>
+}
+
+/**
+ * Validates a row payload against its table's schema and returns the parsed
+ * output (defaults applied). Only `put` is schema-strict — reads and deletes
+ * stay loose so migrations can touch tables that left the schema.
+ */
+function validateRow(schema: AnySyncSchema, tbl: string, id: string, data: Record<string, unknown>): Record<string, unknown> {
+  const tableSchema = (schema.tables as Record<string, StandardSchemaV1<unknown, Record<string, unknown>>>)[tbl]
+  if (!tableSchema) {
+    throw new AppError('InvalidArgs', `table "${tbl}" is not defined in the schema`)
+  }
+  const result = tableSchema['~standard'].validate(data)
+  if (result instanceof Promise) {
+    // Mutations apply inside a synchronous SQLite transaction; an async
+    // validator can never succeed here, so fail permanently and loudly.
+    void result.catch(() => {})
+    throw new AppError('InvalidArgs', `table "${tbl}": async validation is not supported`)
+  }
+  if (result.issues) {
+    throw new AppError('InvalidArgs', `invalid row ${tbl}/${id}: ${formatIssues(result.issues)}`)
+  }
+  return result.value
 }
 
 /**
@@ -116,7 +156,10 @@ class WriteSet {
   #puts = new Map<string, RowWrite>()
   #dels = new Map<string, { tbl: string; id: string }>()
 
-  constructor(private readonly sql: SqlStorage) {}
+  constructor(
+    private readonly sql: SqlStorage,
+    private readonly schema: AnySyncSchema,
+  ) {}
 
   readonly tx: MutatorTx = {
     get: (tbl, id) => {
@@ -132,7 +175,7 @@ class WriteSet {
       return row ? (JSON.parse(row.data) as Record<string, unknown>) : null
     },
     list: (tbl) => {
-      if (!TBL_RE.test(tbl)) throw new AppError('InvalidArgs', `invalid table name "${tbl}"`)
+      if (!TABLE_NAME_RE.test(tbl)) throw new AppError('InvalidArgs', `invalid table name "${tbl}"`)
       const merged = new Map<string, Record<string, unknown>>()
       for (const row of this.sql.exec<{ id: string; data: string }>(
         `SELECT id, data FROM rows WHERE tbl = ? AND deleted = 0`,
@@ -146,13 +189,14 @@ class WriteSet {
     },
     put: (tbl, id, data) => {
       validateTarget(tbl, id)
-      const bytes = jsonByteSize(data)
+      const parsed = validateRow(this.schema, tbl, id, data)
+      const bytes = jsonByteSize(parsed)
       if (bytes > MAX_ROW_BYTES) {
         throw new AppError('RowTooLarge', `row ${tbl}/${id} is ${bytes} bytes (max ${MAX_ROW_BYTES})`)
       }
       const k = rowKey(tbl, id)
       this.#dels.delete(k)
-      this.#puts.set(k, { tbl, id, data: structuredClone(data) })
+      this.#puts.set(k, { tbl, id, data: structuredClone(parsed) })
     },
     del: (tbl, id) => {
       validateTarget(tbl, id)
@@ -196,13 +240,13 @@ function rowKey(tbl: string, id: string): string {
 }
 
 function validateTarget(tbl: string, id: string): void {
-  if (!TBL_RE.test(tbl)) throw new AppError('InvalidArgs', `invalid table name "${tbl}"`)
+  if (!TABLE_NAME_RE.test(tbl)) throw new AppError('InvalidArgs', `invalid table name "${tbl}"`)
   if (id.length === 0 || id.length > MAX_ID_LENGTH || id.includes('\u0000')) {
     throw new AppError('InvalidArgs', `invalid row id for table "${tbl}"`)
   }
 }
 
-export function createWorkspaceDO(config: WorkspaceEngineConfig) {
+export function createWorkspaceDO<S extends AnySyncSchema>(config: WorkspaceEngineConfig<S>) {
   const maintenanceIntervalMs = Math.min(
     config.compaction?.intervalMs ?? DEFAULT_COMPACTION_INTERVAL_MS,
     config.export ? (config.export.intervalMs ?? DEFAULT_EXPORT_INTERVAL_MS) : Number.POSITIVE_INFINITY,
@@ -253,7 +297,7 @@ export function createWorkspaceDO(config: WorkspaceEngineConfig) {
       let migratedVersion: number | null = null
       this.ctx.storage.transactionSync(() => {
         if (config.migrateSchema) {
-          const writes = new WriteSet(this.#sql)
+          const writes = new WriteSet(this.#sql, config.schema)
           config.migrateSchema(writes.tx, { from, to })
           const candidate = this.#meta.currentVersion + 1
           if (writes.flush(candidate) > 0) {
@@ -498,13 +542,24 @@ export function createWorkspaceDO(config: WorkspaceEngineConfig) {
               400,
             )
           }
+          // Imported rows go through the same schema validation as mutator
+          // writes; what lands in storage is the parsed output.
+          const importRows: Array<{ tbl: string; id: string; data: Record<string, unknown> }> = []
           for (const row of snapshot.rows) {
-            if (!TBL_RE.test(row.tbl) || row.id.length > MAX_ID_LENGTH) {
+            if (!TABLE_NAME_RE.test(row.tbl) || row.id.length > MAX_ID_LENGTH) {
               return json({ error: `invalid row target ${row.tbl}/${row.id}` }, 400)
             }
-            if (jsonByteSize(row.data) > MAX_ROW_BYTES) {
+            let data: Record<string, unknown>
+            try {
+              data = validateRow(config.schema, row.tbl, row.id, row.data)
+            } catch (err) {
+              if (err instanceof AppError) return json({ error: err.message }, 400)
+              throw err
+            }
+            if (jsonByteSize(data) > MAX_ROW_BYTES) {
               return json({ error: `row ${row.tbl}/${row.id} exceeds ${MAX_ROW_BYTES} bytes` }, 400)
             }
+            importRows.push({ tbl: row.tbl, id: row.id, data })
           }
           // Full state replace at a single new version. Every existing cursor
           // is invalidated (min_cursor_version = new version): live clients
@@ -512,7 +567,7 @@ export function createWorkspaceDO(config: WorkspaceEngineConfig) {
           const version = this.#meta.currentVersion + 1
           this.ctx.storage.transactionSync(() => {
             this.#sql.exec(`DELETE FROM rows`)
-            for (const row of snapshot.rows) {
+            for (const row of importRows) {
               this.#sql.exec(
                 `INSERT INTO rows (tbl, id, data, version, deleted) VALUES (?, ?, ?, ?, 0)`,
                 row.tbl,
@@ -690,9 +745,24 @@ export function createWorkspaceDO(config: WorkspaceEngineConfig) {
           // hello, so this is a registry bug, and retrying can never succeed.
           appError = { code: 'UnknownMutator', message: `no mutator named "${mutation.name}"` }
         } else {
-          const writes = new WriteSet(this.#sql)
+          const writes = new WriteSet(this.#sql, config.schema)
           try {
-            mutator(writes.tx, mutation.args, ctx)
+            // Args are validated (and parsed: defaults applied) before apply
+            // runs; invalid args are permanent — retrying identical args can
+            // never succeed.
+            let args: unknown = mutation.args
+            if (mutator.args) {
+              const result = mutator.args['~standard'].validate(args)
+              if (result instanceof Promise) {
+                void result.catch(() => {})
+                throw new AppError('InvalidArgs', `mutator "${mutation.name}": async args validation is not supported`)
+              }
+              if (result.issues) {
+                throw new AppError('InvalidArgs', `invalid args for "${mutation.name}": ${formatIssues(result.issues)}`)
+              }
+              args = result.value
+            }
+            mutator.apply(writes.tx, args, ctx)
             const candidate = this.#meta.currentVersion + 1
             if (writes.flush(candidate) > 0) wroteVersion = candidate
           } catch (err) {

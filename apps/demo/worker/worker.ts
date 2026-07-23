@@ -1,5 +1,5 @@
-import { createAdminFetch, createSyncFetch, createWorkspaceDO, crudMutators } from '@cf-sync/server'
-import { SCHEMA_VERSION } from '../src/schema'
+import { createAdminFetch, createSyncFetch, createWorkspaceDO } from '@cf-sync/server'
+import { SCHEMA_VERSION, mutators, schema } from '../src/schema'
 
 interface Env {
   WORKSPACE: DurableObjectNamespace
@@ -10,16 +10,8 @@ interface Env {
 
 export const WorkspaceDO = createWorkspaceDO({
   schemaVersion: SCHEMA_VERSION,
-  mutators: {
-    ...crudMutators,
-    // An intent-based mutator: the server scans authoritatively, so two
-    // clients clicking "clear completed" concurrently can't resurrect rows.
-    'todos.clearCompleted': (tx) => {
-      for (const { id, data } of tx.list('todos')) {
-        if (data.completed === true) tx.del('todos', id)
-      }
-    },
-  },
+  schema,
+  mutators,
   export: {
     bucket: (env) => (env as Env).EXPORT_BUCKET,
   },

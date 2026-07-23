@@ -1,7 +1,7 @@
 import { IndexedDBSyncStore, SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
 import { createCollection } from '@tanstack/react-db'
 import { ulid } from 'ulidx'
-import { SCHEMA_VERSION, type Todo } from './schema'
+import { SCHEMA_VERSION, mutators, schema } from './schema'
 
 // Dev runs vite (:5173) and wrangler (:8787) separately; the deployed build
 // is served by the worker itself, so the sync socket is same-origin.
@@ -21,6 +21,10 @@ export const syncClient = new SyncClient({
   url: `${WORKER_URL}/sync/${encodeURIComponent(workspaceId)}?clientId=${clientId}`,
   clientId,
   schemaVersion: SCHEMA_VERSION,
+  // The shared schema + mutators: typed mutate calls with local fail-fast
+  // validation, and collections that infer their row types.
+  schema,
+  mutators,
   // Durable local mirror: reloads hydrate instantly from IndexedDB and
   // resume by cursor; mutations made offline replay on reconnect.
   store: new IndexedDBSyncStore({ workspaceId, clientId }),
@@ -31,10 +35,10 @@ export const syncClient = new SyncClient({
 })
 
 export const todos = createCollection(
-  workspaceCollectionOptions<Todo>({
+  // Row type and key come from the schema; no generics, no getKey.
+  workspaceCollectionOptions({
     client: syncClient,
     table: 'todos',
-    getKey: (todo) => todo.id,
     startSync: true,
   }),
 )

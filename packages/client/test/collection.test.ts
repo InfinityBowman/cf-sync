@@ -1,14 +1,25 @@
 import { createCollection } from '@tanstack/db'
-import { describe, expect, it } from 'vitest'
-import { SyncClient } from '../src/client'
+import { describe, expect, expectTypeOf, it } from 'vitest'
+import { z } from 'zod'
+import { MutationError, SyncClient } from '../src/client'
 import { workspaceCollectionOptions } from '../src/collection'
+import { crudMutators, defineMutators, defineSchema } from '../src/index'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
-interface Todo extends Record<string, unknown> {
-  id: string
-  title: string
-  completed: boolean
-}
+const schema = defineSchema({
+  todos: z.object({
+    id: z.string(),
+    title: z.string(),
+    completed: z.boolean(),
+  }),
+})
+
+const mutators = defineMutators(schema, {
+  ...crudMutators(schema),
+  'todos.clearCompleted': { apply: () => {} },
+})
+
+type Todo = { id: string; title: string; completed: boolean }
 
 const CLIENT_ID = 'client-a'
 
@@ -18,17 +29,19 @@ function setup() {
     url: 'ws://test/sync/w1?clientId=' + CLIENT_ID,
     clientId: CLIENT_ID,
     schemaVersion: 'test-1',
+    schema,
+    mutators,
     createSocket: () => {
       const socket = new FakeSocket()
       sockets.push(socket)
       return socket
     },
   })
+  // Row type, key function, and runtime validation all derive from the schema.
   const todos = createCollection(
-    workspaceCollectionOptions<Todo>({
+    workspaceCollectionOptions({
       client,
       table: 'todos',
-      getKey: (t) => t.id,
       startSync: true,
     }),
   )
@@ -131,5 +144,35 @@ describe('workspaceCollectionOptions + TanStack DB', () => {
     expect(todos.get('t1')).toMatchObject({ title: 'renamed', completed: true })
     expect(todos.get('t3')).toMatchObject({ title: 'new' })
     expect(todos.size).toBe(2)
+  })
+
+  it('infers the collection row type from the schema', () => {
+    const { todos } = setup()
+    expectTypeOf(todos.get('t1')?.title).toEqualTypeOf<string | undefined>()
+    expectTypeOf(todos.get('t1')?.completed).toEqualTypeOf<boolean | undefined>()
+    // @ts-expect-error properties outside the schema are compile errors
+    void todos.get('t1')?.nope
+  })
+})
+
+describe('typed mutate', () => {
+  it('types names/args from the registry and validates args before queueing', async () => {
+    const { client } = setup()
+    // no-args mutator: callable with no second argument
+    void client.mutate('todos.clearCompleted').catch(() => {})
+    // @ts-expect-error unknown mutator names are compile errors
+    void client.mutate('todos.claerCompleted').catch(() => {})
+
+    // bad args fail fast with InvalidArgs — no server round-trip, nothing queued
+    await expect(
+      client.mutate('sync.del', { tbl: 'todos' } as never),
+    ).rejects.toSatisfy((e) => e instanceof MutationError && e.code === 'InvalidArgs')
+  })
+
+  it('rejects mutators missing from the registry immediately', async () => {
+    const { client } = setup()
+    await expect(
+      (client as SyncClient).mutate('no.such.mutator', {}),
+    ).rejects.toSatisfy((e) => e instanceof MutationError && e.code === 'UnknownMutator')
   })
 })

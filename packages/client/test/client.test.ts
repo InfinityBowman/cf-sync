@@ -1,6 +1,7 @@
 import type { Cursor, PatchOp } from '@cf-sync/protocol'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { MutationError, SyncClient, type TableWriteOp } from '../src/client'
+import { testSchema } from './test-schema'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
 const SCHEMA = 'test-1'
@@ -49,6 +50,7 @@ function makeClient(overrides: Partial<ConstructorParameters<typeof SyncClient>[
     url: 'ws://test/sync/w1?clientId=' + CLIENT_ID,
     clientId: CLIENT_ID,
     schemaVersion: SCHEMA,
+    schema: testSchema,
     createSocket: () => {
       const socket = new FakeSocket()
       sockets.push(socket)

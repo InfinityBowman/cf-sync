@@ -38,6 +38,22 @@ describe('admin authorization', () => {
   })
 })
 
+describe('import validation', () => {
+  it('rejects snapshots whose rows fail the schema', async () => {
+    const workspace = `import-invalid-${Date.now()}`
+    const res = await admin(workspace, 'import', {
+      method: 'POST',
+      body: {
+        formatVersion: 1,
+        schemaVersion: 'test-1',
+        rows: [{ tbl: 'typed', id: 'x', data: { n: 'not-a-number' } }],
+      },
+    })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toMatch(/invalid row typed\/x/)
+  })
+})
+
 describe('stats', () => {
   it('reports gauges and counters', async () => {
     const workspace = `stats-${Date.now()}`

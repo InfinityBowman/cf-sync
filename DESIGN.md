@@ -252,9 +252,36 @@ Two invariants carry the whole design:
 2. **Permanent errors advance the LMID.** Only transient errors (storage failure)
    abort without advancing, which the client treats as "server offline, retry".
 
-Mutators are plain TypeScript functions `(tx, args, ctx) => void | AppError` registered
-in a versioned map. The same map (minus authority checks) runs on the client for
-optimistic application — shared-mutator isomorphism is the Replicache/Zero model.
+Mutators are `{ args?, apply }` definitions registered via `defineMutators(schema, …)`
+in `@cf-sync/protocol` (the only package importable from both worker and browser):
+`args` is a standard schema (zod in practice) the engine validates *before* `apply`
+runs, and `apply(tx, args, ctx)` is a plain synchronous function. The registry is
+shared: the server runs `apply` authoritatively; the client uses the same object for
+typed `mutate(name, args)` calls and local fail-fast args validation (the wire always
+carries the caller's original args — the server's parse is authoritative).
+Shared-mutator isomorphism for optimistic application is the Replicache/Zero model
+and stays open as a future step on the same registry.
+
+### 6a. Schema and shape authority
+
+`defineSchema` declares every synced table's row schema (standard schema, zod in
+practice) and is passed to both `createWorkspaceDO` and `SyncClient`. The engine
+enforces it at the only place rows enter storage — `tx.put`, shared by mutators,
+`migrateSchema`, and admin import:
+
+- `put` to a table not in the schema, or with a payload that fails its schema, is a
+  permanent `InvalidArgs` app error (LMID still advances, §6 invariant 2). What gets
+  stored is the *parsed output* — schema defaults are applied server-side.
+- `get`/`list`/`del` stay schema-loose at runtime so `migrateSchema` can read and
+  clean up tables that left the schema; reads return raw stored JSON (during a
+  migration that is the previous version's shape).
+- Validation must be synchronous (mutations commit inside `transactionSync`); a
+  validator returning a Promise is rejected as a permanent error.
+
+Type-side, the same schema gives mutators a typed `tx`, collections their row types
+(input type for inserts — defaults omissible — output type for reads), and
+`mutate` its per-mutator args types. The server was already the authority on
+conflicts and invariants; the schema makes it the authority on shape.
 
 ## 7. Client: TanStack DB adapter
 
@@ -268,6 +295,11 @@ The adapter is a collection options creator implementing `SyncConfig.sync`
 | `pokePart` patch op `clear` | `truncate()` (preserves optimistic overlay via its snapshot mechanism, `sync.ts:214-248`) |
 | `pokeEnd` | `commit()`; the cursor is persisted by the client-level `SyncStore` (§7.1), not per-collection metadata — one workspace cursor spans every table |
 | first `pokeEnd` with `more: false` | `markReady()` — also called in the error path so `preload()` never hangs |
+
+The adapter derives everything per-table from the shared schema (§6a): the row type
+and TanStack's `schema` option (client-side validation of optimistic writes) come
+from `defineSchema`'s table entry, and `getKey` defaults to `row.id` when the row
+schema has a string `id`.
 
 **Mutation path (Pattern B — the adapter owns the handlers):** `onInsert/onUpdate/onDelete`
 enqueue named mutations into a per-client outbox with the next sequential id, send a

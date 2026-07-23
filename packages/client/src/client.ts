@@ -2,10 +2,14 @@ import {
   KEEPALIVE_PING,
   PROTOCOL_VERSION,
   cursorEquals,
+  formatIssues,
   serverMsgSchema,
+  type AnyMutators,
+  type AnySyncSchema,
   type ClientMsg,
   type Cursor,
   type ErrorMsg,
+  type MutationArgs,
   type MutationResult,
   type PatchOp,
   type PokeEndMsg,
@@ -45,7 +49,10 @@ export class MutationError extends Error {
   }
 }
 
-export interface SyncClientOptions {
+export interface SyncClientOptions<
+  S extends AnySyncSchema = AnySyncSchema,
+  M extends AnyMutators = AnyMutators,
+> {
   /** Full websocket URL: ws(s)://host/sync/<workspaceId>?clientId=<clientId> */
   url: string
   /**
@@ -55,6 +62,19 @@ export interface SyncClientOptions {
    */
   clientId: string
   schemaVersion: string
+  /**
+   * The shared table schema (`defineSchema`) — the same value the server is
+   * configured with. Collections created via `workspaceCollectionOptions`
+   * derive their row types and runtime validation from it.
+   */
+  schema: S
+  /**
+   * The shared mutator registry (`defineMutators`). When provided, `mutate`
+   * is typed by mutator name and validates args locally before queueing —
+   * bad calls fail immediately instead of surfacing as a server round-trip
+   * error. The server's validation remains authoritative.
+   */
+  mutators?: M
   /**
    * Durable storage for synced rows, the cursor, and the outbox. When set,
    * start() hydrates registered tables from the store (collections show
@@ -104,8 +124,8 @@ interface PokeBuffer {
   mutationResults: MutationResult[]
 }
 
-export class SyncClient {
-  readonly #opts: Required<Pick<SyncClientOptions, 'url' | 'clientId' | 'schemaVersion'>> & SyncClientOptions
+export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMutators = AnyMutators> {
+  readonly #opts: SyncClientOptions<S, M>
   readonly #tables = new Map<string, TableHooks>()
   readonly #warnedTables = new Set<string>()
 
@@ -129,7 +149,7 @@ export class SyncClient {
   #heartbeatTimer: ReturnType<typeof setInterval> | null = null
   #lastFrameAt = 0
 
-  constructor(opts: SyncClientOptions) {
+  constructor(opts: SyncClientOptions<S, M>) {
     this.#opts = opts
   }
 
@@ -139,6 +159,11 @@ export class SyncClient {
 
   get cursor(): Cursor | null {
     return this.#cursor
+  }
+
+  /** The table schema this client was constructed with (used by collections). */
+  get schema(): S {
+    return this.#opts.schema
   }
 
   /**
@@ -261,10 +286,36 @@ export class SyncClient {
    * client's LMID reaches the mutation's id), rejects on permanent app error
    * or timeout. Callers apply optimistic state before calling (TanStack DB
    * does this via its transaction lifecycle).
+   *
+   * When the client holds a mutator registry, the name and args are typed
+   * from it and args are validated locally before queueing (the wire still
+   * carries the original args — the server's parse is authoritative).
    */
-  mutate(name: string, args: unknown): Promise<void> {
+  mutate<K extends keyof M & string>(name: K, ...rest: MutationArgs<M[K]>): Promise<void> {
+    const args: unknown = rest[0]
     if (this.#status === 'fatal') {
       return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
+    }
+    const registry = this.#opts.mutators as AnyMutators | undefined
+    if (registry) {
+      const def = registry[name]
+      if (!def) {
+        return Promise.reject(
+          new MutationError('UnknownMutator', `no mutator named "${name}" in the registry passed to SyncClient`),
+        )
+      }
+      if (def.args) {
+        const result = def.args['~standard'].validate(args)
+        if (result instanceof Promise) {
+          // Async validators can't gate a synchronous queue; the server
+          // rejects them authoritatively.
+          void result.catch(() => {})
+        } else if (result.issues) {
+          return Promise.reject(
+            new MutationError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`),
+          )
+        }
+      }
     }
     const timeoutMs = this.#opts.confirmTimeoutMs ?? 30_000
     return new Promise<void>((resolve, reject) => {

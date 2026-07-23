@@ -234,6 +234,54 @@ describe('catch-up after disconnect', () => {
   })
 })
 
+describe('schema validation (shape authority)', () => {
+  it('rejects writes to tables not in the schema as a permanent error', async () => {
+    const c1 = await TestClient.connect(ws(), 'c1')
+    await c1.syncOnce()
+    c1.push([{ id: 1, name: 'sync.put', args: { tbl: 'nope', id: 'x', data: { a: 1 } } }])
+    const poke = await c1.nextPoke()
+    expect(poke.mutationResults[0]?.error?.code).toBe('InvalidArgs')
+    expect(poke.mutationResults[0]?.error?.message).toMatch(/not defined in the schema/)
+    expect(poke.lastMutationIdChanges).toEqual({ c1: 1 }) // permanent: LMID still advances
+    expect(c1.rows.size).toBe(0)
+    c1.close()
+  })
+
+  it('rejects rows that fail the table schema and reports the issue', async () => {
+    const c1 = await TestClient.connect(ws(), 'c1')
+    await c1.syncOnce()
+    c1.push([{ id: 1, name: 'sync.put', args: { tbl: 'typed', id: 'x', data: { n: 'not-a-number' } } }])
+    const poke = await c1.nextPoke()
+    expect(poke.mutationResults[0]?.error?.code).toBe('InvalidArgs')
+    expect(poke.mutationResults[0]?.error?.message).toMatch(/invalid row typed\/x/)
+    expect(c1.rows.size).toBe(0)
+    c1.close()
+  })
+
+  it('stores the parsed output: schema defaults are applied server-side', async () => {
+    const c1 = await TestClient.connect(ws(), 'c1')
+    await c1.syncOnce()
+    c1.push([{ id: 1, name: 'sync.put', args: { tbl: 'typed', id: 'x', data: { name: 'a' } } }])
+    await c1.pokeUntilLmid(1)
+    expect(c1.rows.get('typed/x')).toEqual({ name: 'a', n: 1 })
+    c1.close()
+  })
+
+  it('validates mutator args before apply and rejects bad args permanently', async () => {
+    const c1 = await TestClient.connect(ws(), 'c1')
+    await c1.syncOnce()
+    c1.push([
+      { id: 1, name: 'counter.increment', args: { id: 'a', by: 'lots' } },
+      { id: 2, name: 'counter.increment', args: { id: 'a', by: 2 } },
+    ])
+    await c1.pokeUntilLmid(2)
+    expect(c1.lmid).toBe(2)
+    // The invalid mutation had no effect; the valid one applied.
+    expect(c1.rows.get('counters/a')).toEqual({ value: 2 })
+    c1.close()
+  })
+})
+
 describe('large payloads', () => {
   it('bootstrap pokes are chunked under the frame budget', async () => {
     const workspace = ws()

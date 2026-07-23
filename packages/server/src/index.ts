@@ -12,4 +12,28 @@ export {
   type AdminOp,
   type SyncFetchOptions,
 } from './worker'
-export { AppError, crudMutators, type Mutator, type MutatorContext, type MutatorTx } from './mutators'
+// The schema/mutator definition kit lives in @cf-sync/protocol so app code
+// shared between worker and browser can import it without pulling in
+// cloudflare:workers; re-exported here for server-only code.
+export {
+  AppError,
+  crudMutators,
+  defineMutators,
+  defineSchema,
+  type AnyMutators,
+  type AnySyncSchema,
+  type CrudDelArgs,
+  type CrudMutators,
+  type CrudPutArgs,
+  type MutationArgs,
+  type MutatorContext,
+  type MutatorDef,
+  type MutatorTx,
+  type MutatorsFor,
+  type RowInputOf,
+  type RowOf,
+  type StandardSchemaV1,
+  type SyncSchema,
+  type TableName,
+  type TableSchema,
+} from '@cf-sync/protocol'

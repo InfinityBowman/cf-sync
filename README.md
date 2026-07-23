@@ -8,7 +8,7 @@ architecture, locked decisions, and invariants.
 
 | Package | What it is |
 |---|---|
-| `@cf-sync/protocol` | Wire types (hello / push / poke), zod schemas, frame chunking |
+| `@cf-sync/protocol` | Wire types (hello / push / poke), frame chunking, and the shared definition kit: `defineSchema`, `defineMutators`, `crudMutators`, `AppError` — importable from both worker and browser |
 | `@cf-sync/server` | `createWorkspaceDO` — the per-workspace Durable Object — and `createSyncFetch`, the worker router with an `authorize` hook |
 | `@cf-sync/client` | `SyncClient` (socket, outbox, poke application, reconnect) and `workspaceCollectionOptions`, a TanStack DB collection adapter |
 | `apps/demo` | Two-tab todo demo (React + `@tanstack/react-db`) |
@@ -33,22 +33,52 @@ Open the vite URL in **two tabs** — mutations apply optimistically and converg
 through the server. Use a URL hash (`#team-a`) to switch workspaces (each workspace is
 its own Durable Object).
 
-## Defining a workspace server
+## Defining the schema and mutations (shared)
+
+One definition file, imported by both the worker and the web app, drives
+everything: server-side row and args validation, collection row types, and
+typed `mutate` calls.
 
 ```ts
-import { createWorkspaceDO, createSyncFetch, crudMutators, AppError } from '@cf-sync/server'
+// src/schema.ts — shared between worker and browser
+import { defineSchema, defineMutators, crudMutators, AppError } from '@cf-sync/protocol'
+import { z } from 'zod'
 
-export const WorkspaceDO = createWorkspaceDO({
-  schemaVersion: 'app-1',
-  mutators: {
-    ...crudMutators, // full-row LWW: sync.put / sync.del
-    'issue.move': (tx, args, ctx) => {
-      const { id, column } = args as { id: string; column: string }
-      const issue = tx.get('issues', id)
+export const schema = defineSchema({
+  issues: z.object({
+    id: z.string(),
+    title: z.string(),
+    column: z.string().default('backlog'),
+  }),
+})
+
+export const mutators = defineMutators(schema, {
+  ...crudMutators(schema), // full-row LWW: sync.put / sync.del (what collections emit)
+  'issue.move': {
+    args: z.object({ id: z.string(), column: z.string() }),
+    apply: (tx, { id, column }) => {          // args are validated and typed
+      const issue = tx.get('issues', id)      // typed: { id, title, column } | null
       if (!issue) throw new AppError('NotFound', `issue ${id} does not exist`)
       tx.put('issues', id, { ...issue, column })
     },
   },
+})
+```
+
+The server validates every row write against the table's schema and every
+mutation's args against its `args` schema before `apply` runs — a client can
+never write a shape the schema doesn't allow, no matter what it sends.
+
+## Defining a workspace server
+
+```ts
+import { createWorkspaceDO, createSyncFetch } from '@cf-sync/server'
+import { schema, mutators } from '../src/schema'
+
+export const WorkspaceDO = createWorkspaceDO({
+  schemaVersion: 'app-1',
+  schema,
+  mutators,
 })
 
 export default {
@@ -67,24 +97,26 @@ export default {
 ```ts
 import { IndexedDBSyncStore, SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
 import { createCollection } from '@tanstack/react-db'
+import { schema, mutators } from './schema'
 
 const client = new SyncClient({
   url: `wss://your-worker/sync/${workspaceId}?clientId=${clientId}`,
   clientId, // unique per tab/session — never share across tabs
   schemaVersion: 'app-1',
+  schema,
+  mutators,
   // Optional: durable local mirror. Reloads hydrate instantly from cache and
   // resume by cursor; mutations made offline survive reloads and replay
   // exactly once (the LMID contract makes replay idempotent).
   store: new IndexedDBSyncStore({ workspaceId, clientId }),
 })
 
-const issues = createCollection(
-  workspaceCollectionOptions({ client, table: 'issues', getKey: (i) => i.id }),
-)
+// Row type, runtime validation, and the key function derive from the schema.
+const issues = createCollection(workspaceCollectionOptions({ client, table: 'issues' }))
 client.start()
 
-issues.insert({ id: ulid(), title: 'ship it' })   // optimistic, confirmed by the server
-await client.mutate('issue.move', { id, column }) // intent-based mutation
+issues.insert({ id: ulid(), title: 'ship it' })   // optimistic; `column` filled by its default
+await client.mutate('issue.move', { id, column }) // typed: a typo'd name or bad args is a compile error
 ```
 
 ## Operations

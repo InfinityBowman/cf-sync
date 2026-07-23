@@ -17,7 +17,8 @@
     "@tanstack/react-db": "^0.1.94",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "ulidx": "^2.4.0"
+    "ulidx": "^2.4.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260718.1",

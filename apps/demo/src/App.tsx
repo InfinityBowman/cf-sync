@@ -21,13 +21,15 @@ export function App() {
   const addTodo = () => {
     const trimmed = title.trim()
     if (!trimmed) return
-    todos.insert({ id: ulid(), title: trimmed, completed: false, createdAt: new Date().toISOString(), priority: 'normal' })
+    // `priority` is omitted: the schema default fills it in (client and server).
+    todos.insert({ id: ulid(), title: trimmed, completed: false, createdAt: new Date().toISOString() })
     setTitle('')
   }
 
   const clearCompleted = () => {
-    // Intent-based mutation: optimistic local effect + named server mutator.
-    void syncClient.mutate('todos.clearCompleted', {}).catch(() => {})
+    // Intent-based mutation: optimistic local effect + named server mutator,
+    // typed against the shared registry (a typo'd name is a compile error).
+    void syncClient.mutate('todos.clearCompleted').catch(() => {})
     for (const todo of items.filter((t) => t.completed)) {
       todos.delete(todo.id)
     }
