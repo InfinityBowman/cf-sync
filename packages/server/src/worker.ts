@@ -1,5 +1,43 @@
 import { WORKSPACE_HEADER } from './do'
 
+/**
+ * An `authorize` hook that checks `Authorization: Bearer <token>` against a
+ * secret from the env, comparing in constant time — the standard way to lock
+ * `createAdminFetch` behind a token:
+ *
+ * ```ts
+ * createAdminFetch<Env>({
+ *   namespace: (env) => env.WORKSPACE,
+ *   authorize: bearerTokenAuth((env) => env.ADMIN_TOKEN),
+ * })
+ * ```
+ *
+ * A missing/empty secret denies everything (an unset `wrangler secret` must
+ * fail closed, not open). Compatible with `createSyncFetch` too, for
+ * service-to-service sync clients.
+ */
+export function bearerTokenAuth<Env>(token: (env: Env) => string | undefined) {
+  return (request: Request, params: { env: Env }): boolean => {
+    const expected = token(params.env)
+    if (!expected) return false
+    const header = request.headers.get('authorization')
+    if (!header?.startsWith('Bearer ')) return false
+    return timingSafeEqual(header.slice('Bearer '.length), expected)
+  }
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder()
+  const aBytes = encoder.encode(a)
+  const bBytes = encoder.encode(b)
+  // Length is not secret (the attacker knows what they sent); bail early so
+  // the XOR loop below always runs over equal-length buffers.
+  if (aBytes.byteLength !== bBytes.byteLength) return false
+  let diff = 0
+  for (let i = 0; i < aBytes.byteLength; i++) diff |= aBytes[i]! ^ bBytes[i]!
+  return diff === 0
+}
+
 export interface SyncFetchOptions<Env> {
   namespace: (env: Env) => DurableObjectNamespace
   /**

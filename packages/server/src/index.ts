@@ -6,6 +6,7 @@ export {
   type WorkspaceEngineConfig,
 } from './do'
 export {
+  bearerTokenAuth,
   createAdminFetch,
   createSyncFetch,
   type AdminFetchOptions,

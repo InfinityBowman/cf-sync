@@ -1,12 +1,12 @@
+import { useSyncStatus } from '@cf-sync/client/react'
 import { useLiveQuery } from '@tanstack/react-db'
-import { useState, useSyncExternalStore } from 'react'
+import { useState } from 'react'
 import { ulid } from 'ulidx'
 import { syncClient, todos, workspaceId } from './sync'
 
 export function App() {
   const [title, setTitle] = useState('')
-  // subscribeStatus is a stable arrow property, so it works unbound here.
-  const status = useSyncExternalStore(syncClient.subscribeStatus, () => syncClient.status)
+  const status = useSyncStatus(syncClient)
 
   const { data: items } = useLiveQuery((q) =>
     q.from({ todo: todos }).orderBy(({ todo }) => todo.createdAt, 'asc'),

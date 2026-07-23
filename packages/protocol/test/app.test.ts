@@ -61,6 +61,37 @@ describe('defineApp', () => {
   })
 })
 
+describe('defineApp crud mutators', () => {
+  it('includes sync.put / sync.del by default, even with no mutators at all', () => {
+    const app = defineApp({ version: 1, schema })
+    expect(Object.keys(app.mutators).sort()).toEqual(['sync.del', 'sync.put'])
+  })
+
+  it('merges intent mutators alongside, with user entries winning on collision', () => {
+    const mine = { apply: () => {} }
+    const app = defineApp({
+      version: 1,
+      schema,
+      mutators: { 'todos.archive': { apply: () => {} }, 'sync.put': mine },
+    })
+    expect(Object.keys(app.mutators).sort()).toEqual(['sync.del', 'sync.put', 'todos.archive'])
+    expect(app.mutators['sync.put']).toBe(mine)
+  })
+
+  it('crud: false keeps the registry intent-only and rejects an empty one', () => {
+    const app = defineApp({
+      version: 1,
+      schema,
+      crud: false,
+      mutators: { 'todos.archive': { apply: () => {} } },
+    })
+    expect(Object.keys(app.mutators)).toEqual(['todos.archive'])
+    expect(() => defineApp({ version: 1, schema, crud: false, mutators: {} })).toThrow(
+      /nothing can write/,
+    )
+  })
+})
+
 describe('migrationPath', () => {
   const app = defineApp({
     version: 3,

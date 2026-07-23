@@ -1,4 +1,4 @@
-import { crudMutators, defineApp, defineMutators, defineSchema, type RowOf } from '@cf-sync/protocol'
+import { defineApp, defineMutators, defineSchema, type RowOf } from '@cf-sync/protocol'
 import { z } from 'zod'
 
 const schema = defineSchema({
@@ -12,10 +12,11 @@ const schema = defineSchema({
   }),
 })
 
+// Intent-based mutators; the full-row CRUD pair (sync.put / sync.del) that
+// collections emit is included by defineApp automatically.
 const mutators = defineMutators(schema, {
-  ...crudMutators(schema),
-  // An intent-based mutator: the server scans authoritatively, so two
-  // clients clicking "clear completed" concurrently can't resurrect rows.
+  // The server scans authoritatively, so two clients clicking
+  // "clear completed" concurrently can't resurrect rows.
   'todos.clearCompleted': {
     apply: (tx) => {
       for (const { id, data } of tx.list('todos')) {

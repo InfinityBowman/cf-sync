@@ -43,7 +43,7 @@ and every client are configured with the *same value*, so they can't disagree.
 
 ```ts
 // src/schema.ts — shared between worker and browser
-import { defineApp, defineSchema, defineMutators, crudMutators, AppError } from '@cf-sync/protocol'
+import { defineApp, defineSchema, defineMutators, AppError } from '@cf-sync/protocol'
 import { z } from 'zod'
 
 const schema = defineSchema({
@@ -54,8 +54,10 @@ const schema = defineSchema({
   }),
 })
 
+// Intent-based mutations. The full-row LWW CRUD pair (sync.put / sync.del —
+// what collections emit for local writes) is included by defineApp
+// automatically; pass `crud: false` there for an intent-only app.
 const mutators = defineMutators(schema, {
-  ...crudMutators(schema), // full-row LWW: sync.put / sync.del (what collections emit)
   'issue.move': {
     args: z.object({ id: z.string(), column: z.string() }),
     apply: (tx, { id, column }) => {          // args are validated and typed
@@ -174,14 +176,15 @@ const client = new SyncClient({
   // `clientId`/`store` explicitly to take either over. Fatal errors
   // (VersionNotSupported after a deploy) reload the page, throttled to once
   // per minute so a bad deploy window can't reload-loop; pass `onFatal` to
-  // customize.
+  // customize. Connecting starts here too — pass `autoStart: false` to
+  // decouple construction from connection (SSR, auth gating) and call
+  // client.start() yourself.
   persist: true,
 })
 
 // One typed collection per schema table: row types, runtime validation, and
 // keys all derive from the schema. (Per-table control: workspaceCollectionOptions.)
 const { issues } = createCollections(client)
-client.start()
 
 issues.insert({ id: ulid(), title: 'ship it' })  // optimistic; `column` filled by its default
 await client.mutate.issue.move({ id, column })   // typed: names autocomplete, bad args are a compile error
@@ -203,10 +206,12 @@ returns, at which point the rows reappear via the server patch. Check
 `MutationError.code` before telling the user something failed permanently.
 
 Sync status is observable via `client.subscribeStatus` (returns an
-unsubscribe function, safe to pass unbound) — in React:
+unsubscribe function, safe to pass unbound) — in React, use the shipped hook:
 
 ```ts
-const status = useSyncExternalStore(client.subscribeStatus, () => client.status)
+import { useSyncStatus } from '@cf-sync/client/react'
+
+const status = useSyncStatus(client) // 'idle' | 'connecting' | … | 'synced'
 ```
 
 ## Testing your app
@@ -248,7 +253,16 @@ schema-invalid rows throws from `createTestEngine` itself.
 ## Operations
 
 `createAdminFetch({ namespace, authorize })` exposes a per-workspace admin surface
-(authorize is mandatory — these endpoints read and destroy whole workspaces):
+(authorize is mandatory — these endpoints read and destroy whole workspaces).
+For the common bearer-token setup, `bearerTokenAuth` compares in constant time
+and fails closed when the secret is unset:
+
+```ts
+const adminHandler = createAdminFetch<Env>({
+  namespace: (env) => env.WORKSPACE,
+  authorize: bearerTokenAuth((env) => env.ADMIN_TOKEN), // wrangler secret put ADMIN_TOKEN
+})
+```
 
 ```
 GET  /admin/<workspaceId>/stats    gauges + counters (rows, versions, connections, db size)

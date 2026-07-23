@@ -184,8 +184,9 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
     if (!(client.app.mutators as Record<string, unknown>)[required]) {
       throw new Error(
         `workspaceCollectionOptions: the app's mutator registry has no "${required}", which ` +
-          `collections emit for local writes — spread crudMutators(schema) into the mutators ` +
-          `passed to defineApp`,
+          `collections emit for local writes — the app was defined with crud: false; remove it ` +
+          `(defineApp includes the crud mutators by default) or drive this table through ` +
+          `intent mutators only, without a collection`,
       )
     }
   }

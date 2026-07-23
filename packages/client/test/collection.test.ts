@@ -29,6 +29,7 @@ function setup() {
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: CLIENT_ID,
+    autoStart: false,
     app: defineApp({ version: 1, schema, mutators }),
     createSocket: () => {
       const socket = new FakeSocket()
@@ -175,20 +176,22 @@ describe('typed mutate', () => {
     ).rejects.toSatisfy((e) => e instanceof MutationError && e.code === 'UnknownMutator')
   })
 
-  it('fails at setup when the registry lacks the crud mutators collections emit', () => {
+  it('fails at setup when a crud: false registry meets a collection', () => {
     const client = new SyncClient({
       url: 'ws://test',
       workspaceId: 'w1',
       clientId: CLIENT_ID,
-      // Intent-only registry: no sync.put / sync.del.
+      autoStart: false,
+      // Intent-only app: no sync.put / sync.del for collections to emit.
       app: defineApp({
         version: 1,
         schema,
+        crud: false,
         mutators: defineMutators(schema, { 'todos.clearCompleted': { apply: () => {} } }),
       }),
       createSocket: () => new FakeSocket(),
     })
-    expect(() => workspaceCollectionOptions({ client, table: 'todos' })).toThrow(/crudMutators/)
+    expect(() => workspaceCollectionOptions({ client, table: 'todos' })).toThrow(/crud: false/)
     expect(() => createCollections(client)).toThrow(/sync\.put/)
   })
 })
@@ -204,6 +207,7 @@ describe('createCollections', () => {
       url: 'ws://test',
       workspaceId: 'w1',
       clientId: CLIENT_ID,
+      autoStart: false,
       app: defineApp({ version: 1, schema: multiSchema, mutators: crudMutators(multiSchema) }),
       createSocket: () => {
         const socket = new FakeSocket()

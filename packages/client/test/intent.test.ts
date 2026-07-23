@@ -71,6 +71,7 @@ function setup(opts: { confirmTimeoutMs?: number } = {}) {
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: CLIENT_ID,
+    autoStart: false,
     app,
     createSocket: () => {
       const socket = new FakeSocket()
@@ -369,6 +370,7 @@ describe('optimistic intent mutations', () => {
       url: 'ws://test',
       workspaceId: 'w3',
       clientId: CLIENT_ID,
+      autoStart: false,
       app,
       createSocket: () => {
         const socket = new FakeSocket()
@@ -399,6 +401,7 @@ describe('optimistic intent mutations', () => {
       url: 'ws://test',
       workspaceId: 'w4',
       clientId: CLIENT_ID,
+      autoStart: false,
       app,
       createSocket: () => {
         const socket = new FakeSocket()
@@ -429,6 +432,7 @@ describe('optimistic intent mutations', () => {
       url: 'ws://test',
       workspaceId: 'w2',
       clientId: CLIENT_ID,
+      autoStart: false,
       app,
       createSocket: () => {
         const socket = new FakeSocket()
@@ -510,6 +514,7 @@ describe('property-access mutate namespace', () => {
       url: 'ws://test',
       workspaceId: 'w1',
       clientId: CLIENT_ID,
+      autoStart: false,
       app: defineApp({ version: 1, schema: shadowSchema, mutators: shadowMutators }),
       createSocket: () => {
         const socket = new FakeSocket()

@@ -34,6 +34,7 @@ function makeClient(overrides: Partial<ConstructorParameters<typeof SyncClient>[
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: CLIENT_ID,
+    autoStart: false,
     app: testApp,
     createSocket: () => {
       const socket = new FakeSocket()

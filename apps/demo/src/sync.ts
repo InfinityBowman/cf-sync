@@ -17,14 +17,13 @@ export const syncClient = new SyncClient({
   // Durable local mirror in IndexedDB: reloads hydrate instantly and resume
   // by cursor; mutations made offline replay on reconnect. The clientId
   // lifecycle (one per tab/session) is managed by the client, and so is
-  // fatal recovery (throttled reload into the current bundle).
+  // fatal recovery (throttled reload into the current bundle). Connecting
+  // starts here too — pass autoStart: false to defer it (e.g. SSR).
   persist: true,
 })
 
-// One typed collection per schema table; components subscribe to status via
-// useSyncExternalStore(syncClient.subscribeStatus, () => syncClient.status).
+// One typed collection per schema table; components read status via
+// useSyncStatus(syncClient) from '@cf-sync/client/react'.
 export const { todos } = createCollections(syncClient, { startSync: true })
-
-syncClient.start()
 
 export { workspaceId }

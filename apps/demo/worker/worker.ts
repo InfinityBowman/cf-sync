@@ -1,4 +1,4 @@
-import { createAdminFetch, createSyncFetch, createWorkspaceDO } from '@cf-sync/server'
+import { bearerTokenAuth, createAdminFetch, createSyncFetch, createWorkspaceDO } from '@cf-sync/server'
 import { app } from '../src/schema'
 
 interface Env {
@@ -25,26 +25,12 @@ const syncHandler = createSyncFetch<Env>({
   authorize: () => true,
 })
 
-function timingSafeEqual(a: string, b: string): boolean {
-  const encoder = new TextEncoder()
-  const aBytes = encoder.encode(a)
-  const bBytes = encoder.encode(b)
-  if (aBytes.byteLength !== bBytes.byteLength) return false
-  let diff = 0
-  for (let i = 0; i < aBytes.byteLength; i++) diff |= aBytes[i]! ^ bBytes[i]!
-  return diff === 0
-}
-
 // Admin operations read and destroy whole workspaces: locked behind a bearer
-// token (`curl -H "Authorization: Bearer $TOKEN" .../admin/<ws>/stats`).
+// token (`curl -H "Authorization: Bearer $TOKEN" .../admin/<ws>/stats`),
+// compared in constant time; an unset secret denies everything.
 const adminHandler = createAdminFetch<Env>({
   namespace: (env) => env.WORKSPACE,
-  authorize: (request, { env }) => {
-    if (!env.ADMIN_TOKEN) return false
-    const header = request.headers.get('authorization')
-    if (!header?.startsWith('Bearer ')) return false
-    return timingSafeEqual(header.slice('Bearer '.length), env.ADMIN_TOKEN)
-  },
+  authorize: bearerTokenAuth((env) => env.ADMIN_TOKEN),
 })
 
 export default {

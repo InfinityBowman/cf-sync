@@ -73,7 +73,6 @@ export type MutationArgs<Def> = 'args' extends keyof Def
  *
  * ```ts
  * export const mutators = defineMutators(schema, {
- *   ...crudMutators(schema),
  *   'issue.move': {
  *     args: z.object({ id: z.string(), column: z.string() }),
  *     apply: (tx, { id, column }) => {
@@ -148,9 +147,10 @@ export type CrudMutators<S extends AnySyncSchema> = {
 
 /**
  * Full-row last-write-wins CRUD as degenerate "intent" mutators (DESIGN.md §7)
- * — the mutations the TanStack DB collection adapter emits. Spread these into
- * your registry and add real intent-based mutators alongside. Row payloads
- * are validated against the table's schema by the engine's `put`.
+ * — the mutations the TanStack DB collection adapter emits. `defineApp`
+ * includes them automatically (opt out with `crud: false`); calling this
+ * directly is only needed for hand-assembled registries. Row payloads are
+ * validated against the table's schema by the engine's `put`.
  */
 export function crudMutators<S extends AnySyncSchema>(schema: S): CrudMutators<S> {
   void schema // binds S; per-table row validation happens in the engine's put

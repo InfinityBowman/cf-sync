@@ -1,5 +1,5 @@
 import type { AnySyncSchema } from './schema'
-import type { AnyMutators, MutatorsFor, MutatorTx } from './mutators'
+import { crudMutators, type AnyMutators, type CrudMutators, type MutatorsFor, type MutatorTx } from './mutators'
 
 /**
  * Rewrites rows stored under version `to - 1` into the shape expected at
@@ -69,17 +69,45 @@ export interface AppDefinition<
  * versions still in the field may be dropped; a workspace stored below the
  * oldest declared entry re-raises the error at wake instead of restamping
  * data it cannot interpret.
+ *
+ * The full-row CRUD mutators (`sync.put` / `sync.del` — what collections emit
+ * for local writes) are included automatically; `mutators` adds intent-based
+ * mutations alongside them and may be omitted for a pure-CRUD app. Pass
+ * `crud: false` for an intent-only registry — collections then refuse to
+ * attach, and every write must go through a named mutator.
  */
 export function defineApp<S extends AnySyncSchema, M extends MutatorsFor<S>>(def: {
   version: number
   schema: S
   mutators: M
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
-}): AppDefinition<S, M> {
-  const { version, schema, mutators } = def
+  crud: false
+}): AppDefinition<S, M>
+export function defineApp<S extends AnySyncSchema, M extends MutatorsFor<S> = Record<never, never>>(def: {
+  version: number
+  schema: S
+  mutators?: M
+  migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
+  crud?: true
+}): AppDefinition<S, M & CrudMutators<S>>
+export function defineApp<S extends AnySyncSchema>(def: {
+  version: number
+  schema: S
+  mutators?: MutatorsFor<S>
+  migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
+  crud?: boolean
+}): AppDefinition<S, AnyMutators> {
+  const { version, schema } = def
   if (!Number.isInteger(version) || version < 1) {
     throw new Error(`defineApp: version must be a positive integer (got ${JSON.stringify(version)})`)
   }
+  if (def.crud === false && (!def.mutators || Object.keys(def.mutators).length === 0)) {
+    throw new Error('defineApp: crud: false with no mutators declares an app nothing can write to')
+  }
+  // User entries win on name collision, so an explicit crudMutators spread
+  // (or a hand-rolled sync.put) overrides the built-ins rather than duplicating.
+  const mutators: AnyMutators =
+    def.crud === false ? { ...def.mutators } : { ...crudMutators(schema), ...def.mutators }
   const migrations: SchemaMigration[] = []
   for (const key of Object.keys(def.migrations ?? {})) {
     const to = Number(key)

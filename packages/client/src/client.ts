@@ -206,6 +206,13 @@ export interface SyncClientOptions<
    * persistence instead of throwing. Mutually exclusive with `store`.
    */
   persist?: boolean
+  /**
+   * Connect on construction (the default). Pass false when construction and
+   * connection must be decoupled — SSR (module-scope construction would open
+   * sockets from the server; Node 22+ has a global WebSocket), tests, or
+   * apps that gate syncing on auth — and call `start()` yourself.
+   */
+  autoStart?: boolean
   createSocket?: (url: string) => WebSocketLike
   /** Reject unconfirmed mutations after this long; TanStack DB then rolls back. */
   confirmTimeoutMs?: number
@@ -326,6 +333,10 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, this.#clientId)
     this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId) : undefined)
     this.mutate = buildMutate(Object.keys(opts.app.mutators), (name, args) => this.#mutateByName(name, args))
+    // Nothing consumes registered tables synchronously (hydration awaits the
+    // store; a real socket's open event is async), so collections created
+    // right after the constructor still attach before the first sync.
+    if (opts.autoStart !== false) this.start()
   }
 
   get status(): SyncStatus {
@@ -405,6 +416,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     this.#intentRunner = runner
   }
 
+  /** Begins hydration and connection. Called from the constructor unless `autoStart: false`; idempotent. */
   start(): void {
     if (this.#started) return
     this.#started = true

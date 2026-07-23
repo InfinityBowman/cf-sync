@@ -49,6 +49,7 @@ function makeClient(store: MemorySyncStore, overrides: Partial<ConstructorParame
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: CLIENT_ID,
+    autoStart: false,
     app: testApp,
     store,
     createSocket: () => {

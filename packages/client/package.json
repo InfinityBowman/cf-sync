@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./react": "./src/react.ts"
   },
   "scripts": {
     "test": "vitest run",
@@ -14,11 +15,21 @@
     "@cf-sync/protocol": "workspace:*"
   },
   "peerDependencies": {
-    "@tanstack/db": "^0.6.16"
+    "@tanstack/db": "^0.6.16",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@tanstack/db": "^0.6.16",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.2.3",
     "fake-indexeddb": "^6.2.5",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.10",
     "zod": "^4.0.0"

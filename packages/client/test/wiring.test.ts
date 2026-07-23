@@ -13,6 +13,7 @@ function makeClient(overrides: Partial<ConstructorParameters<typeof SyncClient>[
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: 'client-a',
+    autoStart: false,
     app: testApp,
     createSocket: (url) => {
       urls.push(url)
@@ -222,5 +223,27 @@ describe('start() nudge', () => {
     client.start()
     vi.advanceTimersByTime(10_000)
     expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+describe('autoStart', () => {
+  it('connects on construction by default; start() stays an idempotent no-op', () => {
+    const { client, sockets, latest } = makeClient({ autoStart: undefined })
+    expect(sockets).toHaveLength(1) // connected without an explicit start()
+    expect(client.status).toBe('connecting')
+    client.start()
+    expect(sockets).toHaveLength(1) // no second connection
+    latest().open()
+    expect(client.status).toBe('syncing')
+    client.stop()
+  })
+
+  it('autoStart: false waits for an explicit start()', () => {
+    const { client, sockets } = makeClient()
+    expect(sockets).toHaveLength(0)
+    expect(client.status).toBe('idle')
+    client.start()
+    expect(sockets).toHaveLength(1)
+    client.stop()
   })
 })
