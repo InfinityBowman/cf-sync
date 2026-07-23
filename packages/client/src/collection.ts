@@ -58,7 +58,9 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
     (client as SyncClient).mutate(name, args)
 
   return {
-    id: `workspace-${table}`,
+    // Scoped by workspace so an app with two open workspaces never collides
+    // on TanStack DB's app-wide collection ids.
+    id: `workspace-${client.workspaceId}-${table}`,
     getKey,
     schema: tableSchema as S['tables'][K] & StandardSchemaV1,
     startSync: cfg.startSync,

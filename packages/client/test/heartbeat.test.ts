@@ -31,7 +31,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 function makeClient(overrides: Partial<ConstructorParameters<typeof SyncClient>[0]> = {}) {
   const sockets: FakeSocket[] = []
   const client = new SyncClient({
-    url: 'ws://test/sync/w1?clientId=' + CLIENT_ID,
+    url: 'ws://test',
+    workspaceId: 'w1',
     clientId: CLIENT_ID,
     schemaVersion: SCHEMA,
     schema: testSchema,

@@ -95,20 +95,22 @@ export default {
 ## Consuming it from the client
 
 ```ts
-import { IndexedDBSyncStore, SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
+import { SyncClient, workspaceCollectionOptions } from '@cf-sync/client'
 import { createCollection } from '@tanstack/react-db'
 import { schema, mutators } from './schema'
 
 const client = new SyncClient({
-  url: `wss://your-worker/sync/${workspaceId}?clientId=${clientId}`,
-  clientId, // unique per tab/session — never share across tabs
+  url: 'wss://your-worker', // the client appends /sync/<workspaceId>?clientId=…
+  workspaceId,
   schemaVersion: 'app-1',
   schema,
   mutators,
-  // Optional: durable local mirror. Reloads hydrate instantly from cache and
-  // resume by cursor; mutations made offline survive reloads and replay
-  // exactly once (the LMID contract makes replay idempotent).
-  store: new IndexedDBSyncStore({ workspaceId, clientId }),
+  // Optional: durable local mirror in IndexedDB. Reloads hydrate instantly
+  // from cache and resume by cursor; mutations made offline survive reloads
+  // and replay exactly once (the LMID contract makes replay idempotent).
+  // The clientId lifecycle (one per tab/session) is managed for you; pass
+  // `clientId`/`store` explicitly to take either over.
+  persist: true,
 })
 
 // Row type, runtime validation, and the key function derive from the schema.
@@ -131,7 +133,8 @@ POST /admin/<workspaceId>/import   replace state from a snapshot (live clients c
 POST /admin/<workspaceId>/reset    wipe the workspace; new history (backendId)
 ```
 
-With `export: { bucket: (env) => env.EXPORT_BUCKET }` on the DO config, a periodic
+With `export: { bucket: (env: Env) => env.EXPORT_BUCKET }` on the DO config (the
+annotation types the whole DO's env), a periodic
 alarm streams the mutation log to R2 as ndjson (`cf-sync/<workspaceId>/mutation-log/
 <from>-<to>.ndjson`) for archive and analytics.
 

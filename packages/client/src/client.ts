@@ -14,6 +14,7 @@ import {
   type PatchOp,
   type PokeEndMsg,
 } from '@cf-sync/protocol'
+import { IndexedDBSyncStore } from './idb-store'
 import type { PersistedOutboxEntry, PersistedRowOp, PersistedState, SyncStore } from './store'
 
 export type SyncStatus = 'idle' | 'connecting' | 'syncing' | 'synced' | 'reconnecting' | 'fatal'
@@ -53,14 +54,29 @@ export interface SyncClientOptions<
   S extends AnySyncSchema = AnySyncSchema,
   M extends AnyMutators = AnyMutators,
 > {
-  /** Full websocket URL: ws(s)://host/sync/<workspaceId>?clientId=<clientId> */
+  /**
+   * Base URL of the sync worker — origin plus any mount path, no sync route:
+   * `wss://sync.example.com`. `http(s)://` is accepted and converted. The
+   * client appends `<pathPrefix>/<workspaceId>?clientId=<clientId>` itself,
+   * so the clientId in the URL (which the server binds at upgrade) can never
+   * diverge from the one used for confirmation matching.
+   */
   url: string
   /**
-   * Must be unique per SyncClient instance (per tab/session), never shared
-   * across concurrent tabs: the clientId identifies one contiguous mutation
-   * sequence.
+   * The workspace to sync. Names the server-side Durable Object (via the URL
+   * path), the local IndexedDB database, and the collection ids.
    */
-  clientId: string
+  workspaceId: string
+  /** URL prefix for sync routes, matching the server router's `pathPrefix`. Default: "/sync". */
+  pathPrefix?: string
+  /**
+   * Identifies one contiguous mutation sequence — unique per SyncClient
+   * instance (per tab/session), never shared across concurrent tabs. Default:
+   * managed by the library — persisted per workspace in sessionStorage
+   * (reload continuity without cross-tab sharing), random where
+   * sessionStorage is unavailable.
+   */
+  clientId?: string
   schemaVersion: string
   /**
    * The shared table schema (`defineSchema`) — the same value the server is
@@ -83,6 +99,13 @@ export interface SyncClientOptions<
    * version mismatch discards the cache and bootstraps fresh.
    */
   store?: SyncStore
+  /**
+   * Shorthand for the common case: `store: new IndexedDBSyncStore(...)`
+   * built from `workspaceId` and the managed clientId. Where IndexedDB is
+   * unavailable (SSR, some workers), the client warns and runs without
+   * persistence instead of throwing. Mutually exclusive with `store`.
+   */
+  persist?: boolean
   createSocket?: (url: string) => WebSocketLike
   /** Reject unconfirmed mutations after this long; TanStack DB then rolls back. */
   confirmTimeoutMs?: number
@@ -126,6 +149,9 @@ interface PokeBuffer {
 
 export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMutators = AnyMutators> {
   readonly #opts: SyncClientOptions<S, M>
+  readonly #clientId: string
+  readonly #url: string
+  readonly #store: SyncStore | undefined
   readonly #tables = new Map<string, TableHooks>()
   readonly #warnedTables = new Set<string>()
 
@@ -147,10 +173,18 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   #persistScheduled = false
   #hydrating = false
   #heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  #startNudgeTimer: ReturnType<typeof setTimeout> | null = null
   #lastFrameAt = 0
 
   constructor(opts: SyncClientOptions<S, M>) {
+    if (!opts.workspaceId) throw new Error('SyncClient: workspaceId is required')
+    if (opts.store && opts.persist) {
+      throw new Error('SyncClient: pass either `store` or `persist`, not both')
+    }
     this.#opts = opts
+    this.#clientId = opts.clientId ?? defaultClientId(opts.workspaceId)
+    this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, this.#clientId)
+    this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId) : undefined)
   }
 
   get status(): SyncStatus {
@@ -159,6 +193,15 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
 
   get cursor(): Cursor | null {
     return this.#cursor
+  }
+
+  get workspaceId(): string {
+    return this.#opts.workspaceId
+  }
+
+  /** The resolved clientId — the configured one, or the library-managed default. */
+  get clientId(): string {
+    return this.#clientId
   }
 
   /** The table schema this client was constructed with (used by collections). */
@@ -176,6 +219,16 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (this.#tables.has(tbl)) throw new Error(`table "${tbl}" is already registered`)
     this.#tables.set(tbl, hooks)
     if (this.#syncedThisConnection) this.#requestFullResync()
+    if (!this.#started && this.#startNudgeTimer === null) {
+      // Forgetting start() otherwise yields silent nothing: collections sit
+      // empty and mutations queue forever. Make it loud instead.
+      this.#startNudgeTimer = setTimeout(() => {
+        this.#startNudgeTimer = null
+        if (!this.#started && !this.#stopped) {
+          console.warn('[cf-sync] tables are registered but start() was never called — nothing will sync')
+        }
+      }, 5_000)
+    }
     return () => {
       if (this.#tables.get(tbl) === hooks) this.#tables.delete(tbl)
     }
@@ -184,8 +237,9 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   start(): void {
     if (this.#started) return
     this.#started = true
+    this.#clearStartNudge()
     this.#setStatus('connecting')
-    const store = this.#opts.store
+    const store = this.#store
     if (store) {
       this.#hydrating = true
       void this.#hydrate(store).finally(() => {
@@ -202,6 +256,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
 
   stop(): void {
     this.#stopped = true
+    this.#clearStartNudge()
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer)
     if (this.#retryPushTimer) clearTimeout(this.#retryPushTimer)
     this.#stopHeartbeat()
@@ -325,7 +380,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
         // caller's optimistic overlay rolls back); the mutation itself stays
         // queued and still applies when connectivity returns.
         this.#settleEntry(entry, new MutationError('Timeout', `mutation "${name}" unconfirmed after ${timeoutMs}ms`), {
-          keepQueued: this.#opts.store !== undefined,
+          keepQueued: this.#store !== undefined,
         })
       }, timeoutMs)
       this.#outbox.push(entry)
@@ -346,7 +401,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     const createSocket = this.#opts.createSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike)
     let socket: WebSocketLike
     try {
-      socket = createSocket(this.#opts.url)
+      socket = createSocket(this.#url)
     } catch (err) {
       // Browsers throw synchronously from `new WebSocket` for malformed URLs
       // and some CSP blocks. Treat it as an instant disconnect — an uncaught
@@ -444,6 +499,13 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (this.#heartbeatTimer) {
       clearInterval(this.#heartbeatTimer)
       this.#heartbeatTimer = null
+    }
+  }
+
+  #clearStartNudge(): void {
+    if (this.#startNudgeTimer) {
+      clearTimeout(this.#startNudgeTimer)
+      this.#startNudgeTimer = null
     }
   }
 
@@ -580,10 +642,10 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     this.#awaitingCatchUp = false
 
     if (backendChanged) {
-      this.#confirmedLmid = poke.lastMutationIdChanges[this.#opts.clientId] ?? 0
+      this.#confirmedLmid = poke.lastMutationIdChanges[this.#clientId] ?? 0
       this.#rebaseOutboxIds()
     } else {
-      const confirmed = poke.lastMutationIdChanges[this.#opts.clientId]
+      const confirmed = poke.lastMutationIdChanges[this.#clientId]
       if (confirmed !== undefined && confirmed > this.#confirmedLmid) this.#confirmedLmid = confirmed
     }
     this.#settleOutbox(poke.mutationResults)
@@ -605,7 +667,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     // Durable mirror of what was just applied: rows, cursor, confirmedLmid,
     // and the outbox commit together, so the persisted cursor can never be
     // newer than the persisted rows (see SyncStore contract).
-    const store = this.#opts.store
+    const store = this.#store
     if (store) {
       const ops: PersistedRowOp[] = []
       for (const op of poke.patch) {
@@ -720,7 +782,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
    * stop (stopping must not discard the durable outbox).
    */
   #persistOutbox(): void {
-    const store = this.#opts.store
+    const store = this.#store
     if (!store || this.#hydrating || this.#stopped || this.#persistScheduled) return
     this.#persistScheduled = true
     queueMicrotask(() => {
@@ -778,5 +840,44 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (this.#warnedTables.has(tbl)) return
     this.#warnedTables.add(tbl)
     console.warn(`[cf-sync] dropping synced data for unregistered table "${tbl}"`)
+  }
+}
+
+/**
+ * `<base><prefix>/<workspaceId>?clientId=<id>` — the shape createSyncFetch
+ * routes. `http(s)` is mapped to `ws(s)`; a trailing slash on the base is
+ * tolerated so `location.origin`-derived URLs compose cleanly.
+ */
+function buildSyncUrl(base: string, prefix: string, workspaceId: string, clientId: string): string {
+  const wsBase = base.replace(/^http/, 'ws').replace(/\/+$/, '')
+  return `${wsBase}${prefix}/${encodeURIComponent(workspaceId)}?clientId=${encodeURIComponent(clientId)}`
+}
+
+/**
+ * One clientId per tab/session, per workspace: the clientId names a
+ * contiguous mutation sequence, so concurrent tabs must never share one.
+ * sessionStorage gives reload continuity without cross-tab sharing; where it
+ * is unavailable (SSR, workers, blocked storage), a fresh random id per
+ * instance is always safe — it just forfeits reload continuity.
+ */
+function defaultClientId(workspaceId: string): string {
+  const key = `cf-sync:client-id:${encodeURIComponent(workspaceId)}`
+  try {
+    const stored = sessionStorage.getItem(key)
+    if (stored) return stored
+    const id = crypto.randomUUID()
+    sessionStorage.setItem(key, id)
+    return id
+  } catch {
+    return crypto.randomUUID()
+  }
+}
+
+function createDefaultStore(workspaceId: string, clientId: string): SyncStore | undefined {
+  try {
+    return new IndexedDBSyncStore({ workspaceId, clientId })
+  } catch (err) {
+    console.warn('[cf-sync] persist: true, but IndexedDB is unavailable — continuing without local persistence', err)
+    return undefined
   }
 }
