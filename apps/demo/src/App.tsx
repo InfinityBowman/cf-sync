@@ -21,12 +21,11 @@ export function App() {
   }
 
   const clearCompleted = () => {
-    // Intent-based mutation: optimistic local effect + named server mutator,
-    // typed against the shared registry (a typo'd name is a compile error).
+    // Intent-based mutation, typed against the shared registry (a typo'd
+    // name is a compile error). The same mutator the server runs applies
+    // locally first: the completed rows vanish instantly as one atomic
+    // overlay — one wire mutation, rolled back together if it's rejected.
     void syncClient.mutate('todos.clearCompleted').catch(() => {})
-    for (const todo of items.filter((t) => t.completed)) {
-      todos.delete(todo.id)
-    }
   }
 
   return (

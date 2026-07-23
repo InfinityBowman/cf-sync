@@ -1,4 +1,5 @@
 import {
+  AppError,
   KEEPALIVE_PING,
   PROTOCOL_VERSION,
   cursorEquals,
@@ -12,8 +13,10 @@ import {
   type ErrorMsg,
   type MutationArgs,
   type MutationResult,
+  type MutatorTx,
   type PatchOp,
   type PokeEndMsg,
+  type TableSchema,
 } from '@cf-sync/protocol'
 import { IndexedDBSyncStore } from './idb-store'
 import type { PersistedOutboxEntry, PersistedRowOp, PersistedState, SyncStore } from './store'
@@ -40,6 +43,48 @@ export interface TableHooks {
   truncate(): void
   markReady(): void
 }
+
+/**
+ * What a table's collection exposes for optimistic intent execution
+ * (adapter-facing, like `TableHooks`). Reads must reflect the collection's
+ * combined view — synced state plus earlier pending optimistic overlays — so
+ * overlapping intents read each other. Writes are only ever invoked inside
+ * the `IntentTransactionRunner`'s atomic scope. Row values must be plain data
+ * (no adapter-specific virtual fields): they flow back into mutator `tx.get`
+ * reads and from there potentially onto the wire.
+ */
+export interface TableApplier {
+  has(id: string): boolean
+  get(id: string): Record<string, unknown> | null
+  list(): Array<{ id: string; data: Record<string, unknown> }>
+  insert(data: Record<string, unknown>): void
+  update(id: string, data: Record<string, unknown>): void
+  delete(id: string): void
+}
+
+/**
+ * Runs `flush` (the intent's buffered writes, translated to collection ops)
+ * as one atomic optimistic transaction whose sole persistence step is
+ * `persist` (enqueue the intent mutation and await server confirm). Must
+ * resolve/reject with `persist`'s outcome, roll every flushed write back on
+ * rejection, and — critically — still call `persist` when `flush` produced
+ * zero effective writes (local state may be behind; the server's run is the
+ * one that counts).
+ */
+export type IntentTransactionRunner = (
+  intent: string,
+  flush: () => void,
+  persist: () => Promise<void>,
+) => Promise<void>
+
+/**
+ * Internal seam for the collection adapter: enqueue a mutation *without* the
+ * speculative local run. Collection mutation handlers (`onInsert` etc.) must
+ * use this — their optimistic effect already happened via the collection
+ * write itself, and routing them through `mutate` would recursively spawn a
+ * second transaction re-applying it. Not part of the public API.
+ */
+export const RAW_MUTATE = Symbol('cf-sync.rawMutate')
 
 export class MutationError extends Error {
   constructor(
@@ -159,8 +204,11 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   readonly #url: string
   readonly #store: SyncStore | undefined
   readonly #tables = new Map<string, TableHooks>()
+  readonly #appliers = new Map<string, TableApplier>()
   readonly #warnedTables = new Set<string>()
+  readonly #warnedNoApplier = new Set<string>()
   readonly #statusListeners = new Set<(status: SyncStatus) => void>()
+  #intentRunner: IntentTransactionRunner | null = null
 
   #socket: WebSocketLike | null = null
   #status: SyncStatus = 'idle'
@@ -256,6 +304,19 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     return () => {
       if (this.#tables.get(tbl) === hooks) this.#tables.delete(tbl)
     }
+  }
+
+  /**
+   * Attaches a table's collection applier so `mutate` can run the shared
+   * mutator locally for an instant optimistic effect (adapter-facing, like
+   * `registerTable`; `workspaceCollectionOptions` and `createCollections`
+   * call it for you). Re-registering a table replaces its applier. The
+   * runner supplies the atomic-transaction primitive; every adapter passes
+   * an equivalent one, so the last registration wins.
+   */
+  registerApplier(tbl: string, applier: TableApplier, runner: IntentTransactionRunner): void {
+    this.#appliers.set(tbl, applier)
+    this.#intentRunner = runner
   }
 
   start(): void {
@@ -361,22 +422,103 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   }
 
   /**
-   * Queues a named mutation. Resolves when the server confirms it (the
-   * client's LMID reaches the mutation's id), rejects on permanent app error
-   * or timeout. Callers apply optimistic state before calling (TanStack DB
-   * does this via its transaction lifecycle).
+   * Applies a named mutation optimistically and queues it for the server.
+   * Resolves when the server confirms it (the client's LMID reaches the
+   * mutation's id), rejects on permanent app error or timeout.
    *
-   * When the client holds a mutator registry, the name and args are typed
-   * from it and args are validated locally before queueing (the wire still
-   * carries the original args — the server's parse is authoritative).
+   * The name and args are typed from the app's mutator registry, and args
+   * are validated locally before queueing (the wire still carries the
+   * original args — the server's parse is authoritative).
+   *
+   * When collections are attached (`createCollections` /
+   * `workspaceCollectionOptions`), the shared mutator's `apply` runs locally
+   * first against the collections' current view, and its writes land as one
+   * atomic optimistic overlay: visible immediately, swapped for the server's
+   * authoritative patch on confirm, rolled back together on rejection. The
+   * overlay is a frozen prediction — a remote change arriving mid-flight
+   * rebases the *originally computed* writes, and the confirm patch replaces
+   * them with the server's authoritative result (which ran against current
+   * state). A mutator that throws `AppError` locally rejects immediately and
+   * queues nothing; one that touches a table without an attached collection
+   * skips the overlay (warns once) but still reaches the server. Note that a
+   * `Timeout` rejection rolls the overlay back while — with a durable store —
+   * the mutation *stays queued*: rejection means "your overlay is gone", not
+   * "this will never apply"; the rows reappear if the mutation later confirms.
    */
   mutate<K extends keyof M & string>(name: K, ...rest: MutationArgs<M[K]>): Promise<void> {
     const args: unknown = rest[0]
     if (this.#status === 'fatal') {
       return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
     }
-    const registry = this.#opts.app.mutators as AnyMutators
-    const def = registry[name]
+    const def = (this.#opts.app.mutators as AnyMutators)[name]
+    if (!def) {
+      return Promise.reject(
+        new MutationError('UnknownMutator', `no mutator named "${name}" in the app passed to SyncClient`),
+      )
+    }
+    let applyArgs: unknown = args
+    if (def.args) {
+      const result = def.args['~standard'].validate(args)
+      if (result instanceof Promise) {
+        // Async validators can't gate a synchronous queue (or a synchronous
+        // local run); the server rejects them authoritatively.
+        void result.catch(() => {})
+        return this.#enqueue(name, args)
+      }
+      if (result.issues) {
+        return Promise.reject(
+          new MutationError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`),
+        )
+      }
+      // The local run mirrors the server: apply sees the parsed args.
+      applyArgs = result.value
+    }
+
+    const runner = this.#intentRunner
+    if (!runner || this.#appliers.size === 0) return this.#enqueue(name, args)
+
+    // Speculative run against a buffered write set (the client mirror of the
+    // server's WriteSet): reads see the buffer first, then the collections'
+    // optimistic view; puts validate through the table schema so the overlay
+    // carries the parsed output (defaults applied) — the same shape the
+    // confirm poke will carry.
+    const writes = new LocalWriteSet(this.schema, this.#appliers)
+    try {
+      def.apply(writes.tx, applyArgs, { clientId: this.#clientId })
+    } catch (err) {
+      if (err instanceof MissingApplierError) {
+        this.#warnNoApplier(name, err.tbl)
+        return this.#enqueue(name, args)
+      }
+      // Fail fast, nothing queued: an AppError here would be a permanent
+      // server rejection too (mutators must reserve throws for genuine
+      // invariant violations, not "row not synced yet" races).
+      if (err instanceof AppError) {
+        return Promise.reject(new MutationError(err.code, err.message))
+      }
+      const detail = err instanceof Error ? err.message : String(err)
+      return Promise.reject(
+        new MutationError('LocalApplyFailed', `mutator "${name}" threw during local apply: ${detail}`),
+      )
+    }
+    if (writes.isEmpty()) return this.#enqueue(name, args)
+    return runner(
+      name,
+      () => this.#flushLocalWrites(writes),
+      () => this.#enqueue(name, args),
+    )
+  }
+
+  /**
+   * The adapter's raw path (see `RAW_MUTATE`): validate and enqueue, no
+   * speculative local run — collection mutation handlers already *are* the
+   * optimistic effect.
+   */
+  [RAW_MUTATE](name: string, args: unknown): Promise<void> {
+    if (this.#status === 'fatal') {
+      return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
+    }
+    const def = (this.#opts.app.mutators as AnyMutators)[name]
     if (!def) {
       return Promise.reject(
         new MutationError('UnknownMutator', `no mutator named "${name}" in the app passed to SyncClient`),
@@ -385,14 +527,44 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (def.args) {
       const result = def.args['~standard'].validate(args)
       if (result instanceof Promise) {
-        // Async validators can't gate a synchronous queue; the server
-        // rejects them authoritatively.
         void result.catch(() => {})
       } else if (result.issues) {
         return Promise.reject(
           new MutationError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`),
         )
       }
+    }
+    return this.#enqueue(name, args)
+  }
+
+  /** Translates an intent's net writes to collection ops (inside the runner's atomic scope). */
+  #flushLocalWrites(writes: LocalWriteSet): void {
+    for (const { tbl, id, data } of writes.puts()) {
+      const applier = this.#appliers.get(tbl)
+      if (!applier) continue // detached mid-flight; the server still applies
+      if (applier.has(id)) applier.update(id, data)
+      else applier.insert(data)
+    }
+    for (const { tbl, id } of writes.dels()) {
+      const applier = this.#appliers.get(tbl)
+      if (applier?.has(id)) applier.delete(id)
+    }
+  }
+
+  #warnNoApplier(mutator: string, tbl: string): void {
+    if (this.#warnedNoApplier.has(tbl)) return
+    this.#warnedNoApplier.add(tbl)
+    console.warn(
+      `[cf-sync] mutator "${mutator}" touched table "${tbl}" which has no attached collection — ` +
+        `the mutation still applies on the server, but without a local optimistic effect. ` +
+        `Create the table's collection (createCollections covers every schema table) to restore it.`,
+    )
+  }
+
+  /** Queues a validated mutation; resolves/rejects on server confirm (the LMID contract). */
+  #enqueue(name: string, args: unknown): Promise<void> {
+    if (this.#status === 'fatal') {
+      return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
     }
     const timeoutMs = this.#opts.confirmTimeoutMs ?? 30_000
     return new Promise<void>((resolve, reject) => {
@@ -865,6 +1037,112 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     this.#warnedTables.add(tbl)
     console.warn(`[cf-sync] dropping synced data for unregistered table "${tbl}"`)
   }
+}
+
+/** Signals the speculative run touched a table with no attached collection (degrade, not error). */
+class MissingApplierError extends Error {
+  constructor(readonly tbl: string) {
+    super(`no collection attached for table "${tbl}"`)
+    this.name = 'MissingApplierError'
+  }
+}
+
+/**
+ * Buffers a single intent's local writes — the client mirror of the server's
+ * WriteSet (DESIGN.md §6). Reads see the mutation's own buffer first, then
+ * fall through to the table's collection (whose view already includes earlier
+ * pending intents' overlays, so overlapping intents read each other). Any
+ * touched table without an attached collection aborts the speculative run via
+ * `MissingApplierError` — a partial overlay would be worse than none.
+ */
+class LocalWriteSet {
+  readonly #puts = new Map<string, { tbl: string; id: string; data: Record<string, unknown> }>()
+  readonly #dels = new Map<string, { tbl: string; id: string }>()
+
+  constructor(
+    private readonly schema: AnySyncSchema,
+    private readonly appliers: Map<string, TableApplier>,
+  ) {}
+
+  #applier(tbl: string): TableApplier {
+    const applier = this.appliers.get(tbl)
+    if (!applier) throw new MissingApplierError(tbl)
+    return applier
+  }
+
+  readonly tx: MutatorTx = {
+    get: (tbl, id) => {
+      const applier = this.#applier(tbl)
+      const k = rowKey(tbl, id)
+      if (this.#dels.has(k)) return null
+      const buffered = this.#puts.get(k)
+      if (buffered) return structuredClone(buffered.data)
+      const row = applier.get(id)
+      return row ? structuredClone(row) : null
+    },
+    list: (tbl) => {
+      const applier = this.#applier(tbl)
+      const merged = new Map<string, Record<string, unknown>>()
+      for (const { id, data } of applier.list()) merged.set(id, structuredClone(data))
+      for (const del of this.#dels.values()) if (del.tbl === tbl) merged.delete(del.id)
+      for (const put of this.#puts.values()) if (put.tbl === tbl) merged.set(put.id, structuredClone(put.data))
+      return [...merged].map(([id, data]) => ({ id, data }))
+    },
+    put: (tbl, id, data) => {
+      // Schema validation first: a table outside the schema is a permanent
+      // InvalidArgs on the server too, so fail fast. A schema table without a
+      // collection only degrades (checked after).
+      const stored = validateLocalRow(this.schema, tbl, id, data as Record<string, unknown>)
+      this.#applier(tbl)
+      const k = rowKey(tbl, id)
+      this.#dels.delete(k)
+      this.#puts.set(k, { tbl, id, data: stored })
+    },
+    del: (tbl, id) => {
+      this.#applier(tbl)
+      const k = rowKey(tbl, id)
+      this.#puts.delete(k)
+      this.#dels.set(k, { tbl, id })
+    },
+  }
+
+  isEmpty(): boolean {
+    return this.#puts.size === 0 && this.#dels.size === 0
+  }
+
+  puts(): Iterable<{ tbl: string; id: string; data: Record<string, unknown> }> {
+    return this.#puts.values()
+  }
+
+  dels(): Iterable<{ tbl: string; id: string }> {
+    return this.#dels.values()
+  }
+}
+
+function rowKey(tbl: string, id: string): string {
+  return `${tbl}\u0000${id}`
+}
+
+/** The client mirror of the server's `validateRow`: parsed output in the overlay, or a permanent AppError. */
+function validateLocalRow(
+  schema: AnySyncSchema,
+  tbl: string,
+  id: string,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const tableSchema = (schema.tables as Record<string, TableSchema>)[tbl]
+  if (!tableSchema) {
+    throw new AppError('InvalidArgs', `table "${tbl}" is not defined in the schema`)
+  }
+  const result = tableSchema['~standard'].validate(data)
+  if (result instanceof Promise) {
+    void result.catch(() => {})
+    throw new AppError('InvalidArgs', `table "${tbl}": async validation is not supported`)
+  }
+  if (result.issues) {
+    throw new AppError('InvalidArgs', `invalid row ${tbl}/${id}: ${formatIssues(result.issues)}`)
+  }
+  return result.value as Record<string, unknown>
 }
 
 /**

@@ -73,6 +73,14 @@ The server validates every row write against the table's schema and every
 mutation's args against its `args` schema before `apply` runs — a client can
 never write a shape the schema doesn't allow, no matter what it sends.
 
+The same `apply` also runs **on the client** when you call `mutate`, producing
+the optimistic effect (see "Consuming it from the client"). Two authoring
+rules follow: reserve `throw` for genuine invariant violations — a local throw
+rejects the call immediately and sends nothing, and local state can be
+*behind* the server, so "row not synced yet" must not be an error — and pass
+nondeterministic values (ids, timestamps) in as args rather than computing
+them inside `apply`, so the local prediction matches what the server echoes.
+
 ### Evolving the schema
 
 Bump `version` and append a migration step in the same object. Steps chain,
@@ -163,6 +171,20 @@ client.start()
 issues.insert({ id: ulid(), title: 'ship it' })   // optimistic; `column` filled by its default
 await client.mutate('issue.move', { id, column }) // typed: a typo'd name or bad args is a compile error
 ```
+
+`mutate` is optimistic out of the box: the shared mutator's `apply` runs
+locally against your collections first, and its writes land as one atomic
+overlay — visible instantly, swapped for the server's authoritative patch on
+confirm, rolled back together if the server rejects. Multi-row intents like
+`clearCompleted` are therefore one line and one wire mutation; there is no
+separate "optimistic effect" to hand-write, and no per-row crud echo.
+
+One semantic to know: a **rejection means your overlay rolled back, not that
+the mutation won't apply**. In particular a `Timeout` rejection (offline
+longer than `confirmTimeoutMs`) rolls the overlay back while — with `persist`
+on — the mutation stays durably queued and still applies when connectivity
+returns, at which point the rows reappear via the server patch. Check
+`MutationError.code` before telling the user something failed permanently.
 
 Sync status is observable via `client.subscribeStatus` (returns an
 unsubscribe function, safe to pass unbound) — in React:

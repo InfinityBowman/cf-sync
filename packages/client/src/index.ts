@@ -1,8 +1,10 @@
 export {
   MutationError,
   SyncClient,
+  type IntentTransactionRunner,
   type SyncClientOptions,
   type SyncStatus,
+  type TableApplier,
   type TableHooks,
   type TableWriteOp,
   type WebSocketLike,

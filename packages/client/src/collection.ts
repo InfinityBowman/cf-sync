@@ -1,6 +1,135 @@
 import type { AnySyncSchema, RowInputOf, RowOf, StandardSchemaV1, TableName, TableSchema } from '@cf-sync/protocol'
-import { createCollection, type Collection, type CollectionConfig } from '@tanstack/db'
-import type { SyncClient } from './client'
+import { createCollection, createTransaction, type Collection, type CollectionConfig } from '@tanstack/db'
+import {
+  RAW_MUTATE,
+  type IntentTransactionRunner,
+  type SyncClient,
+  type TableApplier,
+  type TableHooks,
+  type TableWriteOp,
+} from './client'
+
+/**
+ * DESIGN.md §7.2: one atomic optimistic transaction per intent mutation.
+ * Writes inside `tx.mutate` join the ambient transaction and skip the
+ * collections' own mutation handlers; the overlay drops when `persist`
+ * resolves (the confirm patch is already applied — synced commits buffer
+ * while the transaction persists, so the swap is one recompute) and rolls
+ * back when it rejects.
+ */
+const runIntentTransaction: IntentTransactionRunner = (intent, flush, persist) => {
+  const tx = createTransaction({ mutationFn: () => persist(), metadata: { intent } })
+  tx.mutate(flush)
+  if (tx.mutations.length === 0) {
+    // TanStack resolves a mutation-less transaction without calling its
+    // mutationFn. The flush can net out to nothing the collections need to
+    // change (delete of an absent row, put equal to the current value) —
+    // but the mutation must still reach the server: local state may be
+    // behind, and the server's run is the one that counts.
+    return persist()
+  }
+  return tx.isPersisted.promise.then(() => undefined)
+}
+
+/** TanStack enriches rows with virtual props; keep them out of mutator reads and overlays. */
+function stripVirtualProps(row: Record<string, unknown>): Record<string, unknown> {
+  const { $synced, $origin, $key, $collectionId, ...data } = row as Record<string, unknown> & {
+    $synced?: unknown
+    $origin?: unknown
+    $key?: unknown
+    $collectionId?: unknown
+  }
+  return data
+}
+
+/**
+ * Fronts a table's hooks so they can register with the client at options
+ * creation, before TanStack starts the (lazy) sync pipeline. While detached
+ * it absorbs synced data into a compacting buffer — last op per row id plus a
+ * pending-clear flag, sufficient because patches are full-row LWW — and
+ * `attach` drains the buffer into the real hooks as one synced transaction,
+ * then becomes pass-through. This removes the late-`registerTable` full
+ * resync for every collection created before its first subscriber (DESIGN.md
+ * §7.2).
+ */
+interface HookGate {
+  hooks: TableHooks
+  attach(target: TableHooks): void
+  detach(): void
+}
+
+function createHookGate(): HookGate {
+  let target: TableHooks | null = null
+  let pendingClear = false
+  let pendingReady = false
+  const pendingOps = new Map<string, TableWriteOp>()
+  return {
+    hooks: {
+      begin: () => target?.begin(),
+      write: (op) => {
+        if (target) target.write(op)
+        else pendingOps.set(op.id, op)
+      },
+      commit: () => target?.commit(),
+      truncate: () => {
+        if (target) {
+          target.truncate()
+        } else {
+          pendingClear = true
+          pendingOps.clear()
+        }
+      },
+      markReady: () => {
+        if (target) target.markReady()
+        else pendingReady = true
+      },
+    },
+    attach: (t) => {
+      target = t
+      if (pendingClear || pendingOps.size > 0) {
+        t.begin()
+        if (pendingClear) t.truncate()
+        for (const op of pendingOps.values()) t.write(op)
+        t.commit()
+      }
+      if (pendingReady) t.markReady()
+      pendingClear = false
+      pendingReady = false
+      pendingOps.clear()
+    },
+    detach: () => {
+      target = null
+    },
+  }
+}
+
+function collectionApplier(collection: Collection<any, string, any, any, any>): TableApplier {
+  return {
+    has: (id) => collection.has(id),
+    get: (id) => {
+      const row = collection.get(id) as Record<string, unknown> | undefined
+      return row ? stripVirtualProps(row) : null
+    },
+    list: () =>
+      Array.from(collection.entries() as IterableIterator<[string, Record<string, unknown>]>, ([id, data]) => ({
+        id,
+        data: stripVirtualProps(data),
+      })),
+    insert: (data) => {
+      collection.insert(data)
+    },
+    update: (id, data) => {
+      // Full-row replacement through the draft proxy (rows are LWW documents).
+      collection.update(id, (draft: Record<string, unknown>) => {
+        for (const key of Object.keys(draft)) if (!(key in data)) delete draft[key]
+        Object.assign(draft, data)
+      })
+    },
+    delete: (id) => {
+      collection.delete(id)
+    },
+  }
+}
 
 export type WorkspaceCollectionConfig<S extends AnySyncSchema, K extends TableName<S>> = {
   client: SyncClient<S, any>
@@ -28,6 +157,11 @@ export type WorkspaceCollectionConfig<S extends AnySyncSchema, K extends TableNa
  * each handler resolves only when the server confirms the mutation, at which
  * point TanStack DB drops the optimistic overlay (rebase is handled by the
  * store, see DESIGN.md §7).
+ *
+ * Table hooks register with the client at options creation, buffered until
+ * TanStack starts the sync pipeline — a lazily-subscribed collection costs no
+ * full resync. The collection also serves as `mutate`'s optimistic surface:
+ * intent mutations run their shared `apply` against it locally (§7.2).
  */
 export function workspaceCollectionOptions<S extends AnySyncSchema, K extends TableName<S>>(
   cfg: WorkspaceCollectionConfig<S, K>,
@@ -64,10 +198,19 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
       }
       return id
     })
-  // Internal mutations are envelope-typed; the public typed surface lives on
-  // the caller's own registry.
-  const mutate = (name: string, args: unknown): Promise<void> =>
-    (client as SyncClient).mutate(name, args)
+  // Collection handlers ARE the optimistic effect, so they enqueue through
+  // the raw path — routing them through `mutate` would recursively spawn a
+  // second transaction re-applying the same write.
+  const mutate = (name: string, args: unknown): Promise<void> => (client as SyncClient)[RAW_MUTATE](name, args)
+
+  // Hooks register with the client NOW — at options creation, not at first
+  // subscriber. The gate buffers synced data until TanStack starts the (lazy)
+  // sync pipeline, so collections created up front never trigger the
+  // late-registration full resync no matter when they get their first
+  // subscriber (DESIGN.md §7.2).
+  const gate = createHookGate()
+  let registered = true
+  let unregister = client.registerTable(table, gate.hooks)
 
   return {
     // Scoped by workspace so an app with two open workspaces never collides
@@ -80,10 +223,21 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
       rowUpdateMode: 'full',
       sync: (params) => {
         const { begin, write, commit, markReady, truncate } = params
+        // Attach the applier for optimistic intent execution (idempotent —
+        // createCollections already attached it at creation; this covers
+        // hand-rolled createCollection(workspaceCollectionOptions(…)) setups).
+        client.registerApplier(table, collectionApplier(params.collection), runIntentTransaction)
+        if (!registered) {
+          // Restart after cleanup: TanStack wiped the collection's state and
+          // the engine keeps no mirror, so this re-registration deliberately
+          // triggers the full-resync path (rare).
+          unregister = client.registerTable(table, gate.hooks)
+          registered = true
+        }
         // Tracks keys present in synced state so server puts map to
         // insert-vs-update (the Electric adapter uses the same technique).
         const syncedKeys = new Set<string>()
-        const unregister = client.registerTable(table, {
+        gate.attach({
           begin: () => begin(),
           write: (op) => {
             if (op.type === 'put') {
@@ -101,7 +255,13 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
           },
           markReady: () => markReady(),
         })
-        return { cleanup: unregister }
+        return {
+          cleanup: () => {
+            gate.detach()
+            unregister()
+            registered = false
+          },
+        }
       },
     },
     onInsert: async ({ transaction }) => {
@@ -162,7 +322,11 @@ export function createCollections<S extends AnySyncSchema>(
       S,
       TableName<S>
     >
-    collections[table] = createCollection(workspaceCollectionOptions(config))
+    const collection = createCollection(workspaceCollectionOptions(config))
+    // Attach the applier now (not at first sync) so intents fired before a
+    // collection has subscribers still get their optimistic effect.
+    client.registerApplier(table, collectionApplier(collection), runIntentTransaction)
+    collections[table] = collection
   }
   return collections as WorkspaceCollections<S>
 }

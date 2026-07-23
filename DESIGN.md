@@ -361,9 +361,9 @@ guard in `applyPoke`).
 
 **Semantics locked in:**
 - After a reload, replayed-but-unconfirmed mutations do not show optimistically —
-  the UI shows last-synced state until the server confirms. Avoiding this would
-  require client-side mutator implementations for rewind/replay, which the
-  server-authoritative design deliberately rejects.
+  the UI shows last-synced state until the server confirms. (§7.2's local apply
+  makes Replicache-style startup replay *possible*; it is deliberately deferred —
+  see the phase-2 note there — so this rule stands.)
 - With a store, a confirm timeout settles the caller's promise (rejects, so the
   optimistic overlay rolls back) but keeps the mutation queued: durable intent
   outlives the UI signal. Without a store, timeout still discards.
@@ -371,6 +371,158 @@ guard in `applyPoke`).
   schema-version mismatch at hydration discards cache *and* queued mutations
   (they target the old schema); a `backendId` change flows through naturally as
   a clear poke.
+
+### 7.2 Optimistic intent mutators (decided, implemented)
+
+Intent mutations (`client.mutate('todos.clearCompleted')`) run the shared
+`apply` **speculatively on the client** so their effects show instantly,
+while the server's authoritative run remains the truth. No new public API:
+`mutate` becomes optimistic when collections are attached; without them it
+degrades to today's server-only behavior. This kills the double-mutation
+workaround (intent mutation + N manual crud mirrors = N+1 wire mutations for
+one user action — and the mirrors are *competing server mutations*, not an
+overlay: they'd commit even if the intent were rejected).
+
+**Prior art.** Three models exist for an intent's optimistic effect; which
+one we're in matters more than any API choice. Replicache/Zero store a
+re-executable recipe (`{mutatorName, args}`) and **re-execute** it against the
+new base on rebase (`replicache/src/db/rebase.ts:25-99`; replay set selection
+in `sync/pull.ts:354-394`). LiveStore makes the mutator canonical: mutations
+are an event log, state is materialized from it, and rebase rolls back
+per-event changesets and re-runs materializers over the reordered log
+(`@livestore/common/src/sync/ClientSessionSyncProcessor.ts:170-247`) — hard
+determinism required. TanStack DB stores a **frozen diff**: the optimistic
+callback runs once and rebase re-layers the snapshots; logic never re-runs.
+We are in the TanStack model by prior decision (§7: "we never implement
+rewind/replay ourselves"). Two ecosystem facts support the design: TanStack's
+own mutations guide recommends exactly this transaction pattern for
+intent-based, multi-collection mutations (`docs/guides/mutations.md:161-199`),
+and our registry independently converged on Zero's newest mutator API shape
+(`zql/src/mutate/mutator.ts:191-199`), which is why their client-execution
+story ports cleanly onto our shared `apply`.
+
+**Mechanism.** TanStack DB provides exactly the needed seams, verified against
+its source:
+
+1. Collection writes inside an explicit transaction's `mutate()` callback join
+   that transaction and **bypass `onInsert`/`onUpdate`/`onDelete`**
+   (`collection/mutations.ts:224`) — the transaction's `mutationFn` is the sole
+   persistence path. So: one `createTransaction` per intent mutation, overlay
+   writes across any number of collections, `mutationFn` = enqueue in the
+   outbox and await confirm (the existing path, untouched).
+2. While a transaction is `persisting`, synced commits buffer instead of
+   applying (`collection/state.ts:876`), and `#applyPoke` writes the
+   authoritative patch into the table hooks *before* settling the confirm
+   promise. Net ordering: patch buffers → confirm resolves → transaction
+   completes → buffered patch applies and the overlay drops in one recompute —
+   an atomic swap, not just a favorable ordering. The crud path already rides
+   this. (One exception: `hasTruncateSync` bypasses the buffer, so a reset
+   poke's `clear` applies immediately even mid-persist — benign, truncate
+   preserves overlays via its snapshot mechanism.)
+3. On synced changes underneath a pending transaction, TanStack recomputes the
+   overlay from each pending mutation's **frozen** `modified` value
+   (`collection/state.ts:611-637`) — pending logic is never re-run.
+4. Our mutator surface is already client-executable: `apply` is synchronous —
+   matching TanStack's synchronous-`onMutate` rule exactly (Zero needed async
+   plumbing; we don't) — `MutatorTx` is four methods, and `MutatorContext` is
+   `{ clientId }`, which the client has.
+
+The speculative run goes through a `LocalWriteSet` mirroring the server's
+`WriteSet`: reads check its own buffer first, then the collection's optimistic
+view (which already includes earlier pending transactions, so back-to-back
+intents read each other); `put` validates input → stored output through the
+table schema exactly like the server. Only after `apply` completes does the
+buffer flush into the TanStack transaction (insert-vs-update by key presence;
+`transaction.metadata` tagged with the intent name for debuggability).
+
+Plumbing: `SyncClient` stays framework-agnostic — the collection adapter
+injects one applier function, and `client.ts` never imports TanStack. The
+crud handlers (`onInsert`/`onUpdate`/`onDelete`) switch to an internal
+raw-enqueue path so a `sync.put` emitted by a collection write doesn't
+recursively spawn a second transaction.
+
+**Decisions:**
+
+- **Rebase = frozen writes, not re-run.** A `clearCompleted` overlay won't
+  retroactively clear a todo completed remotely mid-flight; the server's run
+  sees current state and its confirm patch replaces the overlay. Prediction,
+  then truth. Re-running `apply` on rebase (Replicache's model) would
+  contradict this section's premise that TanStack owns rebase, for a
+  divergence window bounded by one round-trip.
+- **Determinism travels in args.** Mutators must be deterministic functions of
+  `(tx, args, ctx)`: IDs, timestamps, and anything random are generated at the
+  call site and passed as args — never `Date.now()`/`crypto.randomUUID()`
+  inside `apply`. This is the zbugs convention (args schemas carry `id`,
+  `created`, `modified`: `apps/zbugs/shared/mutators.ts:19-33`; the server may
+  still substitute authoritative values, `server-mutators.ts:35-46`) and is
+  what makes the local guess byte-identical to the server echo, so the confirm
+  swap is invisible. Documented convention, not enforced — divergence is
+  temporary either way, since the confirm patch replaces the overlay.
+- **Local throw = fail fast.** An `AppError` from the speculative run rejects
+  with its code (a `MutationError`, same shape as a server permanent error);
+  any other throw rejects as `LocalApplyFailed`. Nothing queued, nothing
+  shown — mirrors the `InvalidArgs` fail-fast and Replicache (a client-side
+  throw commits and pushes nothing, `replicache-impl.ts:1582-1589`). This puts
+  a burden on mutator authors — local state can be behind the server, so a
+  missing-row `NotFound` throw locally rejects a mutation the server would
+  accept. The mutator-authoring docs must teach the pattern (guard or no-op on
+  missing rows; reserve throws for true invariants) right where the README's
+  `issue.move` example lives.
+- **Degrade, never lie.** If `apply` touches a table with no attached
+  collection, the speculative run is discarded (warn once) but the mutation
+  **still enqueues** — optimism lost, correctness kept. `createCollections`
+  attaches every schema table, so the paved path always qualifies.
+- **Empty write set skips the transaction.** TanStack resolves a zero-mutation
+  commit *without calling `mutationFn`* (`transactions.ts:512`), which would
+  silently drop the mutation from the wire. A no-op-locally intent (stale
+  local view) must still reach the server: empty buffer → enqueue directly.
+- **Offline/reload semantics unchanged (phase 2).** §7.1's rules stand:
+  no optimistic display of replayed-but-unconfirmed mutations after reload;
+  timeout rolls the overlay back but keeps the mutation queued. Startup
+  replay of queued intents (Replicache does this) is now *possible* and
+  deliberately deferred — it needs its own pass on ordering and error
+  handling before `markReady`.
+- **Timeout is unchanged but now visible.** A `Timeout` rejection rolls the
+  overlay back while a durably-stored mutation stays queued and still applies
+  on reconnect — the rows then *reappear* via the confirm patch. Identical to
+  today's collection-handler behavior, but auto-optimistic intents make it
+  observable; the README must say plainly that rejection means "your overlay
+  rolled back," not "the mutation won't apply," and a test pins the
+  rollback-then-reappear sequence.
+
+**Registration is at creation, not sync-start.** `workspaceCollectionOptions`
+registers its table hooks with the client when the options are created,
+fronted by a compacting buffer (last op per row id + a pending-clear flag —
+sufficient because patches are full-row LWW). Pokes arriving before TanStack
+starts the sync pipeline (lazy collections: first subscriber after bootstrap)
+absorb into the buffer; when `sync.sync` runs, the buffer drains through
+`begin`/`write`/`commit` as one synced transaction and the hooks become
+pass-through (no retention). This **removes the late-`registerTable` full
+resync** for every collection created before first subscription — previously
+any lazily-subscribed collection cost a whole re-hello. The full-resync path
+remains only for genuinely late creation (a collection constructed after
+first sync) and for restart-after-cleanup, both rare. The optimistic surface
+(collection instances for `LocalWriteSet` reads/writes) attaches in
+`createCollections` immediately after each `createCollection`; `sync.sync`'s
+`params.collection` is the fallback attach for hand-rolled setups.
+
+**Known sharp edge (accepted).** TanStack rollback cascades: if intent A is
+rejected and pending intent B touched the same row, B's overlay rolls back
+too — but B's wire mutation is already queued and may still succeed, so the
+row flickers until B's confirm patch restores it. Transient and convergent;
+opting out would show state built on a rejected premise.
+
+**Deferred, deliberately.** Two seams this design leaves open without
+blocking:
+- *Typed action namespace* — `actions.todos.clearCompleted()` instead of
+  `mutate('todos.clearCompleted')` is a pure type-level wrapper over `mutate`
+  (Zero's `MakeCustomMutatorInterfaces` pattern,
+  `zero-client/src/client/custom.ts:95-110`).
+- *Per-mutator local override* — there is intentionally no way to hand-write
+  a local effect; a mutator that reads server-only state degrades to
+  non-optimistic with no recourse. Zero's registry-level overrides are the
+  precedent if this is ever wanted; it composes with the no-new-API surface
+  and is not built speculatively.
 
 ## 8. Connections, hibernation, lifecycle
 
@@ -511,9 +663,9 @@ first milestone, not an afterthought:
 4. **M3 — product hardening for corates.** Phase 1 *(done)*: client persistence via
    the `SyncStore` seam (§7.1) — IndexedDB-backed row mirror + cursor + durable
    outbox, instant hydration before connect, offline mutations replayed exactly
-   once under the LMID contract. Remaining: schema-version rollout drill,
-   collaborative text per the tiered strategy in §14 (built only when a field type
-   proves to need real merging).
+   once under the LMID contract. Remaining: optimistic intent mutators (§7.2,
+   designed), collaborative text per the tiered strategy in §14 (built only when a
+   field type proves to need real merging).
 
 ## 13. Open questions (deliberately deferred)
 
