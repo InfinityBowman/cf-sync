@@ -8,9 +8,10 @@ import { TestClient } from './harness'
 
 /**
  * Schema-drift detection: table schemas changing while the version string
- * stays put. Additive drift is legal (DESIGN.md §9); the engine can't tell
- * additive from breaking, so it warns once per change and restamps the
- * stored fingerprint.
+ * stays put — a forgotten version bump (DESIGN.md §9: every schema change
+ * requires one). The engine warns once per change and restamps the stored
+ * fingerprint; deliberately a warning, not an init failure, because the
+ * fingerprint can shift on a zod upgrade with no semantic change.
  */
 
 async function evict(workspaceId: string): Promise<void> {

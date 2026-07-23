@@ -414,14 +414,25 @@ settled:
 - `protocolVersion` (integer): server supports N and N-1; older clients get
   `VersionNotSupported` and the app hard-reloads. Server deploys before clients
   (Zero's rule, `protocol-version.ts:15-77`).
-- `schemaVersion` (string): identifies the app-data shape + mutator set. Policy:
-  additive-only changes within a version; renames/removals require a new version.
+- `schemaVersion` (string): identifies the app-data shape + mutator set. Policy
+  (revised 2026-07, now that the migration chain makes a bump one line): **every
+  schema change requires a version bump** — additive changes too, as a
+  migrate-less step (or with a `migrate` backfill when the new field has a
+  default). Two reasons the old additive-within-a-version allowance was unsound:
+  rows written before the change are never migrated, so a field with a default
+  is absent at runtime while `RowOf` claims it's present (defaults apply at
+  write, reads return raw stored JSON); and old bundles sharing the version
+  string stay connected indefinitely, where their full-row `sync.put`s silently
+  strip any new field a new-bundle client set. A bump closes both: the migration
+  backfills, and old bundles are rejected at hello within one reconnect.
   **Never remove a mutator name that shipped under a live schema version** (§3 D10).
-  The policy is backstopped by drift detection: the DO stores a structural
+  The policy is enforced by drift detection: the DO stores a structural
   fingerprint of the table schemas (JSON-Schema-derived for zod tables,
   `fingerprint.ts`) next to the stored version, and a wake that sees the same
-  version with a different fingerprint warns once — the engine can't tell
-  additive from breaking, so it names the policy and restamps rather than guess.
+  version with a different fingerprint warns once and restamps. Deliberately a
+  warning, not a hard error: the fingerprint derives from zod's JSON Schema
+  emission, which a zod upgrade could shift with no semantic change — a
+  heuristic detector gets to shout, never to take down availability.
 - Storage-format changes inside the DO are ordinary SQLite migrations in `onStart`,
   invisible to the protocol.
 - **App-schema rollout (drilled, M3):** exact-match policy — the server rejects any

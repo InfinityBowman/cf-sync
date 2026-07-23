@@ -106,10 +106,14 @@ schema, old clients are rejected at hello and reload into the new bundle, and
 a stored version outside the chain (e.g. a rollback deploy) aborts
 initialization instead of restamping data it can't interpret.
 
-As a backstop, each workspace stores a structural fingerprint of the table
-schemas: if a deploy changes the schemas *without* bumping the version, the DO
-logs a warning naming the policy (additive changes are fine within a version;
-anything else needs a bump + migration step) instead of drifting silently.
+**Every schema change requires a version bump** — additive ones too (a
+migrate-less step, or a `migrate` backfill when the new field has a default;
+without one, rows written before the change never gain the field at runtime,
+and old bundles sharing the version string can silently strip it via full-row
+writes). This is enforced: each workspace stores a structural fingerprint of
+the table schemas, and a deploy that changes them *without* bumping the
+version makes the DO log a warning telling you which step to add, instead of
+drifting silently.
 
 ## Defining a workspace server
 

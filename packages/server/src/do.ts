@@ -303,16 +303,19 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
         if (this.#meta.schemaVersion !== config.app.version) {
           this.#migrateAppSchema(fingerprint)
         } else if (this.#meta.schemaHash !== fingerprint) {
-          // Same version, different table schemas: additive drift is allowed
-          // (DESIGN.md §9), anything else is silent skew — say so, once per
-          // change. '' predates the fingerprint column; backfill quietly.
+          // Same version, different table schemas: a forgotten version bump
+          // (DESIGN.md §9 — every schema change requires one). Warn once per
+          // change and restamp; a hard error here would brick workspaces on a
+          // false positive (the fingerprint can shift with a zod upgrade).
+          // '' predates the fingerprint column; backfill quietly.
           if (this.#meta.schemaHash !== '') {
             console.warn(
               `[cf-sync] table schemas changed under schema version "${config.app.version}" ` +
-                `(fingerprint ${this.#meta.schemaHash} -> ${fingerprint}). Additive changes are fine ` +
-                `within a version; renames, removals, or type changes need a version bump and a ` +
-                `migration step in defineApp — without one, old clients and cached rows keep being ` +
-                `accepted as "${config.app.version}".`,
+                `(fingerprint ${this.#meta.schemaHash} -> ${fingerprint}). Every schema change ` +
+                `requires a version bump: add a step { from: '${config.app.version}', to: '<next>' } ` +
+                `to defineApp's migrations, with a migrate function if existing rows need ` +
+                `backfilling. Without one, old bundles and cached rows keep being accepted as ` +
+                `"${config.app.version}" and rows written before the change are never migrated.`,
             )
           }
           this.#sql.exec(`UPDATE meta SET schema_hash = ? WHERE id = 1`, fingerprint)
