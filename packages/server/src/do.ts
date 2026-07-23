@@ -45,9 +45,12 @@ export interface CompactionConfig {
   disabled?: boolean
 }
 
-export interface ExportConfig {
-  /** Resolves the R2 bucket from the worker env, e.g. `(env) => env.EXPORT_BUCKET`. */
-  bucket: (env: unknown) => R2Bucket
+export interface ExportConfig<Env = unknown> {
+  /**
+   * Resolves the R2 bucket from the worker env. Annotate the parameter to
+   * type the whole DO's env: `(env: Env) => env.EXPORT_BUCKET`.
+   */
+  bucket: (env: Env) => R2Bucket
   intervalMs?: number
   /** Log entries per exported object. */
   maxBatchRows?: number
@@ -57,7 +60,7 @@ export interface ExportConfig {
   prefix?: string
 }
 
-export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema> {
+export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, Env = unknown> {
   schemaVersion: string
   /**
    * The synced tables and their row schemas (`defineSchema`). Every `tx.put`
@@ -70,7 +73,7 @@ export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema> 
   mutators: MutatorsFor<S>
   compaction?: CompactionConfig
   /** Stream the mutation log to R2 for archive/analytics (DESIGN.md D3). */
-  export?: ExportConfig
+  export?: ExportConfig<Env>
   /**
    * Runs once, before any traffic, when the DO wakes with data stored under a
    * different schema version than the configured one (DESIGN.md §9). Rewrite
@@ -246,13 +249,13 @@ function validateTarget(tbl: string, id: string): void {
   }
 }
 
-export function createWorkspaceDO<S extends AnySyncSchema>(config: WorkspaceEngineConfig<S>) {
+export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config: WorkspaceEngineConfig<S, Env>) {
   const maintenanceIntervalMs = Math.min(
     config.compaction?.intervalMs ?? DEFAULT_COMPACTION_INTERVAL_MS,
     config.export ? (config.export.intervalMs ?? DEFAULT_EXPORT_INTERVAL_MS) : Number.POSITIVE_INFINITY,
   )
 
-  class WorkspaceDO extends DurableObject<unknown> {
+  class WorkspaceDO extends DurableObject<Env> {
     #sql: SqlStorage
     #meta!: Meta
     // Since-start operational counters (reset on eviction; durable gauges come
@@ -270,7 +273,7 @@ export function createWorkspaceDO<S extends AnySyncSchema>(config: WorkspaceEngi
       lastFanout: 0,
     }
 
-    constructor(ctx: DurableObjectState, env: unknown) {
+    constructor(ctx: DurableObjectState, env: Env) {
       super(ctx, env)
       this.#sql = ctx.storage.sql
       // Keepalives answered by the runtime so idle sockets never wake the DO.

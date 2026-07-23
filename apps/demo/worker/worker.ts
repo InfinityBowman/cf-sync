@@ -13,7 +13,8 @@ export const WorkspaceDO = createWorkspaceDO({
   schema,
   mutators,
   export: {
-    bucket: (env) => (env as Env).EXPORT_BUCKET,
+    // Annotating the param types the whole DO's env — no cast.
+    bucket: (env: Env) => env.EXPORT_BUCKET,
   },
   // demo-1 -> demo-2: todos gain a priority field. Runs once per workspace,
   // atomically, on the first wake after deploy; old clients are rejected at

@@ -67,7 +67,7 @@ export const WorkspaceDO = createWorkspaceDO({
   schema: testSchema,
   mutators: testMutators,
   export: {
-    bucket: (env) => (env as Env).EXPORT_BUCKET,
+    bucket: (env: Env) => env.EXPORT_BUCKET,
     maxBatchRows: 5, // small batches so tests exercise multi-object runs
   },
 })
