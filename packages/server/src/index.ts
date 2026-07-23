@@ -35,6 +35,7 @@ export {
   type RowInputOf,
   type RowOf,
   type SchemaMigration,
+  type SchemaMigrationFn,
   type StandardSchemaV1,
   type SyncSchema,
   type TableName,

@@ -15,7 +15,7 @@ export interface IndexedDBSyncStoreOptions {
 }
 
 interface MetaRecord {
-  schemaVersion: string
+  schemaVersion: number
   cursor: Cursor
 }
 

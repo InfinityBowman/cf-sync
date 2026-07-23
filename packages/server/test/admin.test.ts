@@ -45,7 +45,7 @@ describe('import validation', () => {
       method: 'POST',
       body: {
         formatVersion: 1,
-        schemaVersion: 'test-1',
+        schemaVersion: 1,
         rows: [{ tbl: 'typed', id: 'x', data: { n: 'not-a-number' } }],
       },
     })
@@ -61,7 +61,7 @@ describe('stats', () => {
     const stats = (await (await admin(workspace, 'stats')).json()) as any
     expect(stats).toMatchObject({
       workspaceId: workspace,
-      schemaVersion: 'test-1',
+      schemaVersion: 1,
       currentVersion: 3,
       rows: { live: 1, tombstones: 1 },
       mutationLogEntries: 3,
@@ -81,7 +81,7 @@ describe('export and import', () => {
     const c1 = await seed(source)
 
     const snapshot = (await (await admin(source, 'export')).json()) as any
-    expect(snapshot).toMatchObject({ formatVersion: 1, schemaVersion: 'test-1', version: 3 })
+    expect(snapshot).toMatchObject({ formatVersion: 1, schemaVersion: 1, version: 3 })
     expect(snapshot.rows).toEqual([{ tbl: 'todos', id: 't1', data: { title: 'a' } }])
 
     // Import into a different workspace that already has data + a live client.
@@ -113,7 +113,7 @@ describe('export and import', () => {
   it('rejects snapshots from a different schema version', async () => {
     const res = await admin(`imp-bad-${Date.now()}`, 'import', {
       method: 'POST',
-      body: { formatVersion: 1, schemaVersion: 'other', rows: [] },
+      body: { formatVersion: 1, schemaVersion: 999, rows: [] },
     })
     expect(res.status).toBe(400)
   })

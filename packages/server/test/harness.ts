@@ -27,7 +27,7 @@ export class TestClient {
   cursor: Cursor | null = null
   lmid = 0
   /** The app schema this client claims at hello (rollout tests override it). */
-  schemaVersion = 'test-1'
+  schemaVersion = 1
   errors: Extract<ServerMsg, { type: 'error' }>[] = []
 
   #ws!: WebSocket

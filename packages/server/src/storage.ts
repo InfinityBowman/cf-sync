@@ -9,9 +9,10 @@ export interface Meta {
   /**
    * The schema version the stored data was written under. May differ from the
    * configured version when the DO first wakes after a deploy — the engine
-   * then runs the schema migration (do.ts) and restamps it.
+   * then runs the schema migration (do.ts) and restamps it. Stored as TEXT
+   * for historical reasons; the value is always a positive integer.
    */
-  schemaVersion: string
+  schemaVersion: number
   /**
    * Structural fingerprint of the table schemas last seen for schemaVersion
    * (fingerprint.ts). A changed fingerprint under an unchanged version means
@@ -85,7 +86,7 @@ export function migrate(sql: SqlStorage): void {
   }
 }
 
-export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string, schemaHash: string): Meta {
+export function loadOrInitMeta(sql: SqlStorage, schemaVersion: number, schemaHash: string): Meta {
   const rows = sql
     .exec<{
       backend_id: string
@@ -107,7 +108,7 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string, schemaHas
       `INSERT INTO meta (id, backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq, schema_hash)
        VALUES (1, ?, 0, 0, ?, '', 0, ?)`,
       backendId,
-      schemaVersion,
+      String(schemaVersion),
       schemaHash,
     )
     return {
@@ -123,13 +124,20 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: string, schemaHas
   // A stored schema version differing from the configured one is surfaced to
   // the caller (the DO runs the migration chain and restamps) — never silently
   // overwritten here.
+  const storedSchemaVersion = Number(row.schema_version)
+  if (!Number.isInteger(storedSchemaVersion) || storedSchemaVersion < 1) {
+    throw new Error(
+      `stored schema version "${row.schema_version}" is not a positive integer — this workspace ` +
+        `predates numeric schema versions; reset it (admin POST reset) or import a snapshot`,
+    )
+  }
   return {
     backendId: row.backend_id,
     currentVersion: Number(row.current_version),
     minCursorVersion: Number(row.min_cursor_version),
     workspaceId: row.workspace_id,
     lastExportedSeq: Number(row.last_exported_seq),
-    schemaVersion: row.schema_version,
+    schemaVersion: storedSchemaVersion,
     schemaHash: row.schema_hash,
   }
 }

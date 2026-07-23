@@ -18,7 +18,7 @@ describe('bootstrap and hello', () => {
 
   it('rejects mismatched schema versions and closes', async () => {
     const c1 = await TestClient.connect(ws(), 'c1')
-    c1.send({ type: 'hello', protocolVersion: PROTOCOL_VERSION, schemaVersion: 'other', cursor: null })
+    c1.send({ type: 'hello', protocolVersion: PROTOCOL_VERSION, schemaVersion: 999, cursor: null })
     const msg = await c1.next()
     expect(msg).toMatchObject({ type: 'error', code: 'VersionNotSupported' })
   })

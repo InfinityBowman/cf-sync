@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { IndexedDBSyncStore } from '../src/idb-store'
 import type { PokePersist } from '../src/store'
 
-const SCHEMA = 'test-1'
+const SCHEMA = 1
 
 function makeStore(clientId = 'client-a', factory = new IDBFactory()) {
   return {

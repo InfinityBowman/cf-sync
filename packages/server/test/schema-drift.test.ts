@@ -23,16 +23,16 @@ async function evict(workspaceId: string): Promise<void> {
   })
 }
 
-function deploy(version: string, schema: AnySyncSchema): void {
+function deploy(version: number, schema: AnySyncSchema): void {
   rolloutConfig.app = defineApp({
     version,
     schema,
     mutators: { ...crudMutators(schema) },
-    migrations: version === 'test-1' ? [] : [{ from: 'test-1', to: version }],
+    migrations: version === 1 ? {} : { 2: null },
   })
 }
 
-function connect(workspaceId: string, schemaVersion = 'test-1'): Promise<TestClient> {
+function connect(workspaceId: string, schemaVersion = 1): Promise<TestClient> {
   return TestClient.connect(workspaceId, 'c1', '/rollout').then((c) => {
     c.schemaVersion = schemaVersion
     return c
@@ -93,14 +93,14 @@ describe('schema drift under an unchanged version', () => {
     expect(driftWarnings(warn)).toHaveLength(0)
 
     // "Deploy" changed table schemas without bumping the version.
-    deploy('test-1', driftedSchema)
+    deploy(1, driftedSchema)
     await evict(workspace)
     const c2 = await connect(workspace)
     await c2.syncOnce()
     c2.close()
     const warned = driftWarnings(warn)
     expect(warned).toHaveLength(1)
-    expect(String(warned[0]![0])).toContain('"test-1"')
+    expect(String(warned[0]![0])).toContain('schema version 1')
 
     // Fingerprint restamped: the same drifted schema does not warn again.
     await evict(workspace)
@@ -120,9 +120,9 @@ describe('schema drift under an unchanged version', () => {
 
     // Changed schemas AND a bumped version with a migration step: the
     // legitimate rollout path stays silent.
-    deploy('test-2', driftedSchema)
+    deploy(2, driftedSchema)
     await evict(workspace)
-    const c2 = await connect(workspace, 'test-2')
+    const c2 = await connect(workspace, 2)
     await c2.syncOnce()
     c2.close()
     expect(driftWarnings(warn)).toHaveLength(0)

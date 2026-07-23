@@ -60,7 +60,7 @@ const mutators = defineMutators(schema, {
   },
 })
 
-const app = defineApp({ version: 'test-1', schema, mutators })
+const app = defineApp({ version: 1, schema, mutators })
 const CLIENT_ID = 'client-a'
 
 type Todo = { id: string; title: string; completed: boolean; priority: string }
@@ -450,5 +450,98 @@ describe('optimistic intent mutations', () => {
     await flushMicrotasks()
     const pushes = socket.takeSent().filter((m) => m.type === 'push')
     expect(pushes.flatMap((p) => p.mutations.map((m) => m.name))).toEqual(['todos.add'])
+  })
+})
+
+describe('property-access mutate namespace', () => {
+  it('mutate.todos.add() is the same call as mutate("todos.add")', async () => {
+    const { client, todos, socket } = setup()
+    bootstrap(socket, [])
+    await todos.preload()
+    socket.takeSent()
+
+    const pending = client.mutate.todos.add({ id: 't9', title: 'via namespace' })
+    // Same optimistic overlay as the string form...
+    expect(todos.get('t9')).toMatchObject({ title: 'via namespace', completed: false })
+
+    await flushMicrotasks()
+    // ...and the identical wire mutation.
+    const pushes = socket.takeSent().filter((m) => m.type === 'push')
+    expect(pushes[0]!.mutations).toEqual([
+      { id: 1, name: 'todos.add', args: { id: 't9', title: 'via namespace' } },
+    ])
+
+    confirm(socket, 1, [
+      { op: 'put', tbl: 'todos', id: 't9', value: { id: 't9', title: 'via namespace', completed: false, priority: 'normal' } },
+    ])
+    await pending
+  })
+
+  it('no-arg leaves and validation behave like the string form', async () => {
+    const { client, todos, socket } = setup()
+    bootstrap(socket, [todo('t1', 'done', true)])
+    await todos.preload()
+    socket.takeSent()
+
+    // Local fail-fast arg validation is shared with the string form.
+    await expect(client.mutate.todos.add({ id: 1 } as never)).rejects.toSatisfy(
+      (e) => e instanceof MutationError && e.code === 'InvalidArgs',
+    )
+
+    const pending = client.mutate.todos.clearCompleted()
+    expect(todos.has('t1')).toBe(false)
+    await flushMicrotasks()
+    const pushes = socket.takeSent().filter((m) => m.type === 'push')
+    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'todos.clearCompleted', args: undefined }])
+    confirm(socket, 1, [{ op: 'del', tbl: 'todos', id: 't1' }])
+    await pending
+  })
+
+  it('tolerates mutator names that shadow Function properties', async () => {
+    const shadowSchema = defineSchema({ todos: z.record(z.string(), z.unknown()) })
+    const shadowMutators = defineMutators(shadowSchema, {
+      ...crudMutators(shadowSchema),
+      name: { apply: () => {} },
+      length: { apply: () => {} },
+      'call.me': { apply: () => {} },
+    })
+    const sockets: FakeSocket[] = []
+    const client = new SyncClient({
+      url: 'ws://test',
+      workspaceId: 'w1',
+      clientId: CLIENT_ID,
+      app: defineApp({ version: 1, schema: shadowSchema, mutators: shadowMutators }),
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    expect(typeof client.mutate.name).toBe('function')
+    expect(typeof client.mutate.length).toBe('function')
+    expect(typeof client.mutate.call.me).toBe('function')
+
+    client.start()
+    const socket = sockets[0]!
+    socket.open()
+    socket.receive({ type: 'pokeStart', pokeId: 'p', baseCursor: null })
+    socket.receive({ type: 'pokePart', pokeId: 'p', patch: [{ op: 'clear' }], lastMutationIdChanges: { [CLIENT_ID]: 0 } })
+    socket.receive({ type: 'pokeEnd', pokeId: 'p', cursor: { backendId: 'b1', version: 1 }, pageInfo: { more: false } })
+    socket.takeSent()
+
+    const pending = client.mutate.call.me()
+    await flushMicrotasks()
+    const pushes = socket.takeSent().filter((m) => m.type === 'push')
+    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'call.me', args: undefined }])
+    socket.receive({ type: 'pokeStart', pokeId: 'c', baseCursor: { backendId: 'b1', version: 1 } })
+    socket.receive({
+      type: 'pokePart',
+      pokeId: 'c',
+      patch: [],
+      lastMutationIdChanges: { [CLIENT_ID]: 1 },
+      mutationResults: [{ id: 1 }],
+    })
+    socket.receive({ type: 'pokeEnd', pokeId: 'c', cursor: { backendId: 'b1', version: 1 }, pageInfo: { more: false } })
+    await pending
   })
 })

@@ -29,7 +29,7 @@ function setup() {
     url: 'ws://test',
     workspaceId: 'w1',
     clientId: CLIENT_ID,
-    app: defineApp({ version: 'test-1', schema, mutators }),
+    app: defineApp({ version: 1, schema, mutators }),
     createSocket: () => {
       const socket = new FakeSocket()
       sockets.push(socket)
@@ -171,7 +171,7 @@ describe('typed mutate', () => {
   it('rejects mutators missing from the registry immediately', async () => {
     const { client } = setup()
     await expect(
-      (client as SyncClient).mutate('no.such.mutator', {}),
+      (client as unknown as SyncClient).mutate('no.such.mutator', {}),
     ).rejects.toSatisfy((e) => e instanceof MutationError && e.code === 'UnknownMutator')
   })
 
@@ -182,7 +182,7 @@ describe('typed mutate', () => {
       clientId: CLIENT_ID,
       // Intent-only registry: no sync.put / sync.del.
       app: defineApp({
-        version: 'test-1',
+        version: 1,
         schema,
         mutators: defineMutators(schema, { 'todos.clearCompleted': { apply: () => {} } }),
       }),
@@ -204,7 +204,7 @@ describe('createCollections', () => {
       url: 'ws://test',
       workspaceId: 'w1',
       clientId: CLIENT_ID,
-      app: defineApp({ version: 'test-1', schema: multiSchema, mutators: crudMutators(multiSchema) }),
+      app: defineApp({ version: 1, schema: multiSchema, mutators: crudMutators(multiSchema) }),
       createSocket: () => {
         const socket = new FakeSocket()
         sockets.push(socket)

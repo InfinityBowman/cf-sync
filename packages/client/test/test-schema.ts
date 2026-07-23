@@ -7,14 +7,14 @@ export const testSchema = defineSchema({
   notes: z.record(z.string(), z.unknown()),
 })
 
-/** The default app client tests construct SyncClient with (version 'test-1'). */
+/** The default app client tests construct SyncClient with (version 1). */
 export const testApp = defineApp({
-  version: 'test-1',
+  version: 1,
   schema: testSchema,
   mutators: crudMutators(testSchema),
 })
 
 /** An app identical to testApp except for its version (mismatch tests). */
-export function testAppAt(version: string) {
+export function testAppAt(version: number) {
   return defineApp({ version, schema: testSchema, mutators: crudMutators(testSchema) })
 }

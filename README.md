@@ -66,7 +66,7 @@ const mutators = defineMutators(schema, {
   },
 })
 
-export const app = defineApp({ version: 'app-1', schema, mutators })
+export const app = defineApp({ version: 1, schema, mutators })
 ```
 
 The server validates every row write against the table's schema and every
@@ -83,28 +83,26 @@ them inside `apply`, so the local prediction matches what the server echoes.
 
 ### Evolving the schema
 
-Bump `version` and append a migration step in the same object. Steps chain,
-so a workspace that slept through several deploys replays every hop; the chain
-is validated at startup (in both bundles), so bumping the version without a
-step is a loud error, not silent skew.
+Bump `version` (integers, starting at 1) and add a `migrations` entry keyed by
+the version it migrates *to* in the same object. A workspace that slept
+through several deploys replays every hop in order; the entries are validated
+at startup (in both bundles) — consecutive, ending at `version` — so bumping
+the version without saying what happens to existing data is a loud error, not
+silent skew.
 
 ```ts
 export const app = defineApp({
-  version: 'app-2',
+  version: 2,
   schema, // issues now also have `priority`
   mutators,
-  migrations: [
-    {
-      from: 'app-1',
-      to: 'app-2',
-      migrate: (tx) => {
-        for (const { id, data } of tx.list('issues')) {
-          tx.put('issues', id, { priority: 'normal', ...data })
-        }
-      },
+  migrations: {
+    2: (tx) => {
+      for (const { id, data } of tx.list('issues')) {
+        tx.put('issues', id, { priority: 'normal', ...data })
+      }
     },
-    // additive change, no data rewrite: { from: 'app-2', to: 'app-3' }
-  ],
+    // additive change, no data rewrite: 3: null
+  },
 })
 ```
 
@@ -114,14 +112,14 @@ schema, old clients are rejected at hello and reload into the new bundle, and
 a stored version outside the chain (e.g. a rollback deploy) aborts
 initialization instead of restamping data it can't interpret.
 
-**Every schema change requires a version bump** — additive ones too (a
-migrate-less step, or a `migrate` backfill when the new field has a default;
-without one, rows written before the change never gain the field at runtime,
-and old bundles sharing the version string can silently strip it via full-row
-writes). This is enforced: each workspace stores a structural fingerprint of
-the table schemas, and a deploy that changes them *without* bumping the
-version makes the DO log a warning telling you which step to add, instead of
-drifting silently.
+**Every schema change requires a version bump** — additive ones too (a `null`
+entry, or a `migrate` backfill when the new field has a default; without one,
+rows written before the change never gain the field at runtime, and old
+bundles sharing the version can silently strip it via full-row writes). This
+is enforced: each workspace stores a structural fingerprint of the table
+schemas, and a deploy that changes them *without* bumping the version makes
+the DO log a warning telling you which entry to add, instead of drifting
+silently.
 
 ## Defining a workspace server
 
@@ -185,8 +183,9 @@ const client = new SyncClient({
 const { issues } = createCollections(client)
 client.start()
 
-issues.insert({ id: ulid(), title: 'ship it' })   // optimistic; `column` filled by its default
-await client.mutate('issue.move', { id, column }) // typed: a typo'd name or bad args is a compile error
+issues.insert({ id: ulid(), title: 'ship it' })  // optimistic; `column` filled by its default
+await client.mutate.issue.move({ id, column })   // typed: names autocomplete, bad args are a compile error
+// (equivalent string form: client.mutate('issue.move', { id, column }))
 ```
 
 `mutate` is optimistic out of the box: the shared mutator's `apply` runs
@@ -209,6 +208,42 @@ unsubscribe function, safe to pass unbound) — in React:
 ```ts
 const status = useSyncExternalStore(client.subscribeStatus, () => client.status)
 ```
+
+## Testing your app
+
+`@cf-sync/server/testing` exports an in-memory workspace engine that runs the
+same write-buffer, validation, and error semantics as the Durable Object
+(shared code, not a reimplementation) — so mutators and migrations unit-test
+in plain vitest/jest, no workerd, in milliseconds. Import the definition kit
+from `@cf-sync/protocol` in test files (the server's main entry imports
+`cloudflare:workers`, which node can't load).
+
+```ts
+import { createTestEngine } from '@cf-sync/server/testing'
+import { app } from '../src/schema'
+
+it('clearCompleted deletes only completed todos', () => {
+  const engine = createTestEngine(app)
+  engine.seed('issues', 'i1', { id: 'i1', title: 'keep' })
+  const result = engine.mutate('issue.move', { id: 'i1', column: 'done' })
+  expect(result.error).toBeUndefined()
+  expect(engine.get('issues', 'i1')?.column).toBe('done')
+})
+
+it('the 1 -> 2 migration backfills priority', () => {
+  const engine = createTestEngine(app, {
+    storedVersion: 1, // rows below are stored raw in their old shape,
+    rows: { issues: { i1: { id: 'i1', title: 'old', column: 'doing' } } },
+  }) // ...and the migration chain replays here, like the DO's first wake
+  expect(engine.get('issues', 'i1')?.priority).toBe('normal')
+})
+```
+
+The engine honors the engine invariants — an `AppError` from a mutator (or
+invalid args) reports as `result.error` and still advances
+`engine.lastMutationId()` with no data written; any other throw is transient
+and rethrown with nothing committed; a migration chain that produces
+schema-invalid rows throws from `createTestEngine` itself.
 
 ## Operations
 

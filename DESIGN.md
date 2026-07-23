@@ -78,7 +78,7 @@ exchanged at connect; a mismatch closes the socket with a typed error.
 type HelloMsg = {
   type: 'hello'
   protocolVersion: number
-  schemaVersion: string
+  schemaVersion: number       // the app's integer schema version (defineApp)
   cursor: { backendId: string; version: number } | null   // null = bootstrap
 }
 
@@ -375,7 +375,7 @@ guard in `applyPoke`).
 
 ### 7.2 Optimistic intent mutators (decided, implemented)
 
-Intent mutations (`client.mutate('todos.clearCompleted')`) run the shared
+Intent mutations (`client.mutate.todos.clearCompleted()`) run the shared
 `apply` **speculatively on the client** so their effects show instantly,
 while the server's authoritative run remains the truth. No new public API:
 `mutate` becomes optimistic when collections are attached; without them it
@@ -513,12 +513,12 @@ too — but B's wire mutation is already queued and may still succeed, so the
 row flickers until B's confirm patch restores it. Transient and convergent;
 opting out would show state built on a rejected premise.
 
-**Deferred, deliberately.** Two seams this design leaves open without
-blocking:
-- *Typed action namespace* — `actions.todos.clearCompleted()` instead of
-  `mutate('todos.clearCompleted')` is a pure type-level wrapper over `mutate`
-  (Zero's `MakeCustomMutatorInterfaces` pattern,
-  `zero-client/src/client/custom.ts:95-110`).
+**Deferred, deliberately.** One seam this design leaves open without
+blocking (a second — the typed action namespace, Zero's
+`MakeCustomMutatorInterfaces` pattern, `zero-client/src/client/custom.ts:95-110`
+— shipped 2026-07 as the property-access form of `mutate` itself:
+`client.mutate.todos.clearCompleted()`, with the string form kept as the
+untyped escape hatch):
 - *Per-mutator local override* — there is intentionally no way to hand-write
   a local effect; a mutator that reads server-only state degrades to
   non-optimistic with no recourse. Zero's registry-level overrides are the
@@ -593,8 +593,11 @@ settled:
   and the app reloads into the new bundle, whose `SyncStore` cache is discarded on
   the version mismatch (§7.1) and re-bootstraps. Server-side data rewrites are
   declared as the app's **migration chain** (`defineApp`'s
-  `migrations: [{ from, to, migrate? }, …]`): an append-only version history,
-  validated at definition time (contiguous, acyclic, ending at `version`). On the
+  `migrations: { [toVersion]: migrateFn | null }`, keyed by integer target
+  version — `null` marks an additive change): a version history validated at
+  definition time (consecutive integers ending at `version`; entries below the
+  oldest version still in the field may be dropped, and a workspace stored
+  below the oldest entry aborts at wake instead of restamping). On the
   first wake under a new version, the DO replays every step from its stored
   version, before any traffic — a workspace that slept through several deploys
   replays multiple hops. All steps run against one write buffer (later steps read
@@ -604,7 +607,7 @@ settled:
   version restamp; `min_cursor_version` advances to it so no pre-migration cursor
   can catch up; `backendId` is untouched (same history — no outbox renumbering);
   per-client LMIDs survive, so mutations queued in old-bundle tabs still dedupe
-  correctly after their tab upgrades. A replay of migrate-less steps (additive
+  correctly after their tab upgrades. A replay of `null` steps (additive
   changes) just restamps and leaves cursors valid. A throwing step — or a stored
   version outside the declared chain, e.g. a rollback deploy — aborts DO
   initialization: old-shaped data is never served under the new version, and the
@@ -612,7 +615,7 @@ settled:
   `$system` spanning the whole jump. Deploy order: worker before (or atomically
   with) web assets, so no client ever speaks a schema the server hasn't reached.
   The full chain is enforced by `schema-rollout.test.ts` and was exercised live
-  (demo-1 → demo-2, 2026-07).
+  (demo v1 → v2, 2026-07).
 
 ## 10. Permissions (v1 scope)
 
@@ -642,6 +645,12 @@ first milestone, not an afterthought:
 - **Fault menu:** kill the DO between mutation apply and broadcast (poke lost → cursor
   catch-up must recover); compaction racing a stale client; push replay after
   reconnect (idempotency); schema-version mismatch handshake.
+- **App-developer testing (shipped 2026-07):** `@cf-sync/server/testing` exports
+  `createTestEngine(app)` — an in-memory engine over the same `WriteSet`/validation
+  core the DO runs (`engine-core.ts` is shared code, not a reimplementation), so app
+  teams unit-test mutators and migration chains in plain node vitest with the engine
+  invariants intact (AppError advances the LMID with writes discarded; transient
+  throws commit nothing; migration replay validates the chain's net result).
 
 ## 12. Milestones
 

@@ -4,7 +4,7 @@ import { SyncClient, type TableWriteOp } from '../src/client'
 import { testApp } from './test-schema'
 import { FakeSocket } from './fake-socket'
 
-const SCHEMA = 'test-1'
+const SCHEMA = 1
 
 function makeClient(overrides: Partial<ConstructorParameters<typeof SyncClient>[0]> = {}) {
   const sockets: FakeSocket[] = []

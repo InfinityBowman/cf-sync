@@ -4,7 +4,7 @@ import { MutationError, SyncClient, type TableWriteOp } from '../src/client'
 import { testApp } from './test-schema'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
-const SCHEMA = 'test-1'
+const SCHEMA = 1
 const CLIENT_ID = 'client-a'
 
 class RecordingHooks {

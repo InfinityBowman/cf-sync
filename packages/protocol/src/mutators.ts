@@ -99,8 +99,23 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
   } & D,
 ): D {
   void schema // participates in inference only; table validation happens in defineSchema
+  const names = new Set(Object.keys(defs as AnyMutators))
   for (const [name, def] of Object.entries(defs as AnyMutators)) {
     if (name.length === 0) throw new Error('defineMutators: mutator names must be non-empty')
+    if (name.split('.').some((segment) => segment.length === 0)) {
+      throw new Error(`defineMutators: mutator name "${name}" has an empty dot-segment`)
+    }
+    // Dots namespace the `client.mutate` call tree (mutate.todos.clearCompleted),
+    // so a name cannot be both a mutator and a namespace prefix of another.
+    for (let dot = name.indexOf('.'); dot !== -1; dot = name.indexOf('.', dot + 1)) {
+      const prefix = name.slice(0, dot)
+      if (names.has(prefix)) {
+        throw new Error(
+          `defineMutators: mutator "${prefix}" collides with the namespace of "${name}" — ` +
+            `a name cannot be both a mutator and a prefix of another (rename one of them)`,
+        )
+      }
+    }
     if (typeof def.apply !== 'function') {
       throw new Error(`defineMutators: mutator "${name}" has no apply function`)
     }

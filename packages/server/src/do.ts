@@ -20,16 +20,15 @@ import {
   type Mutation,
   type MutationResult,
   type MutatorContext,
-  type MutatorTx,
   type PatchOp,
   type PokeEndMsg,
   type PokePartMsg,
   type PokeStartMsg,
   type PushMsg,
-  type StandardSchemaV1,
 } from '@cf-sync/protocol'
 import { DurableObject } from 'cloudflare:workers'
 import { z } from 'zod'
+import { WriteSet, validateRow, type EngineRowStore } from './engine-core'
 import { schemaFingerprint } from './fingerprint'
 import { loadOrInitMeta, migrate, type Meta } from './storage'
 
@@ -101,7 +100,7 @@ const DEFAULT_EXPORT_MAX_OBJECTS = 20
 
 const importSnapshotSchema = z.object({
   formatVersion: z.literal(1),
-  schemaVersion: z.string().min(1),
+  schemaVersion: z.number().int().positive(),
   rows: z.array(
     z.object({
       tbl: z.string().min(1),
@@ -123,147 +122,52 @@ const PONG = KEEPALIVE_PONG
 /** Close codes with no peer to reciprocate to (RFC 6455 reserved). */
 const RESERVED_CLOSE_CODES = new Set([1005, 1006, 1015])
 
-interface RowWrite {
-  tbl: string
-  id: string
-  data: Record<string, unknown>
-}
-
 /**
- * Validates a row payload against its table's schema and returns the parsed
- * output (defaults applied). Only `put` is schema-strict — reads and deletes
- * stay loose so migrations can touch tables that left the schema.
+ * EngineRowStore over DO SQLite — the storage half of the shared WriteSet
+ * (engine-core.ts). Parsed JSON is always a fresh object, satisfying the
+ * private-copy contract.
  */
-function validateRow(schema: AnySyncSchema, tbl: string, id: string, data: Record<string, unknown>): Record<string, unknown> {
-  const tableSchema = (schema.tables as Record<string, StandardSchemaV1<unknown, Record<string, unknown>>>)[tbl]
-  if (!tableSchema) {
-    throw new AppError('InvalidArgs', `table "${tbl}" is not defined in the schema`)
-  }
-  const result = tableSchema['~standard'].validate(data)
-  if (result instanceof Promise) {
-    // Mutations apply inside a synchronous SQLite transaction; an async
-    // validator can never succeed here, so fail permanently and loudly.
-    void result.catch(() => {})
-    throw new AppError('InvalidArgs', `table "${tbl}": async validation is not supported`)
-  }
-  if (result.issues) {
-    throw new AppError('InvalidArgs', `invalid row ${tbl}/${id}: ${formatIssues(result.issues)}`)
-  }
-  return result.value
-}
+class SqlRowStore implements EngineRowStore {
+  constructor(private readonly sql: SqlStorage) {}
 
-/**
- * Buffers a single mutation's writes so they can be discarded on AppError
- * while the LMID advance still commits (DESIGN.md §6). Reads see the overlay.
- *
- * `validateAtFlush` defers row validation from `put` to `flush` — schema
- * migration replays need it, because intermediate steps of a chain may write
- * shapes that only become schema-valid after a later step rewrites them; only
- * the chain's net result must parse. Mutations keep validating at `put` so a
- * mutator reading back its own write sees the parsed output (defaults
- * applied), exactly what a poke will carry.
- */
-class WriteSet {
-  #puts = new Map<string, RowWrite>()
-  #dels = new Map<string, { tbl: string; id: string }>()
-
-  constructor(
-    private readonly sql: SqlStorage,
-    private readonly schema: AnySyncSchema,
-    private readonly validateAtFlush = false,
-  ) {}
-
-  readonly tx: MutatorTx = {
-    get: (tbl, id) => {
-      validateTarget(tbl, id)
-      const k = rowKey(tbl, id)
-      if (this.#dels.has(k)) return null
-      const buffered = this.#puts.get(k)
-      if (buffered) return structuredClone(buffered.data)
-      const rows = this.sql
-        .exec<{ data: string }>(`SELECT data FROM rows WHERE tbl = ? AND id = ? AND deleted = 0`, tbl, id)
-        .toArray()
-      const row = rows[0]
-      return row ? (JSON.parse(row.data) as Record<string, unknown>) : null
-    },
-    list: (tbl) => {
-      if (!TABLE_NAME_RE.test(tbl)) throw new AppError('InvalidArgs', `invalid table name "${tbl}"`)
-      const merged = new Map<string, Record<string, unknown>>()
-      for (const row of this.sql.exec<{ id: string; data: string }>(
-        `SELECT id, data FROM rows WHERE tbl = ? AND deleted = 0`,
-        tbl,
-      )) {
-        merged.set(row.id, JSON.parse(row.data) as Record<string, unknown>)
-      }
-      for (const del of this.#dels.values()) if (del.tbl === tbl) merged.delete(del.id)
-      for (const put of this.#puts.values()) if (put.tbl === tbl) merged.set(put.id, structuredClone(put.data))
-      return [...merged].map(([id, data]) => ({ id, data }))
-    },
-    put: (tbl, id, data) => {
-      validateTarget(tbl, id)
-      const stored = this.validateAtFlush
-        ? (data as Record<string, unknown>)
-        : validateRow(this.schema, tbl, id, data)
-      const bytes = jsonByteSize(stored)
-      if (bytes > MAX_ROW_BYTES) {
-        throw new AppError('RowTooLarge', `row ${tbl}/${id} is ${bytes} bytes (max ${MAX_ROW_BYTES})`)
-      }
-      const k = rowKey(tbl, id)
-      this.#dels.delete(k)
-      this.#puts.set(k, { tbl, id, data: structuredClone(stored) })
-    },
-    del: (tbl, id) => {
-      validateTarget(tbl, id)
-      const k = rowKey(tbl, id)
-      this.#puts.delete(k)
-      this.#dels.set(k, { tbl, id })
-    },
+  get(tbl: string, id: string): Record<string, unknown> | null {
+    const rows = this.sql
+      .exec<{ data: string }>(`SELECT data FROM rows WHERE tbl = ? AND id = ? AND deleted = 0`, tbl, id)
+      .toArray()
+    const row = rows[0]
+    return row ? (JSON.parse(row.data) as Record<string, unknown>) : null
   }
 
-  /** Flushes buffered writes stamped with `version`. Returns rows actually written. */
-  flush(version: number): number {
-    let written = 0
-    for (const { tbl, id, data } of this.#puts.values()) {
-      const stored = this.validateAtFlush ? validateRow(this.schema, tbl, id, data) : data
-      if (this.validateAtFlush) {
-        const bytes = jsonByteSize(stored)
-        if (bytes > MAX_ROW_BYTES) {
-          throw new AppError('RowTooLarge', `row ${tbl}/${id} is ${bytes} bytes (max ${MAX_ROW_BYTES})`)
-        }
-      }
-      this.sql.exec(
-        `INSERT INTO rows (tbl, id, data, version, deleted) VALUES (?, ?, ?, ?, 0)
-         ON CONFLICT (tbl, id) DO UPDATE SET data = excluded.data, version = excluded.version, deleted = 0`,
-        tbl,
-        id,
-        JSON.stringify(stored),
-        version,
-      )
-      written++
+  list(tbl: string): Array<{ id: string; data: Record<string, unknown> }> {
+    const out: Array<{ id: string; data: Record<string, unknown> }> = []
+    for (const row of this.sql.exec<{ id: string; data: string }>(
+      `SELECT id, data FROM rows WHERE tbl = ? AND deleted = 0`,
+      tbl,
+    )) {
+      out.push({ id: row.id, data: JSON.parse(row.data) as Record<string, unknown> })
     }
-    for (const { tbl, id } of this.#dels.values()) {
-      // Deleting a row that never existed is a no-op, not a tombstone: no
-      // client can hold a row the server never had.
-      const cursor = this.sql.exec(
-        `UPDATE rows SET deleted = 1, version = ? WHERE tbl = ? AND id = ? AND deleted = 0`,
-        version,
-        tbl,
-        id,
-      )
-      written += cursor.rowsWritten
-    }
-    return written
+    return out
   }
-}
 
-function rowKey(tbl: string, id: string): string {
-  return `${tbl}\u0000${id}`
-}
+  put(tbl: string, id: string, data: Record<string, unknown>, version: number): void {
+    this.sql.exec(
+      `INSERT INTO rows (tbl, id, data, version, deleted) VALUES (?, ?, ?, ?, 0)
+       ON CONFLICT (tbl, id) DO UPDATE SET data = excluded.data, version = excluded.version, deleted = 0`,
+      tbl,
+      id,
+      JSON.stringify(data),
+      version,
+    )
+  }
 
-function validateTarget(tbl: string, id: string): void {
-  if (!TABLE_NAME_RE.test(tbl)) throw new AppError('InvalidArgs', `invalid table name "${tbl}"`)
-  if (id.length === 0 || id.length > MAX_ID_LENGTH || id.includes('\u0000')) {
-    throw new AppError('InvalidArgs', `invalid row id for table "${tbl}"`)
+  del(tbl: string, id: string, version: number): number {
+    const cursor = this.sql.exec(
+      `UPDATE rows SET deleted = 1, version = ? WHERE tbl = ? AND id = ? AND deleted = 0`,
+      version,
+      tbl,
+      id,
+    )
+    return cursor.rowsWritten
   }
 }
 
@@ -275,6 +179,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
 
   class WorkspaceDO extends DurableObject<Env> {
     #sql: SqlStorage
+    #rows: SqlRowStore
     #meta!: Meta
     // Since-start operational counters (reset on eviction; durable gauges come
     // from SQL in #stats). No wall-clock latency here: workers freeze Date.now
@@ -294,6 +199,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
     constructor(ctx: DurableObjectState, env: Env) {
       super(ctx, env)
       this.#sql = ctx.storage.sql
+      this.#rows = new SqlRowStore(this.#sql)
       // Keepalives answered by the runtime so idle sockets never wake the DO.
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG))
       ctx.blockConcurrencyWhile(async () => {
@@ -310,12 +216,13 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
           // '' predates the fingerprint column; backfill quietly.
           if (this.#meta.schemaHash !== '') {
             console.warn(
-              `[cf-sync] table schemas changed under schema version "${config.app.version}" ` +
+              `[cf-sync] table schemas changed under schema version ${config.app.version} ` +
                 `(fingerprint ${this.#meta.schemaHash} -> ${fingerprint}). Every schema change ` +
-                `requires a version bump: add a step { from: '${config.app.version}', to: '<next>' } ` +
-                `to defineApp's migrations, with a migrate function if existing rows need ` +
-                `backfilling. Without one, old bundles and cached rows keep being accepted as ` +
-                `"${config.app.version}" and rows written before the change are never migrated.`,
+                `requires a version bump: set version: ${config.app.version + 1} in defineApp and add ` +
+                `migrations: { ${config.app.version + 1}: ... } (a migrate function if existing rows ` +
+                `need backfilling, null if the change is additive). Without one, old bundles and ` +
+                `cached rows keep being accepted as version ${config.app.version} and rows written ` +
+                `before the change are never migrated.`,
             )
           }
           this.#sql.exec(`UPDATE meta SET schema_hash = ? WHERE id = 1`, fingerprint)
@@ -345,7 +252,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
         // One write buffer across the chain: later steps read earlier steps'
         // writes, and the net result is validated against the current schema
         // at flush (intermediate shapes are transient).
-        const writes = new WriteSet(this.#sql, config.app.schema, true)
+        const writes = new WriteSet(this.#rows, config.app.schema, true)
         for (const step of steps) step.migrate?.(writes.tx)
         const candidate = this.#meta.currentVersion + 1
         if (writes.flush(candidate) > 0) {
@@ -358,7 +265,8 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
             candidate,
           )
         }
-        this.#sql.exec(`UPDATE meta SET schema_version = ?, schema_hash = ? WHERE id = 1`, to, fingerprint)
+        // schema_version is a TEXT column (STRICT): bind the string form.
+        this.#sql.exec(`UPDATE meta SET schema_version = ?, schema_hash = ? WHERE id = 1`, String(to), fingerprint)
         // Audit trail: the exported log explains the version jump.
         this.#sql.exec(
           `INSERT INTO mutation_log (version, client_id, mutation_id, name, args, result, created_at)
@@ -586,7 +494,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
           const snapshot = parsed.data
           if (snapshot.schemaVersion !== config.app.version) {
             return json(
-              { error: `snapshot is schema "${snapshot.schemaVersion}", server is "${config.app.version}"` },
+              { error: `snapshot is schema version ${snapshot.schemaVersion}, server is ${config.app.version}` },
               400,
             )
           }
@@ -694,7 +602,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
         this.#sendError(
           ws,
           'VersionNotSupported',
-          `server speaks protocol ${PROTOCOL_VERSION}, schema "${config.app.version}"`,
+          `server speaks protocol ${PROTOCOL_VERSION}, schema version ${config.app.version}`,
         )
         ws.close(4400, 'VersionNotSupported')
         return
@@ -793,7 +701,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(config
           // hello, so this is a registry bug, and retrying can never succeed.
           appError = { code: 'UnknownMutator', message: `no mutator named "${mutation.name}"` }
         } else {
-          const writes = new WriteSet(this.#sql, config.app.schema)
+          const writes = new WriteSet(this.#rows, config.app.schema)
           try {
             // Args are validated (and parsed: defaults applied) before apply
             // runs; invalid args are permanent — retrying identical args can

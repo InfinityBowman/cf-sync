@@ -48,7 +48,7 @@ export type Mutation = z.infer<typeof mutationSchema>
 export const helloMsgSchema = z.object({
   type: z.literal('hello'),
   protocolVersion: z.number().int(),
-  schemaVersion: z.string().min(1),
+  schemaVersion: z.number().int().positive(),
   cursor: cursorSchema.nullable(),
 })
 export type HelloMsg = z.infer<typeof helloMsgSchema>

@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test'
 import { afterEach, describe, expect, it } from 'vitest'
-import { crudMutators, defineApp, type SchemaMigration } from '../src/index'
+import { crudMutators, defineApp, type SchemaMigrationFn } from '../src/index'
 import { rolloutApp, rolloutConfig, testSchema } from './fixture/worker'
 import { TestClient } from './harness'
 
@@ -26,7 +26,7 @@ async function queryLog(workspaceId: string, sql: string): Promise<Record<string
 }
 
 /** Simulates deploying a new app bundle to the rollout DO class. */
-function deploy(version: string, migrations: SchemaMigration[]): void {
+function deploy(version: number, migrations: { [to: number]: SchemaMigrationFn | null } = {}): void {
   rolloutConfig.app = defineApp({
     version,
     schema: testSchema,
@@ -35,7 +35,7 @@ function deploy(version: string, migrations: SchemaMigration[]): void {
   })
 }
 
-function connect(workspaceId: string, clientId: string, schemaVersion = 'test-1'): Promise<TestClient> {
+function connect(workspaceId: string, clientId: string, schemaVersion = 1): Promise<TestClient> {
   return TestClient.connect(workspaceId, clientId, '/rollout').then((c) => {
     c.schemaVersion = schemaVersion
     return c
@@ -63,18 +63,14 @@ describe('schema-version rollout', () => {
 
     // --- "deploy v2": title -> text, plus a new field -----------------------
     let runs = 0
-    deploy('test-2', [
-      {
-        from: 'test-1',
-        to: 'test-2',
-        migrate: (tx) => {
-          runs++
-          for (const { id, data } of tx.list('todos')) {
-            tx.put('todos', id, { text: data.title, done: false })
-          }
-        },
+    deploy(2, {
+      2: (tx) => {
+        runs++
+        for (const { id, data } of tx.list('todos')) {
+          tx.put('todos', id, { text: data.title, done: false })
+        }
       },
-    ])
+    })
     await evict(workspace)
 
     // Old-schema clients are rejected at hello.
@@ -89,7 +85,7 @@ describe('schema-version rollout', () => {
     // A new-schema client presenting a pre-migration cursor is forced to
     // re-bootstrap (min_cursor_version advanced past it) and sees migrated
     // rows on the SAME history — same backendId, version advanced by one.
-    const c2 = await connect(workspace, 'c1', 'test-2')
+    const c2 = await connect(workspace, 'c1', 2)
     c2.cursor = v1Cursor
     c2.lmid = 0 // fresh session: cache was discarded with the old schema
     const boot = await c2.syncOnce()
@@ -108,7 +104,7 @@ describe('schema-version rollout', () => {
 
     // The log carries the audit entry, exactly one.
     const audits = await queryLog(workspace, `SELECT name, args FROM mutation_log WHERE name = '$schema.migrate'`)
-    expect(audits).toEqual([{ name: '$schema.migrate', args: JSON.stringify({ from: 'test-1', to: 'test-2' }) }])
+    expect(audits).toEqual([{ name: '$schema.migrate', args: JSON.stringify({ from: 1, to: 2 }) }])
 
     // A plain restart on the new version must NOT migrate again.
     await evict(workspace)
@@ -121,7 +117,7 @@ describe('schema-version rollout', () => {
     c2.close()
   })
 
-  it('restamps through a migrate-less step: additive changes keep cursors valid', async () => {
+  it('restamps through a null step: additive changes keep cursors valid', async () => {
     const workspace = `rollout-add-${Date.now()}`
     const c1 = await connect(workspace, 'c1')
     await c1.syncOnce()
@@ -129,13 +125,13 @@ describe('schema-version rollout', () => {
     await c1.pokeUntilLmid(1)
     const oldCursor = c1.cursor!
 
-    // Additive change: the step declares the version hop, no data rewrite.
-    deploy('test-2', [{ from: 'test-1', to: 'test-2' }])
+    // Additive change: `null` declares the version hop, no data rewrite.
+    deploy(2, { 2: null })
     await evict(workspace)
 
     // No rows were rewritten, so a pre-deploy cursor still catches up cleanly
     // (matters for clients whose local cache validity is not schema-keyed).
-    const c2 = await connect(workspace, 'c2', 'test-2')
+    const c2 = await connect(workspace, 'c2', 2)
     c2.cursor = oldCursor
     const catchUp = await c2.syncOnce()
     expect(catchUp.baseCursor).toEqual(oldCursor)
@@ -153,31 +149,23 @@ describe('schema-version rollout', () => {
     const v1Cursor = c1.cursor!
     c1.close()
 
-    // The workspace slept through the test-2 deploy entirely: waking under
-    // test-3 must replay both steps, the second reading the first's writes.
-    deploy('test-3', [
-      {
-        from: 'test-1',
-        to: 'test-2',
-        migrate: (tx) => {
-          for (const { id, data } of tx.list('todos')) {
-            tx.put('todos', id, { text: data.title })
-          }
-        },
+    // The workspace slept through the v2 deploy entirely: waking under v3
+    // must replay both steps, the second reading the first's writes.
+    deploy(3, {
+      2: (tx) => {
+        for (const { id, data } of tx.list('todos')) {
+          tx.put('todos', id, { text: data.title })
+        }
       },
-      {
-        from: 'test-2',
-        to: 'test-3',
-        migrate: (tx) => {
-          for (const { id, data } of tx.list('todos')) {
-            tx.put('todos', id, { ...data, done: false })
-          }
-        },
+      3: (tx) => {
+        for (const { id, data } of tx.list('todos')) {
+          tx.put('todos', id, { ...data, done: false })
+        }
       },
-    ])
+    })
     await evict(workspace)
 
-    const c2 = await connect(workspace, 'c2', 'test-3')
+    const c2 = await connect(workspace, 'c2', 3)
     const boot = await c2.syncOnce()
     // Both steps applied, composed, at a single new data version.
     expect(c2.rows.get('todos/t1')).toEqual({ text: 'old', done: false })
@@ -186,7 +174,7 @@ describe('schema-version rollout', () => {
 
     // One audit entry spanning the whole jump.
     const audits = await queryLog(workspace, `SELECT args FROM mutation_log WHERE name = '$schema.migrate'`)
-    expect(audits).toEqual([{ args: JSON.stringify({ from: 'test-1', to: 'test-3' }) }])
+    expect(audits).toEqual([{ args: JSON.stringify({ from: 1, to: 3 }) }])
     c2.close()
   })
 
@@ -202,26 +190,18 @@ describe('schema-version rollout', () => {
     // step 2 repairs it. Only the composed result must parse — shipped steps
     // never need editing when a later version reshapes the same table.
     let interimRead: unknown
-    deploy('test-3', [
-      {
-        from: 'test-1',
-        to: 'test-2',
-        migrate: (tx) => {
-          tx.put('typed', 'r1', { interim: true })
-        },
+    deploy(3, {
+      2: (tx) => {
+        tx.put('typed', 'r1', { interim: true })
       },
-      {
-        from: 'test-2',
-        to: 'test-3',
-        migrate: (tx) => {
-          interimRead = tx.get('typed', 'r1')
-          tx.put('typed', 'r1', { name: 'repaired' })
-        },
+      3: (tx) => {
+        interimRead = tx.get('typed', 'r1')
+        tx.put('typed', 'r1', { name: 'repaired' })
       },
-    ])
+    })
     await evict(workspace)
 
-    const c2 = await connect(workspace, 'c2', 'test-3')
+    const c2 = await connect(workspace, 'c2', 3)
     await c2.syncOnce()
     // Mid-chain reads see the previous step's raw write, unvalidated.
     expect(interimRead).toEqual({ interim: true })
@@ -238,17 +218,13 @@ describe('schema-version rollout', () => {
     await c1.pokeUntilLmid(1)
     c1.close()
 
-    deploy('test-2', [
-      {
-        from: 'test-1',
-        to: 'test-2',
-        migrate: (tx) => {
-          tx.put('typed', 'r1', { wrong: true }) // no `name`: invalid net result
-        },
+    deploy(2, {
+      2: (tx) => {
+        tx.put('typed', 'r1', { wrong: true }) // no `name`: invalid net result
       },
-    ])
+    })
     await evict(workspace)
-    await expect(connect(workspace, 'c2', 'test-2')).rejects.toThrow()
+    await expect(connect(workspace, 'c2', 2)).rejects.toThrow()
   })
 
   it('refuses to serve a workspace whose stored version is outside the chain', async () => {
@@ -259,19 +235,17 @@ describe('schema-version rollout', () => {
     await c1.pokeUntilLmid(1)
     c1.close()
 
-    // "Deploy" a chain that forgot where this workspace is: no step starts
-    // from test-1, so the DO must abort rather than restamp blindly.
-    deploy('test-3', [{ from: 'test-2', to: 'test-3' }])
+    // "Deploy" a chain that forgot where this workspace is: history was
+    // truncated to 2 -> 3, so a workspace stored at 1 has no path and the DO
+    // must abort rather than restamp blindly.
+    deploy(3, { 3: null })
     await evict(workspace)
-    await expect(connect(workspace, 'c2', 'test-3')).rejects.toThrow()
+    await expect(connect(workspace, 'c2', 3)).rejects.toThrow()
 
     // "Deploy the fix": the completed chain migrates and data is intact.
-    deploy('test-3', [
-      { from: 'test-1', to: 'test-2' },
-      { from: 'test-2', to: 'test-3' },
-    ])
+    deploy(3, { 2: null, 3: null })
     await evict(workspace)
-    const c2 = await connect(workspace, 'c2', 'test-3')
+    const c2 = await connect(workspace, 'c2', 3)
     await c2.syncOnce()
     expect(c2.rows.get('todos/t1')).toEqual({ title: 'precious' })
     c2.close()
@@ -285,34 +259,26 @@ describe('schema-version rollout', () => {
     await c1.pokeUntilLmid(1)
     c1.close()
 
-    deploy('test-2', [
-      {
-        from: 'test-1',
-        to: 'test-2',
-        migrate: () => {
-          throw new Error('migration bug')
-        },
+    deploy(2, {
+      2: () => {
+        throw new Error('migration bug')
       },
-    ])
+    })
     await evict(workspace)
 
     // The DO refuses to serve rather than serving old-shaped data as v2.
-    await expect(connect(workspace, 'c2', 'test-2')).rejects.toThrow()
+    await expect(connect(workspace, 'c2', 2)).rejects.toThrow()
 
     // "Deploy the fix": the retry migrates and everything is intact.
-    deploy('test-2', [
-      {
-        from: 'test-1',
-        to: 'test-2',
-        migrate: (tx) => {
-          for (const { id, data } of tx.list('todos')) {
-            tx.put('todos', id, { text: data.title, done: false })
-          }
-        },
+    deploy(2, {
+      2: (tx) => {
+        for (const { id, data } of tx.list('todos')) {
+          tx.put('todos', id, { text: data.title, done: false })
+        }
       },
-    ])
+    })
     await evict(workspace)
-    const c2 = await connect(workspace, 'c2', 'test-2')
+    const c2 = await connect(workspace, 'c2', 2)
     const boot = await c2.syncOnce()
     expect(c2.rows.get('todos/t1')).toEqual({ text: 'precious', done: false })
     expect(boot.lastMutationIdChanges).toEqual({ c2: 0 })

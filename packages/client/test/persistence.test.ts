@@ -5,7 +5,7 @@ import { MemorySyncStore } from '../src/store'
 import { testApp } from './test-schema'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
-const SCHEMA = 'test-1'
+const SCHEMA = 1
 const CLIENT_ID = 'client-a'
 
 class RecordingHooks {
@@ -252,7 +252,7 @@ describe('SyncClient persistence', () => {
       ops: [{ op: 'put', tbl: 'todos', id: 't1', value: { title: 'old' } }],
       clear: true,
       cursor: cursor(9),
-      schemaVersion: 'ancient-0',
+      schemaVersion: 999,
       confirmedLmid: 4,
       outbox: [{ id: 5, name: 'sync.put', args: {} }],
     })

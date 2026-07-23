@@ -22,10 +22,11 @@ export function App() {
 
   const clearCompleted = () => {
     // Intent-based mutation, typed against the shared registry (a typo'd
-    // name is a compile error). The same mutator the server runs applies
-    // locally first: the completed rows vanish instantly as one atomic
-    // overlay — one wire mutation, rolled back together if it's rejected.
-    void syncClient.mutate('todos.clearCompleted').catch(() => {})
+    // name is a compile error, and names autocomplete). The same mutator the
+    // server runs applies locally first: the completed rows vanish instantly
+    // as one atomic overlay — one wire mutation, rolled back together if
+    // it's rejected.
+    void syncClient.mutate.todos.clearCompleted().catch(() => {})
   }
 
   return (

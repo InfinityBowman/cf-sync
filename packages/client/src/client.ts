@@ -96,6 +96,64 @@ export class MutationError extends Error {
   }
 }
 
+type NamespaceHeads<K extends string> = K extends `${infer H}.${string}` ? H : K
+type NamespaceSub<M, H extends string> = {
+  [K in keyof M & `${H}.${string}` as K extends `${H}.${infer R}` ? R : never]: M[K]
+}
+
+/**
+ * The property-access half of `client.mutate`: dots in mutator names become
+ * namespaces, so `'todos.clearCompleted'` is called as
+ * `client.mutate.todos.clearCompleted()` — names autocomplete, args are typed
+ * from the mutator's schema. (`defineMutators` rejects a name that is both a
+ * mutator and a namespace prefix of another, so the tree is unambiguous.)
+ */
+export type MutateNamespace<M> = {
+  [H in NamespaceHeads<keyof M & string>]: H extends keyof M
+    ? (...args: MutationArgs<M[H]>) => Promise<void>
+    : MutateNamespace<NamespaceSub<M, H>>
+}
+
+/**
+ * `client.mutate` is both a function and a namespace tree: call it with a
+ * mutator name (`mutate('todos.clearCompleted')`) or through properties
+ * (`mutate.todos.clearCompleted()`). Both forms are identical at runtime.
+ */
+export type Mutate<M extends AnyMutators> = (<K extends keyof M & string>(
+  name: K,
+  ...args: MutationArgs<M[K]>
+) => Promise<void>) &
+  MutateNamespace<M>
+
+/**
+ * Builds the callable namespace tree from the registry's names. The root is a
+ * function (the string-name form), so leaves and namespaces are attached with
+ * defineProperty — plain assignment would throw for names that shadow
+ * non-writable function properties like "name" or "length".
+ */
+function buildMutate(names: Iterable<string>, invoke: (name: string, args: unknown) => Promise<void>): any {
+  const define = (node: any, key: string, value: unknown): void => {
+    Object.defineProperty(node, key, { value, enumerable: true, configurable: true, writable: true })
+  }
+  const root: any = (name: string, ...rest: unknown[]) => invoke(name, rest[0])
+  for (const name of names) {
+    const segments = name.split('.')
+    let node = root
+    for (const segment of segments.slice(0, -1)) {
+      if (!Object.prototype.hasOwnProperty.call(node, segment)) define(node, segment, {})
+      node = node[segment]
+    }
+    const leaf = segments[segments.length - 1]!
+    const call = (...rest: unknown[]) => invoke(name, rest[0])
+    // A registry that dodged defineMutators' prefix check can hold both a
+    // mutator "a" and "a.b"; keep any children already attached under the name.
+    const existing = Object.prototype.hasOwnProperty.call(node, leaf) ? node[leaf] : undefined
+    if (existing !== undefined && typeof existing === 'object') Object.assign(call, existing)
+    define(node, leaf, call)
+  }
+  return root
+}
+
 export interface SyncClientOptions<
   S extends AnySyncSchema = AnySyncSchema,
   M extends AnyMutators = AnyMutators,
@@ -231,6 +289,33 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   #startNudgeTimer: ReturnType<typeof setTimeout> | null = null
   #lastFrameAt = 0
 
+  /**
+   * Applies a named mutation optimistically and queues it for the server.
+   * Callable two ways — `mutate.todos.clearCompleted(args)` (dots in mutator
+   * names are namespaces; names and args are typed from the app's registry)
+   * or `mutate('todos.clearCompleted', args)` — both identical at runtime.
+   * Resolves when the server confirms the mutation (the client's LMID reaches
+   * the mutation's id), rejects on permanent app error or timeout. Args are
+   * validated locally before queueing (the wire still carries the original
+   * args — the server's parse is authoritative).
+   *
+   * When collections are attached (`createCollections` /
+   * `workspaceCollectionOptions`), the shared mutator's `apply` runs locally
+   * first against the collections' current view, and its writes land as one
+   * atomic optimistic overlay: visible immediately, swapped for the server's
+   * authoritative patch on confirm, rolled back together on rejection. The
+   * overlay is a frozen prediction — a remote change arriving mid-flight
+   * rebases the *originally computed* writes, and the confirm patch replaces
+   * them with the server's authoritative result (which ran against current
+   * state). A mutator that throws `AppError` locally rejects immediately and
+   * queues nothing; one that touches a table without an attached collection
+   * skips the overlay (warns once) but still reaches the server. Note that a
+   * `Timeout` rejection rolls the overlay back while — with a durable store —
+   * the mutation *stays queued*: rejection means "your overlay is gone", not
+   * "this will never apply"; the rows reappear if the mutation later confirms.
+   */
+  readonly mutate: Mutate<M>
+
   constructor(opts: SyncClientOptions<S, M>) {
     if (!opts.workspaceId) throw new Error('SyncClient: workspaceId is required')
     if (opts.store && opts.persist) {
@@ -240,6 +325,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     this.#clientId = opts.clientId ?? defaultClientId(opts.workspaceId)
     this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, this.#clientId)
     this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId) : undefined)
+    this.mutate = buildMutate(Object.keys(opts.app.mutators), (name, args) => this.#mutateByName(name, args))
   }
 
   get status(): SyncStatus {
@@ -421,32 +507,8 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     for (const tbl of byTable.keys()) this.#warnUnregistered(tbl)
   }
 
-  /**
-   * Applies a named mutation optimistically and queues it for the server.
-   * Resolves when the server confirms it (the client's LMID reaches the
-   * mutation's id), rejects on permanent app error or timeout.
-   *
-   * The name and args are typed from the app's mutator registry, and args
-   * are validated locally before queueing (the wire still carries the
-   * original args — the server's parse is authoritative).
-   *
-   * When collections are attached (`createCollections` /
-   * `workspaceCollectionOptions`), the shared mutator's `apply` runs locally
-   * first against the collections' current view, and its writes land as one
-   * atomic optimistic overlay: visible immediately, swapped for the server's
-   * authoritative patch on confirm, rolled back together on rejection. The
-   * overlay is a frozen prediction — a remote change arriving mid-flight
-   * rebases the *originally computed* writes, and the confirm patch replaces
-   * them with the server's authoritative result (which ran against current
-   * state). A mutator that throws `AppError` locally rejects immediately and
-   * queues nothing; one that touches a table without an attached collection
-   * skips the overlay (warns once) but still reaches the server. Note that a
-   * `Timeout` rejection rolls the overlay back while — with a durable store —
-   * the mutation *stays queued*: rejection means "your overlay is gone", not
-   * "this will never apply"; the rows reappear if the mutation later confirms.
-   */
-  mutate<K extends keyof M & string>(name: K, ...rest: MutationArgs<M[K]>): Promise<void> {
-    const args: unknown = rest[0]
+  /** The runtime behind both forms of `mutate` (see the property's docs). */
+  #mutateByName(name: string, args: unknown): Promise<void> {
     if (this.#status === 'fatal') {
       return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
     }

@@ -64,7 +64,7 @@ export const testMutators = defineMutators(testSchema, {
 })
 
 export const testApp = defineApp({
-  version: 'test-1',
+  version: 1,
   schema: testSchema,
   mutators: testMutators,
 })
@@ -79,7 +79,7 @@ export const WorkspaceDO = createWorkspaceDO({
 
 // Same mutators, but tombstones compact immediately when the alarm fires.
 export const CompactingDO = createWorkspaceDO({
-  app: defineApp({ version: 'test-1', schema: testSchema, mutators: { ...crudMutators(testSchema) } }),
+  app: defineApp({ version: 1, schema: testSchema, mutators: { ...crudMutators(testSchema) } }),
   compaction: { tombstoneRetentionVersions: 0, intervalMs: 60 * 60 * 1000 },
 })
 
@@ -88,7 +88,7 @@ export const CompactingDO = createWorkspaceDO({
 // because tests and DOs share one isolate under vitest-pool-workers, and
 // createWorkspaceDO reads config properties at use time.
 export const rolloutApp = defineApp({
-  version: 'test-1',
+  version: 1,
   schema: testSchema,
   mutators: { ...crudMutators(testSchema) },
 })

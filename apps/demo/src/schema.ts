@@ -7,7 +7,7 @@ const schema = defineSchema({
     title: z.string(),
     completed: z.boolean(),
     createdAt: z.string(),
-    /** Added in demo-2; existing rows got 'normal' via the migration below. */
+    /** Added in version 2; existing rows got 'normal' via the migration below. */
     priority: z.enum(['low', 'normal', 'high']).default('normal'),
   }),
 })
@@ -27,26 +27,23 @@ const mutators = defineMutators(schema, {
 
 // One definition drives everything: server-side row validation, mutator arg
 // validation, collection row types, typed client.mutate calls, and the
-// schema-version rollout. Bumping `version` without adding a migration step
-// fails at startup — in both bundles — instead of silently skewing.
+// schema-version rollout. Bumping `version` without a matching migrations
+// entry fails at startup — in both bundles — instead of silently skewing.
 export const app = defineApp({
-  version: 'demo-2',
+  version: 2,
   schema,
   mutators,
-  migrations: [
-    // demo-1 -> demo-2: todos gain a priority field. Replays once per
-    // workspace, atomically, on the first wake after deploy; old clients are
-    // rejected at hello and reload into the new bundle.
-    {
-      from: 'demo-1',
-      to: 'demo-2',
-      migrate: (tx) => {
-        for (const { id, data } of tx.list('todos')) {
-          tx.put('todos', id, { priority: 'normal', ...data })
-        }
-      },
+  migrations: {
+    // 1 -> 2: todos gain a priority field. Replays once per workspace,
+    // atomically, on the first wake after deploy; old clients are rejected
+    // at hello and reload into the new bundle. (Use `null` instead of a
+    // function for additive changes that need no row rewrite.)
+    2: (tx) => {
+      for (const { id, data } of tx.list('todos')) {
+        tx.put('todos', id, { priority: 'normal', ...data })
+      }
     },
-  ],
+  },
 })
 
 export type Todo = RowOf<typeof schema, 'todos'>

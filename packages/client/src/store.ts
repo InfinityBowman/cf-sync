@@ -13,7 +13,7 @@ export type PersistedRowOp =
   | { op: 'del'; tbl: string; id: string }
 
 export interface PersistedState {
-  schemaVersion: string | null
+  schemaVersion: number | null
   /** Null when mutations were queued before the first successful sync. */
   cursor: Cursor | null
   confirmedLmid: number
@@ -26,7 +26,7 @@ export interface PokePersist {
   /** True when the poke contained a clear op (reset/bootstrap): replace all rows. */
   clear: boolean
   cursor: Cursor
-  schemaVersion: string
+  schemaVersion: number
   confirmedLmid: number
   outbox: PersistedOutboxEntry[]
 }
@@ -58,7 +58,7 @@ export interface SyncStore {
  * to pass a fresh "store" that intentionally forgets on reload.
  */
 export class MemorySyncStore implements SyncStore {
-  #schemaVersion: string | null = null
+  #schemaVersion: number | null = null
   #cursor: Cursor | null = null
   #confirmedLmid = 0
   #rows = new Map<string, Map<string, Record<string, unknown>>>()
