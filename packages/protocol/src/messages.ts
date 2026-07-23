@@ -12,6 +12,17 @@ export const MAX_PART_PATCH_BYTES = 850_000
 /** A single row must fit inside a frame with room to spare. */
 export const MAX_ROW_BYTES = 700_000
 
+/**
+ * Keepalive frames. The server registers this exact pair with
+ * setWebSocketAutoResponse, so the runtime answers pings without waking the
+ * DO; the client sends pings to keep idle edge connections alive and detect
+ * half-open sockets. These are raw frames outside the message schemas — the
+ * DO never sees them — and the strings must match byte-for-byte on both
+ * sides, which is why they live here.
+ */
+export const KEEPALIVE_PING = '{"type":"ping"}'
+export const KEEPALIVE_PONG = '{"type":"pong"}'
+
 export const cursorSchema = z.object({
   backendId: z.string().min(1),
   version: z.number().int().nonnegative(),

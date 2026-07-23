@@ -1,4 +1,6 @@
 import {
+  KEEPALIVE_PING,
+  KEEPALIVE_PONG,
   MAX_PART_PATCH_BYTES,
   MAX_ROW_BYTES,
   PROTOCOL_VERSION,
@@ -92,8 +94,8 @@ interface Attachment {
   ready: boolean
 }
 
-const PING = JSON.stringify({ type: 'ping' })
-const PONG = JSON.stringify({ type: 'pong' })
+const PING = KEEPALIVE_PING
+const PONG = KEEPALIVE_PONG
 /** Close codes with no peer to reciprocate to (RFC 6455 reserved). */
 const RESERVED_CLOSE_CODES = new Set([1005, 1006, 1015])
 
