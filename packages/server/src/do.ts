@@ -48,11 +48,12 @@ import { loadOrInitMeta, migrate, type Meta } from './storage'
 /** Set by the worker routers so the DO can learn its own workspace id. */
 export const WORKSPACE_HEADER = 'x-cf-sync-workspace'
 
+// Stamp-forwarding design: DESIGN.md §15.3.
 /**
- * Carries the authorize verdict's stamps from `createSyncFetch` to the DO
- * (DESIGN.md §15.3). The router strips any inbound value before setting its
- * own, so it cannot be spoofed from outside; the DO trusts whatever the
- * router says, exactly like `WORKSPACE_HEADER`.
+ * Carries the authorize verdict's stamps from `createSyncFetch` to the DO.
+ * The router strips any inbound value before setting its own, so it cannot
+ * be spoofed from outside; the DO trusts whatever the router says, exactly
+ * like `WORKSPACE_HEADER`.
  */
 export const AUTH_HEADER = 'x-cf-sync-auth'
 
@@ -63,8 +64,13 @@ export interface AuthStamps {
   expiresAt?: number
 }
 
-// Header values must be byte strings; base64 the UTF-8 JSON so principals and
-// contexts with any characters survive the hop.
+/**
+ * Serializes an authorize verdict's stamps into the value the router sets on
+ * {@link AUTH_HEADER} — the counterpart of {@link decodeAuthStamps}, for
+ * custom routers replacing `createSyncFetch`. Header values must be byte
+ * strings, so the UTF-8 JSON is base64-encoded: principals and contexts with
+ * any characters survive the hop.
+ */
 export function encodeAuthStamps(stamps: AuthStamps): string {
   const bytes = new TextEncoder().encode(JSON.stringify(stamps))
   let bin = ''
@@ -72,6 +78,12 @@ export function encodeAuthStamps(stamps: AuthStamps): string {
   return btoa(bin)
 }
 
+/**
+ * Parses an {@link AUTH_HEADER} value back into the {@link AuthStamps} that
+ * {@link encodeAuthStamps} serialized. The DO calls this at upgrade to read
+ * the stamps the router forwarded; a custom router only needs it to inspect
+ * its own header. Throws when the payload does not decode to an object.
+ */
 export function decodeAuthStamps(value: string): AuthStamps {
   const bin = atob(value)
   const bytes = new Uint8Array(bin.length)
@@ -102,23 +114,52 @@ export function rejectUpgrade(code: number, reason: string): Response {
   return new Response(null, { status: 101, webSocket: pair[0] })
 }
 
+// Tombstone-compaction decision record: DESIGN.md D8.
+/**
+ * Tunes tombstone compaction, which runs on the workspace's periodic
+ * maintenance alarm to keep deleted-row bookkeeping from growing forever.
+ */
 export interface CompactionConfig {
   /**
-   * Tombstones older than currentVersion - retention are hard-deleted on the
-   * compaction alarm; clients whose cursor predates the youngest deleted
-   * tombstone re-bootstrap (DESIGN.md D8).
+   * How many data versions of tombstones to keep; older ones are
+   * hard-deleted on the compaction alarm (default 10 000). A client whose
+   * cursor predates the youngest deleted tombstone can no longer catch up
+   * incrementally and re-bootstraps on its next connect — larger retention
+   * trades storage for fewer forced bootstraps of long-offline clients.
    */
   tombstoneRetentionVersions?: number
+  /**
+   * Milliseconds between maintenance-alarm runs (default 6 hours). The alarm
+   * is shared with the R2 export: the DO schedules at the smaller of the two
+   * configured intervals.
+   */
   intervalMs?: number
+  /**
+   * Skips tombstone compaction entirely — tombstones accrue unbounded. The
+   * maintenance alarm still runs when an R2 export is configured.
+   */
   disabled?: boolean
 }
 
+/**
+ * Streams the workspace's mutation log to an R2 bucket as ndjson objects on
+ * the maintenance alarm — archive and analytics off the hot path. DO SQLite
+ * stays the system of record (it has point-in-time recovery of its own); R2
+ * covers everything beyond it. Exports are idempotent: object keys embed the
+ * log-sequence range, so a re-export after a failed cursor update overwrites
+ * the same object.
+ */
 export interface ExportConfig<Env = unknown> {
   /**
    * Resolves the R2 bucket from the worker env. Annotate the parameter to
    * type the whole DO's env: `(env: Env) => env.EXPORT_BUCKET`.
    */
   bucket: (env: Env) => R2Bucket
+  /**
+   * Milliseconds between export runs (default 5 minutes) — the archive's
+   * worst-case staleness. Shares the maintenance alarm with compaction: the
+   * DO schedules at the smaller of the two configured intervals.
+   */
   intervalMs?: number
   /** Log entries per exported object. */
   maxBatchRows?: number
@@ -128,22 +169,24 @@ export interface ExportConfig<Env = unknown> {
   prefix?: string
 }
 
+// Extension seam design: DESIGN.md §17.5; delivery gate: §15.
 /**
- * What an extension's `init` receives (DESIGN.md §17.5). `broadcast` and
- * `send` route through core's per-socket delivery gate, so the §15
+ * What an extension's `init` receives: the workspace's SQLite handle, a
+ * transaction wrapper, and the outbound delivery seam. `broadcast` and
+ * `send` route through core's per-socket delivery gate, so the
  * defunct/expiry checks that guard every poke also guard the binary lane —
  * an extension cannot send to a socket core is already tearing down.
  */
 export interface EngineExtensionContext {
   sql: SqlStorage
-  /** Atomic multi-statement writes (e.g. §17.4's append + freeze commit together, or roll back together). */
+  /** Atomic multi-statement writes: everything inside `fn` commits together, or rolls back together on a throw. */
   transactionSync<T>(fn: () => T): T
   /** Sends to every ready socket (optionally excluding one, e.g. the sender of a relayed update). */
   broadcast(bytes: Uint8Array, opts?: { except?: WebSocket }): void
   send(ws: WebSocket, bytes: Uint8Array): void
 }
 
-/** Per-frame connection context for `onBinaryMessage` — the §15.3 auth stamps plus readiness. */
+/** Per-frame connection context for `onBinaryMessage` — the authorize verdict's stamps plus readiness. */
 export interface EngineExtensionMessageContext {
   clientId: string
   principal?: string
@@ -151,20 +194,22 @@ export interface EngineExtensionMessageContext {
   ready: boolean
 }
 
+// Extension seam: DESIGN.md §17.5; sync invariant §6.3; import cycling §17.7.
 /**
- * The extension seam (DESIGN.md §17.5): one config slot, types only — core
- * imports nothing from any extension. `init` runs on every wake inside
- * initialization (create tables idempotently; a throw quarantines the
- * workspace like any other init failure). `onBinaryMessage` receives every
- * binary frame from a non-defunct, non-expired socket and must stay
- * synchronous end-to-end (invariant §6.3). `onExport`'s value lands in the
- * admin export under `extension`; an import that carries extension data is
+ * The binary-lane extension seam an add-on like `@cf-sync/yjs/server` plugs
+ * into: one config slot, types only — core imports nothing from any
+ * extension. `init` runs on every wake inside initialization (create tables
+ * idempotently; a throw quarantines the workspace like any other init
+ * failure). `onBinaryMessage` receives every binary frame from a
+ * non-defunct, non-expired socket and must stay synchronous end-to-end,
+ * like every DO WebSocket handler. `onExport`'s value lands in the admin
+ * export under `extension`; an import that carries extension data is
  * applied via `onImport` (same transaction as the row swap) and then cycles
- * every socket with 4300 instead of hot-swapping over live sockets (§17.7).
- * `onReset` runs after reset wipes storage — recreate tables and drop any
- * in-memory state there. One slot, not an array: multiple extensions would
- * need a routing byte on every binary frame for a consumer that doesn't
- * exist yet.
+ * every socket with the refresh code 4300 instead of hot-swapping over live
+ * sockets. `onReset` runs after reset wipes storage — recreate tables and
+ * drop any in-memory state there. One slot, not an array: multiple
+ * extensions would need a routing byte on every binary frame for a consumer
+ * that doesn't exist yet.
  *
  * Config carries a *factory* (`() => EngineExtension`), invoked once per
  * workspace DO instance: instances of one class share an isolate, so a
@@ -181,6 +226,10 @@ export interface EngineExtension {
   onStats?(): Record<string, number>
 }
 
+/**
+ * What {@link createWorkspaceDO} takes: the shared app definition, plus
+ * optional compaction, R2-export, and extension settings.
+ */
 export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, Env = unknown> {
   /**
    * The shared app definition (`defineApp`): version, table schemas, mutator
@@ -190,7 +239,7 @@ export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, 
    * schema; the validated output (defaults applied) is what gets stored.
    *
    * When the DO wakes with data stored under an older version, the migration
-   * chain from that version replays before any traffic (DESIGN.md §9): all
+   * chain from that version replays before any traffic: all
    * steps run against one write buffer, later steps read earlier steps'
    * writes, and everything commits atomically at a single new data version
    * together with the version restamp — `min_cursor_version` advances so
@@ -208,7 +257,7 @@ export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, 
    */
   app: AppDefinition<S>
   compaction?: CompactionConfig
-  /** Stream the mutation log to R2 for archive/analytics (DESIGN.md D3). */
+  /** Stream the mutation log to R2 for archive/analytics — see {@link ExportConfig}. */
   export?: ExportConfig<Env>
   /**
    * Binary-lane extension factory (e.g. `yjsFields()` from
@@ -340,6 +389,46 @@ export type WorkspaceDOClass<Env = unknown> = new (
   env: Env,
 ) => DurableObject<Env>
 
+/**
+ * Builds the Workspace Durable Object class from the shared app definition —
+ * the server half of the engine. Export the returned class from the worker
+ * entry and bind it in wrangler with `new_sqlite_classes` (the engine
+ * requires SQLite-backed storage; a class declared with `new_classes`
+ * deploys fine and then fails at runtime on its first SQL access). Each
+ * workspace id resolves to one instance holding that workspace's rows,
+ * mutation log, and live sockets; traffic reaches it through
+ * `createSyncFetch` and `createAdminFetch`/`workspaceAdmin`, never through
+ * methods on the instance.
+ *
+ * @example
+ * ```ts
+ * // worker/worker.ts
+ * import { createWorkspaceDO, createSyncFetch } from '@cf-sync/server'
+ * import { app } from '../src/schema' // the same defineApp value the client uses
+ *
+ * export const WorkspaceDO = createWorkspaceDO({ app })
+ *
+ * export default {
+ *   fetch: createSyncFetch({
+ *     namespace: (env) => env.WORKSPACE,
+ *     authorize: async (request, { workspaceId }) => {
+ *       // Validate the session, check workspace membership.
+ *       return true
+ *     },
+ *   }),
+ * }
+ * ```
+ *
+ * ```jsonc
+ * // wrangler.jsonc
+ * {
+ *   "durable_objects": {
+ *     "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceDO" }]
+ *   },
+ *   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO"] }]
+ * }
+ * ```
+ */
 export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
   config: WorkspaceEngineConfig<S, Env>,
 ): WorkspaceDOClass<Env> {

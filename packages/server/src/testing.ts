@@ -17,42 +17,7 @@ import { schemaFingerprint } from './fingerprint'
 
 export { schemaFingerprint }
 
-/**
- * In-memory workspace engine for unit-testing app definitions — mutators and
- * schema migrations — in plain vitest/jest, no workerd required. It runs the
- * same WriteSet, validation, and error semantics as the Durable Object
- * (engine-core.ts is shared code, not a reimplementation):
- *
- * - `tx.put` validates rows against the table schema; mutators read back
- *   parsed output (defaults applied).
- * - A mutator that throws `AppError` is a permanent rejection: its writes are
- *   discarded but the client's lastMutationId still advances (DESIGN.md §6
- *   invariant 2).
- * - Any other throw is transient: nothing commits and the LMID does not
- *   advance (the real client would retry the push).
- *
- * ```ts
- * const engine = createTestEngine(app)
- * engine.seed('todos', 't1', { id: 't1', title: 'x', completed: true, createdAt: '...' })
- * const result = engine.mutate('todos.clearCompleted')
- * expect(result.error).toBeUndefined()
- * expect(engine.list('todos')).toEqual([])
- * ```
- *
- * Migration tests construct the engine as a workspace that slept through
- * deploys: rows are stored raw under `storedVersion` (old shapes welcome) and
- * the migration chain replays immediately, exactly like the DO's first wake —
- * a throwing step or a missing path throws from `createTestEngine` itself.
- *
- * ```ts
- * const engine = createTestEngine(app, {
- *   storedVersion: 1,
- *   rows: { todos: { t1: { id: 't1', title: 'x', completed: false, createdAt: '...' } } },
- * })
- * expect(engine.get('todos', 't1')?.priority).toBe('normal')
- * ```
- */
-
+/** Options for {@link createTestEngine}: initial state, stored schema version, and the identity mutators observe. */
 export interface TestEngineOptions {
   /**
    * Simulate a workspace whose data was stored under an older schema version:
@@ -119,6 +84,41 @@ class MemoryRowStore implements EngineRowStore {
   }
 }
 
+// Permanent-vs-transient error semantics: DESIGN.md §6 invariant 2.
+/**
+ * In-memory workspace engine for unit-testing app definitions — mutators and
+ * schema migrations — in plain vitest/jest, no workerd required. It runs the
+ * same WriteSet, validation, and error semantics as the Durable Object
+ * (engine-core.ts is shared code, not a reimplementation):
+ *
+ * - `tx.put` validates rows against the table schema; mutators read back
+ *   parsed output (defaults applied).
+ * - A mutator that throws `AppError` is a permanent rejection: its writes are
+ *   discarded but the client's lastMutationId still advances.
+ * - Any other throw is transient: nothing commits and the LMID does not
+ *   advance (the real client would retry the push).
+ *
+ * ```ts
+ * const engine = createTestEngine(app)
+ * engine.seed('todos', 't1', { id: 't1', title: 'x', done: true })
+ * const result = engine.mutate('todo.clearCompleted', {})
+ * expect(result.error).toBeUndefined()
+ * expect(engine.list('todos')).toEqual([])
+ * ```
+ *
+ * Migration tests construct the engine as a workspace that slept through
+ * deploys: rows are stored raw under `storedVersion` (old shapes welcome) and
+ * the migration chain replays immediately, exactly like the DO's first wake —
+ * a throwing step or a missing path throws from `createTestEngine` itself.
+ *
+ * ```ts
+ * const engine = createTestEngine(app, {
+ *   storedVersion: 1,
+ *   rows: { todos: { t1: { id: 't1', title: 'x', done: false } } },
+ * })
+ * expect(engine.get('todos', 't1')?.priority).toBe('normal')
+ * ```
+ */
 export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMutators = AnyMutators> {
   readonly #app: AppDefinition<S, M>
   readonly #store = new MemoryRowStore()
@@ -261,8 +261,25 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
 }
 
 /**
- * Creates an in-memory workspace engine from the shared app definition —
- * see `TestEngine` for semantics and examples.
+ * Creates an in-memory workspace engine from the shared app definition, for
+ * unit-testing mutators and schema migrations in plain node — no workerd, no
+ * miniflare, no bindings — with the same write-buffer, validation, and error
+ * semantics as the Durable Object (shared engine core, not a
+ * reimplementation). See {@link TestEngine} for the full semantics and the
+ * migration-testing shape.
+ *
+ * @example
+ * ```ts
+ * import { createTestEngine } from '@cf-sync/server/testing'
+ * import { app } from '../src/schema'
+ *
+ * const engine = createTestEngine(app)
+ * engine.seed('todos', 't1', { id: 't1', title: 'keep', done: false })
+ * engine.seed('todos', 't2', { id: 't2', title: 'drop', done: true })
+ * const result = engine.mutate('todo.clearCompleted', {})
+ * expect(result.error).toBeUndefined()
+ * expect(engine.get('todos', 't2')).toBeNull()
+ * ```
  */
 export function createTestEngine<S extends AnySyncSchema, M extends AnyMutators>(
   app: AppDefinition<S, M>,
@@ -284,10 +301,11 @@ export interface SchemaSnapshot {
 
 /**
  * The CI tripwire for the one schema mistake the type system cannot catch:
- * **changing a table schema without bumping `version`** (DESIGN.md §9 —
- * without a bump, rows written before the change never gain new fields at
- * runtime, and old bundles sharing the version can silently strip them via
- * full-row writes). The deployed engine only detects this after the fact, as
+ * **changing a table schema without bumping `version`** — every schema
+ * change requires a bump, because without one rows written before the change
+ * never gain new fields at runtime, and old bundles sharing the version can
+ * silently strip them via full-row writes. The deployed engine only detects
+ * this after the fact, as
  * a warning in Durable Object logs; this check fails the build instead.
  *
  * Add one test next to your app definition:
@@ -304,8 +322,8 @@ export interface SchemaSnapshot {
  * the exact migrations entry to add. Node-only (reads and writes the file),
  * like everything in this subpath.
  *
- * Presence is deliberately outside the fingerprint: presence is ephemeral
- * and reshaping it needs no version bump (DESIGN.md §16.1).
+ * Presence is deliberately outside the fingerprint: presence is ephemeral —
+ * never stored — so reshaping it needs no version bump.
  *
  * Rare false positive: the fingerprint derives from zod's JSON Schema
  * emission, so a zod upgrade can shift it with no semantic change — the

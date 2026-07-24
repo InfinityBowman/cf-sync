@@ -11,15 +11,19 @@ import {
 } from '@cf-sync/protocol/internal'
 import * as Y from 'yjs'
 
-// Re-exported so editors can guard input size (e.g. a textarea `maxLength`)
-// against the same limit the transport enforces, without reaching into
-// @cf-sync/protocol/internal.
+/**
+ * Maximum size in bytes of a single field update frame — an update larger
+ * than this is rejected by the transport with `TooLarge`. Re-exported so
+ * editors can guard input size (e.g. a textarea `maxLength`) against the
+ * same limit the transport enforces, without reaching into
+ * `@cf-sync/protocol/internal`.
+ */
 export { MAX_FIELD_UPDATE_BYTES }
 
 /**
- * The client half of the extension seam (DESIGN.md §17.5), structurally
- * satisfied by `SyncClient` — the add-on is plain library code with no
- * privileged access. `status === 'synced'` is the ready signal: the server
+ * The client half of the extension seam, structurally satisfied by
+ * `SyncClient` — the add-on is plain library code with no privileged
+ * access. `status === 'synced'` is the ready signal: the server
  * only accepts binary frames on ready sockets, and every transition back to
  * 'synced' is a fresh connection to re-sync against.
  */
@@ -37,7 +41,7 @@ export interface YjsFieldsClient {
 }
 
 /**
- * A ref-counted live view of one field (DESIGN.md §17.1/17.6). Two components
+ * A ref-counted live view of one field. Two components
  * holding the same fieldId share one `doc`; `release()` drops local state at
  * refcount zero. There is no local persistence: a reload re-fetches small
  * documents in one round-trip, and an app that wants offline field durability
@@ -106,7 +110,7 @@ interface Entry {
 }
 
 /**
- * Attaches Tier 2 Yjs fields to a `SyncClient` (DESIGN.md §17.6):
+ * Attaches Yjs fields to a `SyncClient`:
  *
  * ```ts
  * const yfields = createYjsFields(client)

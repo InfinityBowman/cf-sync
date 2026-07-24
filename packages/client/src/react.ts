@@ -23,7 +23,7 @@ export function useSyncStatus(client: SyncClient<any, any>): SyncStatus {
 
 /**
  * Peers' presence as React state, typed by the app's presence schema and
- * excluding self (DESIGN.md §16.1):
+ * excluding self — render your own state from `presence.self`, not here:
  *
  * ```tsx
  * const peers = usePresence(syncClient)

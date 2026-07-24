@@ -9,12 +9,19 @@ export const PROTOCOL_VERSION = 1
 export const MAX_FRAME_BYTES = 900_000
 /** Patch-op budget per pokePart, leaving headroom for the message envelope. */
 export const MAX_PART_PATCH_BYTES = 850_000
-/** A single row must fit inside a frame with room to spare. */
-export const MAX_ROW_BYTES = 700_000
 /**
- * Presence payloads are cursor-cadence ephemera, not documents (DESIGN.md
- * §16.2). Oversized states are rejected with an error frame — never truncated
- * or coerced.
+ * The per-row byte cap: a row's JSON-serialized data may be at most 700,000
+ * bytes, so a single row always fits inside a WebSocket frame with room to
+ * spare. A `tx.put` that exceeds it rejects the mutation permanently with the
+ * `RowTooLarge` engine error code; the admin write API rejects oversized rows
+ * with a 400.
+ */
+export const MAX_ROW_BYTES = 700_000
+// Presence design is DESIGN.md §16.2.
+/**
+ * The per-client presence-state byte cap (8 KiB of JSON) — presence payloads
+ * are cursor-cadence ephemera, not documents. Oversized states are rejected
+ * with an error frame — never truncated or coerced.
  */
 export const MAX_PRESENCE_BYTES = 8_192
 
@@ -34,11 +41,13 @@ export const KEEPALIVE_PONG = '{"type":"pong"}'
 // ---------------------------------------------------------------------------
 
 /**
- * Permanent-rejection band `[4400, 4499]`: the client stops reconnecting and
- * calls `onFatal` with the close `{code, reason}` attached. Reconnecting
- * cannot help — the server told this client to go away.
+ * Lower bound (inclusive) of the permanent-rejection band `[4400, 4499]`: a
+ * close in this band makes the client stop reconnecting and call `onFatal`
+ * with the close `{code, reason}` attached. Reconnecting cannot help — the
+ * server told this client to go away.
  */
 export const CLOSE_PERMANENT_MIN = 4400
+/** Upper bound (inclusive) of the permanent-rejection close-code band `[4400, 4499]`. */
 export const CLOSE_PERMANENT_MAX = 4499
 /** Protocol or schema version mismatch — the designed recovery is loading the new bundle. */
 export const CLOSE_VERSION_NOT_SUPPORTED = 4400
@@ -48,13 +57,20 @@ export const CLOSE_VERSION_NOT_SUPPORTED = 4400
  * An app configuration bug, surfaced at connect rather than mid-mutation.
  */
 export const CLOSE_AUTH_CONTEXT_INVALID = 4401
-/** Default structured rejection (`{ok: false}`) and default admin kick. */
-export const CLOSE_UNAUTHORIZED = 4403
 /**
- * A newer socket with the same clientId took over (DESIGN.md §15.3 supersede
- * rule). The closed socket is almost always a half-open zombie its client
- * already abandoned; a live client seeing this has two tabs sharing a
- * clientId, which the clientId contract forbids.
+ * The connection was rejected as unauthorized (4403). Sent when the worker's
+ * `authorize` hook rejects a connection without naming its own close code,
+ * and as the default code for an admin kick. In the permanent band, so the
+ * client stops reconnecting and reports it through `onFatal`.
+ */
+export const CLOSE_UNAUTHORIZED = 4403
+// The supersede rule is DESIGN.md §15.3.
+/**
+ * A newer socket with the same clientId took over — the server keeps exactly
+ * one live socket per clientId and closes the older one. The closed socket is
+ * almost always a half-open zombie its client already abandoned; a live
+ * client seeing this has two tabs sharing a clientId, which the clientId
+ * contract forbids.
  */
 export const CLOSE_SUPERSEDED = 4409
 /**
@@ -64,6 +80,12 @@ export const CLOSE_SUPERSEDED = 4409
  */
 export const CLOSE_REFRESH = 4300
 
+/**
+ * Tests whether a WebSocket close code falls in the permanent-rejection band
+ * `[4400, 4499]`. A permanent close means reconnecting cannot help: on seeing
+ * one the client stops its reconnect loop and reports the close through
+ * `onFatal` instead of backing off and retrying.
+ */
 export function isPermanentCloseCode(code: number): boolean {
   return code >= CLOSE_PERMANENT_MIN && code <= CLOSE_PERMANENT_MAX
 }
@@ -92,6 +114,14 @@ export const cursorSchema = z.object({
   backendId: z.string().min(1),
   version: z.number().int().nonnegative(),
 })
+/**
+ * A client's position in a workspace's change history: which history
+ * (`backendId`, minted when the workspace is created and again on admin
+ * reset) and the data version reached within it (`version`). The client
+ * presents its cursor on connect to resume incrementally; a cursor from a
+ * different backendId or outside the retained version window triggers a
+ * reset — `clear` plus a full snapshot — rather than an error.
+ */
 export type Cursor = z.infer<typeof cursorSchema>
 
 export function cursorEquals(a: Cursor | null, b: Cursor | null): boolean {
@@ -157,6 +187,13 @@ export const patchOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('del'), tbl: z.string().min(1), id: z.string().min(1) }),
   z.object({ op: z.literal('clear') }),
 ])
+/**
+ * One row change carried by a poke: `put` upserts a row's full validated
+ * value, `del` removes a row, and `clear` drops all local rows — the reset
+ * that precedes a full snapshot when a client's cursor cannot be resumed.
+ * Pokes carry ordered arrays of these; the client applies each poke's ops
+ * atomically to local state.
+ */
 export type PatchOp = z.infer<typeof patchOpSchema>
 
 export const mutationResultSchema = z.object({

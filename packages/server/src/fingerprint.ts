@@ -1,11 +1,12 @@
 import type { AnySyncSchema, StandardSchemaV1 } from '@cf-sync/protocol'
 import { z } from 'zod'
 
+// Schema-evolution rules: DESIGN.md §9.
 /**
  * A structural fingerprint of the app's table schemas, stored in DO meta next
  * to the schema version. Its only job is drift detection: when a wake sees
  * the same version but a different fingerprint, a version bump was forgotten
- * (DESIGN.md §9 — every schema change requires one), so the engine warns once
+ * — every schema change requires one — so the engine warns once
  * and restamps. A warning rather than a hard error by design: the fingerprint
  * derives from zod's JSON Schema emission, which a zod upgrade could shift
  * with no semantic change — a heuristic gets to shout, never to brick.

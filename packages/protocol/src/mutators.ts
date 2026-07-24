@@ -17,11 +17,15 @@ import type { StandardSchemaV1 } from './standard-schema'
  */
 export type EngineErrorCode = 'InvalidArgs' | 'UnknownMutator' | 'RowTooLarge'
 
+// Permanent errors advancing the LMID is DESIGN.md §6 invariant 2.
 /**
- * Thrown by mutators to reject a mutation permanently. The engine still
- * advances the client's last_mutation_id (DESIGN.md §6 invariant 2) and
- * reports the error back via mutationResults. Any other thrown error is
- * treated as transient: the transaction rolls back and the client retries.
+ * Thrown by mutators to reject a mutation permanently. The engine discards
+ * the mutation's writes but still advances the client's `last_mutation_id` in
+ * the same transaction — a permanently rejected mutation is done, never
+ * retried, never blocking the queue behind it — and the rejection surfaces on
+ * the client as a `MutationError` carrying this `code`. Any other thrown
+ * error is treated as transient: the transaction rolls back and the client
+ * retries.
  *
  * `code` is app-defined (`NotFound`, `ReadOnly`, …) — the {@link EngineErrorCode}
  * values are reserved by the engine's own rejections.
@@ -36,12 +40,24 @@ export class AppError extends Error {
   }
 }
 
+/**
+ * The third argument every mutator's `apply` receives: who is pushing the
+ * mutation and which run this is. The same `apply` executes optimistically on
+ * the client and authoritatively on the server, and the context is how a
+ * mutator tells those runs apart.
+ */
 export interface MutatorContext<A = unknown> {
-  clientId: string
   /**
-   * The authorize verdict's principal (DESIGN.md §15) — undefined when no
-   * authorize hook stamped one, and always undefined in optimistic client
-   * runs (the client has no server verdict).
+   * The stable id of the client that pushed the mutation — the `SyncClient`'s
+   * own `clientId` in optimistic runs, the pushing socket's attested id on
+   * the server, so both runs of one mutation see the same value.
+   */
+  clientId: string
+  // Authorize verdicts and stamps are DESIGN.md §15.
+  /**
+   * The principal the worker's `authorize` hook stamped on the connection —
+   * undefined when no authorize hook stamped one, and always undefined in
+   * optimistic client runs (the client has no server verdict).
    */
   principal?: string
   /**
@@ -60,10 +76,11 @@ export interface MutatorContext<A = unknown> {
 }
 
 /**
- * Symbol key under which a registry built by `defineMutators` carries its
- * `authContext` schema. Lives on the registry object itself (enumerable, so
- * object spread keeps it) because mutators are the schema's consumer;
- * `defineApp` lifts it onto the app definition for the server and client.
+ * The key under which a registry built by `defineMutators` carries the
+ * `authContext` schema declared as its third argument. It lives on the
+ * registry object itself as an enumerable symbol property (object spread
+ * keeps it) because mutators are the schema's consumer; `defineApp` lifts it
+ * onto the app definition for the server and client.
  */
 export const AUTH_CONTEXT: unique symbol = Symbol.for('cf-sync.authContext')
 
@@ -86,6 +103,11 @@ export interface MutatorTx<S extends AnySyncSchema = AnySyncSchema> {
   del(tbl: TableName<S>, id: string): void
 }
 
+/**
+ * One named mutation: an optional args schema plus the `apply` function that
+ * performs it. A mutator registry maps mutation names to values of this
+ * shape; `defineMutators` builds one with everything typed from the schema.
+ */
 export interface MutatorDef<S extends AnySyncSchema = AnySyncSchema, In = any, Out = In> {
   /**
    * Standard schema for the mutation's args. The server validates before
@@ -94,10 +116,24 @@ export interface MutatorDef<S extends AnySyncSchema = AnySyncSchema, In = any, O
    * time as a fail-fast. Omit for mutators that take no args.
    */
   args?: StandardSchemaV1<In, Out>
+  /**
+   * The mutation itself. The same function runs twice — optimistically on the
+   * client the moment `mutate` is called, authoritatively on the server when
+   * the push arrives — so it must be deterministic: pass ids, timestamps, and
+   * random values in as args, never compute them inside, or the server's
+   * result will not match the local prediction. Throwing {@link AppError}
+   * rejects the mutation permanently; any other throw is transient and the
+   * mutation is retried.
+   */
   apply(tx: MutatorTx<S>, args: Out, ctx: MutatorContext): void
 }
 
-/** Constraint-position alias; `any` keeps concrete registries assignable across generics. */
+// `any` keeps concrete registries assignable in constraint position across generics.
+/**
+ * Any mutator registry, whatever its schema and mutations — the bound to use
+ * for generic helpers over a registry (`<M extends AnyMutators>`). Every
+ * `defineMutators` result is assignable to it.
+ */
 export type AnyMutators = Record<string, MutatorDef<any, any, any>>
 
 /** The mutator registry accepted by the server engine for a given schema. */
@@ -137,7 +173,7 @@ export type MutationArgs<Def> = 'args' extends keyof Def
  * type contextually types each `apply` from its sibling `args` schema.
  *
  * The optional third argument declares the shape of `ctx.auth` — the
- * connection-time context the app's `authorize` hook stamps (DESIGN.md §15).
+ * connection-time context the app's `authorize` hook stamps on each socket.
  * Mutators are its consumer, so it is declared with them; `defineApp` picks
  * it up from the registry, the server validates each verdict's context
  * against it at connect (drift between authorize and mutators fails the
@@ -236,17 +272,25 @@ export type CrudDelArgs<S extends AnySyncSchema> = { tbl: TableName<S>; id: stri
 // A type alias, not an interface: aliases get implicit index signatures, so a
 // bare `crudMutators(schema)` result is assignable wherever a mutator
 // registry (`Record<string, MutatorDef>`) is expected — e.g. `defineApp`.
+/**
+ * The full-row CRUD pair — `sync.put` and `sync.del`, the mutations
+ * collections emit for local `insert`/`update`/`delete` — that `defineApp`
+ * adds to every registry unless `crud: false`. Typed against the schema:
+ * `sync.put` args are a union over the declared tables, so direct
+ * `mutate.sync.put(...)` calls type-check per table.
+ */
 export type CrudMutators<S extends AnySyncSchema> = {
   'sync.put': { args: StandardSchemaV1<CrudPutArgs<S>, CrudPutArgs<S>>; apply(tx: MutatorTx<S>, args: CrudPutArgs<S>, ctx: MutatorContext): void }
   'sync.del': { args: StandardSchemaV1<CrudDelArgs<S>, CrudDelArgs<S>>; apply(tx: MutatorTx<S>, args: CrudDelArgs<S>, ctx: MutatorContext): void }
 }
 
+// CRUD-as-degenerate-mutators is DESIGN.md §7.
 /**
- * Full-row last-write-wins CRUD as degenerate "intent" mutators (DESIGN.md §7)
- * — the mutations the TanStack DB collection adapter emits. `defineApp`
- * includes them automatically (opt out with `crud: false`); calling this
- * directly is only needed for hand-assembled registries. Row payloads are
- * validated against the table's schema by the engine's `put`.
+ * Full-row last-write-wins CRUD as degenerate "intent" mutators — the
+ * mutations the TanStack DB collection adapter emits. `defineApp` includes
+ * them automatically (opt out with `crud: false`); calling this directly is
+ * only needed for hand-assembled registries. Row payloads are validated
+ * against the table's schema by the engine's `put`.
  */
 export function crudMutators<S extends AnySyncSchema>(schema: S): CrudMutators<S> {
   void schema // binds S; per-table row validation happens in the engine's put

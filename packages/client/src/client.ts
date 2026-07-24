@@ -31,13 +31,25 @@ import {
 import { IndexedDBSyncStore } from './idb-store'
 import type { PersistedOutboxEntry, PersistedRowOp, PersistedState, SyncStore } from './store'
 
+/**
+ * The client's connection lifecycle — one value describing the pipe, not any
+ * individual mutation (those settle through `mutate`'s promise and
+ * `onMutationRejected`). `idle` is before `start()` and after `stop()`;
+ * `connecting` covers hydration and the first socket attempt; `syncing` means
+ * the socket is open and catch-up is in flight; `synced` means this
+ * connection has caught up (the status holds there between pokes);
+ * `reconnecting` means the connection dropped and backoff retries are running
+ * — queued mutations wait, nothing is lost; `fatal` means the server
+ * permanently rejected this client (see `SyncClientOptions.onFatal`).
+ */
 export type SyncStatus = 'idle' | 'connecting' | 'syncing' | 'synced' | 'reconnecting' | 'fatal'
 
+// Binary lane: DESIGN.md §17.3.
 /**
  * Minimal socket surface so tests and non-browser runtimes can inject one.
  * A custom `createSocket` that wraps a real browser WebSocket must set
- * `binaryType = 'arraybuffer'` for the binary lane (DESIGN.md §17.3) — the
- * default factory does.
+ * `binaryType = 'arraybuffer'` — binary-lane frames must arrive as
+ * ArrayBuffer, not Blob — which the default factory does.
  */
 export interface WebSocketLike {
   send(data: string | ArrayBufferLike | ArrayBufferView): void
@@ -45,6 +57,11 @@ export interface WebSocketLike {
   addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: any) => void): void
 }
 
+/**
+ * One row operation delivered to a table's hooks: a full-row `put` (rows are
+ * last-writer-wins documents, so `value` replaces the row entirely) or a
+ * `del` by id.
+ */
 export type TableWriteOp =
   | { type: 'put'; id: string; value: Record<string, unknown> }
   | { type: 'del'; id: string }
@@ -116,6 +133,16 @@ export const RAW_MUTATE = Symbol('cf-sync.rawMutate')
  */
 export type MutationErrorCode = EngineErrorCode | 'Timeout' | 'Stopped' | 'Fatal' | 'LocalApplyFailed'
 
+/**
+ * The error a refused mutation settles with — what an awaited `mutate` call
+ * rejects with and what `onMutationRejected` receives. `code` is the
+ * branchable identity, drawn from three groups: the engine's built-in
+ * rejections ({@link EngineErrorCode}, e.g. `InvalidArgs`,
+ * `UnknownMutator`), the client-local outcomes (`Timeout`, `Stopped`,
+ * `Fatal`, `LocalApplyFailed`), and app-defined `AppError` codes passed
+ * through verbatim — {@link MutationErrorCode} is the full vocabulary.
+ * `message` is diagnostic prose; branch on `code`, not on it.
+ */
 export class MutationError extends Error {
   constructor(
     readonly code: MutationErrorCode | (string & {}),
@@ -133,11 +160,11 @@ export class MutationError extends Error {
  */
 export type SyncFatalCode = number | 'VersionNotSupported' | 'Unauthorized'
 
+// Permanent-rejection protocol: DESIGN.md §15.2.
 /**
- * What `onFatal` receives when the server permanently rejects this client
- * (DESIGN.md §15.2). `reason` is the close frame's slug
- * (`membership-revoked`, `project-deleted`) — stable strings apps can
- * branch on.
+ * What `onFatal` receives when the server permanently rejects this client.
+ * `reason` is the close frame's slug (`membership-revoked`,
+ * `project-deleted`) — stable strings apps can branch on.
  */
 export class SyncFatalError extends Error {
   constructor(
@@ -152,9 +179,10 @@ export class SyncFatalError extends Error {
 type PresenceInputOf<P> = P extends StandardSchemaV1 ? StandardSchemaV1.InferInput<P> : never
 type PresenceStateOf<P> = P extends StandardSchemaV1 ? StandardSchemaV1.InferOutput<P> : never
 
+// Presence protocol: DESIGN.md §16.
 /**
- * `client.presence` — ephemeral peer state on the existing socket (DESIGN.md
- * §16). The library owns transport and lifecycle: `set` is throttled
+ * `client.presence` — ephemeral peer state on the existing sync socket.
+ * The library owns transport and lifecycle: `set` is throttled
  * trailing-edge at `presenceThrottleMs` (safe to call at input frequency) and
  * the last state is re-announced on every reconnect, so apps write neither
  * throttle nor reconnect glue. Peers exclude self (render your own state from
@@ -248,6 +276,11 @@ function buildMutate(names: Iterable<string>, invoke: (name: string, args: unkno
   return root
 }
 
+/**
+ * Constructor options for {@link SyncClient} — fixed for the instance's
+ * lifetime. Only `url`, `workspaceId`, and `app` are required; the rest
+ * tune persistence, connection behavior, presence, and the lifecycle hooks.
+ */
 export interface SyncClientOptions<
   S extends AnySyncSchema = AnySyncSchema,
   M extends AnyMutators = AnyMutators,
@@ -389,8 +422,8 @@ export interface SyncClientOptions<
   /**
    * Called when the server permanently rejects this client — an in-band
    * VersionNotSupported/Unauthorized error, or a close code in the permanent
-   * band [4400, 4499] (an `authorize` rejection or an admin kick, DESIGN.md
-   * §15.2). The error carries the close `{code, reason}`, so apps can branch
+   * band [4400, 4499] (an `authorize` rejection or an admin kick). The
+   * error carries the close `{code, reason}`, so apps can branch
    * on the rejection slug:
    *
    * ```ts
@@ -430,6 +463,45 @@ interface PokeBuffer {
   mutationResults: MutationResult[]
 }
 
+/**
+ * The per-workspace sync client: it owns the WebSocket to the workspace's
+ * Durable Object, the outbox of unconfirmed mutations, optimistic application
+ * and rollback, presence, and reconnection with cursor catch-up. Construct
+ * one instance per workspace per tab — the clientId names one contiguous
+ * mutation sequence, so concurrent tabs must never share one (the managed
+ * default handles this) — and it connects on construction unless
+ * `autoStart: false`. The shared `defineApp` value passed in
+ * {@link SyncClientOptions} types `mutate` and the collections;
+ * `persist: true` adds the IndexedDB row mirror and a reload-surviving
+ * outbox.
+ *
+ * Attach TanStack DB collections with `createCollections` (or per-table
+ * `workspaceCollectionOptions`) for reads and optimistic writes; drive
+ * domain logic through {@link mutate}, which runs the shared mutator locally
+ * for an instant overlay and settles on the server's verdict. To switch
+ * workspaces, {@link destroy} this client and construct a fresh one.
+ *
+ * @example
+ * ```ts
+ * import { SyncClient, createCollections } from '@cf-sync/client'
+ * import { app } from './schema' // the shared defineApp value
+ *
+ * const client = new SyncClient({
+ *   url: 'wss://sync.example.com', // ws://localhost:8787 in dev
+ *   workspaceId: 'my-first-workspace',
+ *   app,
+ *   persist: true, // IndexedDB mirror + durable offline outbox
+ * })
+ *
+ * const { todos } = createCollections(client)
+ *
+ * // Optimistic local write, synced as a full-row mutation:
+ * todos.insert({ id: crypto.randomUUID(), title: 'ship it' })
+ *
+ * // Typed intent mutation — instant locally, authoritative on the server:
+ * await client.mutate.todo.toggle({ id })
+ * ```
+ */
 export class SyncClient<
   S extends AnySyncSchema = AnySyncSchema,
   M extends AnyMutators = AnyMutators,
@@ -581,14 +653,17 @@ export class SyncClient<
     if (opts.autoStart !== false) this.start()
   }
 
+  /** The current connection status — see {@link SyncStatus}; subscribe to changes via {@link subscribeStatus}. */
   get status(): SyncStatus {
     return this.#status
   }
 
+  /** The last server cursor this client applied, or null before the first sync. */
   get cursor(): Cursor | null {
     return this.#cursor
   }
 
+  /** The workspace this client syncs, as passed at construction. */
   get workspaceId(): string {
     return this.#opts.workspaceId
   }
@@ -658,9 +733,10 @@ export class SyncClient<
     this.#intentRunner = runner
   }
 
+  // Binary-lane framing: DESIGN.md §17.5.
   /**
-   * Sends one binary-lane frame (DESIGN.md §17.5) — the client half of the
-   * extension seam, used by add-ons like `createYjsFields`. Fire-and-forget
+   * Sends one binary-lane frame — the client half of the extension seam,
+   * used by add-ons like `createYjsFields`. Fire-and-forget
    * like every frame on this socket: a broken socket surfaces through the
    * close event, and binary-lane consumers re-sync on the next ready
    * transition (`subscribeStatus` reaching 'synced'), so nothing is lost.

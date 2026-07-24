@@ -1,6 +1,10 @@
 import type { Cursor } from '@cf-sync/protocol'
 import type { PersistedOutboxEntry, PersistedState, PokePersist, SyncStore } from './store'
 
+/**
+ * Constructor options for {@link IndexedDBSyncStore} — where its database
+ * lives and which clientId's outbox partition it owns.
+ */
 export interface IndexedDBSyncStoreOptions {
   /** One database per workspace; safe to share across tabs. */
   workspaceId: string

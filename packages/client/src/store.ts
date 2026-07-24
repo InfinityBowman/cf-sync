@@ -12,29 +12,48 @@ export type PersistedRowOp =
   | { op: 'put'; tbl: string; id: string; value: Record<string, unknown> }
   | { op: 'del'; tbl: string; id: string }
 
+/**
+ * Everything a {@link SyncStore} hands back at hydration: cached rows, the
+ * cursor they correspond to, and this client's outbox.
+ */
 export interface PersistedState {
+  /** App schema version the cached rows were written under — a mismatch discards the cache. Null when only an outbox was ever persisted. */
   schemaVersion: number | null
   /** Null when mutations were queued before the first successful sync. */
   cursor: Cursor | null
+  /** The highest mutation id the server had confirmed when this was written; queued mutations number upward from it. */
   confirmedLmid: number
+  /** Cached full row values across all tables; hydration buckets them by table. */
   rows: { tbl: string; id: string; value: Record<string, unknown> }[]
-  outbox: PersistedOutboxEntry[]
-}
-
-export interface PokePersist {
-  ops: PersistedRowOp[]
-  /** True when the poke contained a clear op (reset/bootstrap): replace all rows. */
-  clear: boolean
-  cursor: Cursor
-  schemaVersion: number
-  confirmedLmid: number
+  /** This client's queued mutations, in enqueue order. */
   outbox: PersistedOutboxEntry[]
 }
 
 /**
+ * One poke's durable effects, committed atomically by
+ * {@link SyncStore.applyPoke}: the row operations, the cursor they produce,
+ * and the outbox as it stands after settlement.
+ */
+export interface PokePersist {
+  /** Row puts/dels from the poke's patch, in patch order. */
+  ops: PersistedRowOp[]
+  /** True when the poke contained a clear op (reset/bootstrap): replace all rows. */
+  clear: boolean
+  /** The cursor after applying `ops` — must commit atomically with them. */
+  cursor: Cursor
+  /** The app schema version the rows conform to. */
+  schemaVersion: number
+  /** The server-confirmed mutation id after this poke's settlements. */
+  confirmedLmid: number
+  /** Full outbox snapshot after settlement — replaces the stored one. */
+  outbox: PersistedOutboxEntry[]
+}
+
+// The server-side transaction invariant this mirrors: DESIGN.md §6.
+/**
  * Durable client-side storage for synced rows, the cursor, and the outbox.
  *
- * The contract mirrors the server's transaction invariant (DESIGN.md §6) on
+ * The contract mirrors the server's transaction invariant on
  * the client: applyPoke must commit rows, cursor, confirmedLmid, and the
  * outbox snapshot atomically, so the persisted cursor is never newer than
  * the persisted rows. A cursor that lags the rows is harmless — patches are

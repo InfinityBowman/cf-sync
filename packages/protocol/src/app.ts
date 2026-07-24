@@ -42,15 +42,17 @@ export interface AppDefinition<
   readonly mutators: M
   /** Ascending by `to`; consecutive versions (each step's `to` is the previous step's `to` + 1). */
   readonly migrations: readonly SchemaMigration[]
+  // Auth-context validation at connect is DESIGN.md §15.4.
   /**
    * The `authContext` schema declared with the mutator registry
    * (`defineMutators`' third argument), lifted here so the server can
    * validate each authorize verdict's context at connect and the client can
-   * fail-fast-validate its `auth` option (DESIGN.md §15.4).
+   * fail-fast-validate its `auth` option.
    */
   readonly authContext?: StandardSchemaV1<any, any>
+  // Presence design is DESIGN.md §16.
   /**
-   * Schema for the app's ephemeral presence payload (DESIGN.md §16). Declaring
+   * Schema for the app's ephemeral presence payload. Declaring
    * it enables `client.presence` / `usePresence`; the server validates every
    * inbound state against it before relaying, so peers' state reaches app
    * code as a checked, typed value. Unlike table schemas, changing it needs
@@ -91,13 +93,14 @@ export interface PresencePeer<T = unknown> {
   clientId: string
   principal?: string
   state: T
+  // The ghost window is DESIGN.md §16.3.
   /**
    * Local receipt time (`Date.now()`) of the update that produced `state` —
    * local clock, so it compares against `Date.now()`, never against other
-   * machines. This is the staleness bound DESIGN.md §16.3 says to render
-   * ghost-window presence with: a silently-dead peer lingers until TCP
-   * teardown surfaces (~75s+), so claims like "X is editing this field"
-   * should fade on `Date.now() - receivedAt`, not trust the entry forever.
+   * machines. This is the staleness bound to render presence with: a
+   * silently-dead peer lingers until TCP teardown surfaces (~75s+), so
+   * claims like "X is editing this field" should fade on
+   * `Date.now() - receivedAt`, not trust the entry forever.
    */
   receivedAt: number
 }

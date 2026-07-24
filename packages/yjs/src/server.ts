@@ -23,7 +23,7 @@ import * as Y from 'yjs'
 
 /**
  * What `authorizeWrite` decides on: the target field plus the connection's
- * §15.3 identity — the auth stamps (`auth` is the authorize verdict's
+ * identity — the auth stamps (`auth` is the authorize verdict's
  * `context`, `principal` its principal) and the tab's `clientId`. `fieldId`
  * makes per-field policies expressible (e.g. authors edit their own notes,
  * everyone else reads); encode the owning entity into your field ids
@@ -37,9 +37,14 @@ export interface YjsFieldWriteContext<AC = unknown> {
   clientId: string
 }
 
+/**
+ * Configuration for the {@link yjsFields} extension: the per-field write
+ * gate and the memory/compaction knobs of the server-side doc store.
+ */
 export interface YjsFieldsOptions<AC = unknown> {
   /**
-   * Gates field writes on the write context (field id + §15 auth stamps).
+   * Gates field writes on the write context (field id + the connection's
+   * auth stamps).
    * Default: any member writes — the same coarse model as the rest of the
    * engine (membership to read, one app predicate to write). A `false`
    * verdict is not an error path: it sets `writable: false` in the `GET`
@@ -109,7 +114,7 @@ export interface YjsFieldsAppOptions<M extends AnyMutators> extends YjsFieldsOpt
 }
 
 /**
- * Tier 2 Yjs fields hosted inside the workspace DO (DESIGN.md §17): per-field
+ * Yjs fields hosted inside the workspace DO: per-field
  * Y.Docs on the existing socket, appended-and-relayed without materializing on
  * the typing path. Register on the DO:
  *

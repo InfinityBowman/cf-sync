@@ -39,8 +39,9 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0
 }
 
+// Verdict/stamps design: DESIGN.md §15.2.
 /**
- * The structured return of a sync `authorize` hook (DESIGN.md §15.2).
+ * The structured return of a sync `authorize` hook.
  *
  * `ok: true` stamps `principal` and `context` onto the connection: mutators
  * read them synchronously as `ctx.principal` / `ctx.auth` (validated against
@@ -62,11 +63,13 @@ export type AuthVerdict =
   | { ok: true; principal?: string; context?: unknown; expiresAt?: number }
   | { ok: false; code?: number; reason?: string }
 
+/** Options for {@link createSyncRoute} / {@link createSyncFetch}, the worker router for sync WebSocket upgrades. */
 export interface SyncFetchOptions<Env> {
+  /** Resolves the workspace Durable Object namespace from the worker env — typically `(env) => env.WORKSPACE`. */
   namespace: (env: Env) => DurableObjectNamespace
   /**
    * Connection-time authorization, run in the worker before the DO is
-   * reached (DESIGN.md §8, §15). Return false or a Response to reject with
+   * reached. Return false or a Response to reject with
    * HTTP 403 (correct for non-browser callers), or an `AuthVerdict` for
    * distinguishable rejections and connection stamps. v1 policy: workspace
    * membership grants full access; mutation-level checks live in mutators
@@ -161,6 +164,11 @@ export function createSyncFetch<Env>(opts: SyncFetchOptions<Env>) {
     (await route(request, env)) ?? new Response('not found', { status: 404 })
 }
 
+/**
+ * The admin operation name, passed to `createAdminRoute`'s authorize hook so
+ * per-op policy — say, a read-only token that allows `stats` and `export`
+ * but not `reset` — is one `switch` away.
+ */
 export type AdminOp = 'stats' | 'export' | 'import' | 'reset' | 'disconnect'
 
 const ADMIN_METHODS: Record<AdminOp, string> = {
@@ -171,7 +179,9 @@ const ADMIN_METHODS: Record<AdminOp, string> = {
   disconnect: 'POST',
 }
 
+/** Options for {@link createAdminRoute} / {@link createAdminFetch}, the worker router for the workspace admin surface. */
 export interface AdminFetchOptions<Env> {
+  /** Resolves the workspace Durable Object namespace from the worker env — typically `(env) => env.WORKSPACE`. */
   namespace: (env: Env) => DurableObjectNamespace
   /**
    * Required — admin operations read and destroy whole workspaces. Return
@@ -188,7 +198,7 @@ export interface AdminFetchOptions<Env> {
 /**
  * Routes `${prefix}/<workspaceId>/<op>` to the workspace DO's admin surface:
  * GET stats, GET export, POST import (snapshot body), POST reset,
- * POST disconnect (kick/refresh live sockets, DESIGN.md §15.5).
+ * POST disconnect (kick or refresh live sockets).
  *
  * The composable form (see {@link createSyncRoute} for the pattern): resolves
  * to `null` when the request is not admin traffic, so it chains with other
@@ -232,7 +242,8 @@ export function createAdminFetch<Env>(opts: AdminFetchOptions<Env>) {
     (await route(request, env)) ?? new Response('not found', { status: 404 })
 }
 
-/** Selects which live sockets to close and how (DESIGN.md §15.5). */
+// Session revocation design: DESIGN.md §15.5.
+/** Selects which live sockets a `disconnect` closes, and how. */
 export interface DisconnectOptions {
   /** Only sockets whose verdict stamped this principal. */
   principal?: string
@@ -251,11 +262,36 @@ export interface DisconnectOptions {
   reason?: string
 }
 
+/**
+ * The typed admin surface {@link workspaceAdmin} returns — one method per
+ * admin op, mirroring the HTTP routes `createAdminFetch` exposes. A failing
+ * op throws with the operation name, HTTP status, and the DO's error message.
+ */
 export interface WorkspaceAdmin {
+  /** Operational gauges and counters for the workspace — rows, versions, live connections, database size — designed to be scraped. */
   stats(): Promise<Record<string, unknown>>
+  /** A JSON snapshot of every live row (plus extension state when one is registered), accepted back by `import`. */
   export(): Promise<Record<string, unknown>>
+  /**
+   * Replaces the workspace's rows from a snapshot at a single new data
+   * version, atomically. Live clients converge on their own: a reset poke
+   * re-bootstraps them in place, or — when the snapshot carries extension
+   * state — every socket is cycled with a refresh close instead.
+   */
   import(snapshot: unknown): Promise<{ imported: number; version: number }>
+  /**
+   * Wipes the workspace and starts a new history under a fresh `backendId`.
+   * Live clients converge via a clear poke; reconnecting ones re-bootstrap.
+   * Also the one op a quarantined workspace (failed initialization) still
+   * serves — the recovery hatch.
+   */
   reset(): Promise<{ backendId: string }>
+  /**
+   * Closes live sockets matching the selectors (all sockets when none are
+   * given). `kick` closes permanently — the client stops reconnecting and
+   * calls `onFatal` — while `refresh` closes with 4300 so the client
+   * reconnects through a fresh `authorize` run and picks up new stamps.
+   */
   disconnect(opts?: DisconnectOptions): Promise<{ disconnected: number }>
 }
 

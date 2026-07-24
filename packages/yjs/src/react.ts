@@ -38,7 +38,7 @@ interface Snap {
 }
 
 /**
- * The paved-path React binding for one Tier 2 field (DESIGN.md §17.6): owns
+ * The paved-path React binding for one Yjs field: owns
  * the whole handle lifecycle — acquire on mount, `release()` on unmount,
  * re-acquire on `fieldId` change — plus the sync gate and reactive
  * `canWrite`, so a component is just:

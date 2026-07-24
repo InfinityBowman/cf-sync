@@ -131,6 +131,11 @@ function collectionApplier(collection: Collection<any, string, any, any, any>): 
   }
 }
 
+/**
+ * Configuration for {@link workspaceCollectionOptions}: the client, the
+ * schema table to bind, and optional key and sync-start behavior. `getKey`
+ * is required only when the table's row schema has no string `id` field.
+ */
 export type WorkspaceCollectionConfig<S extends AnySyncSchema, K extends TableName<S>> = {
   client: SyncClient<S, any>
   /** Server-side table name (a key of the client's schema). One collection per table. */
@@ -155,13 +160,13 @@ export type WorkspaceCollectionConfig<S extends AnySyncSchema, K extends TableNa
  * Synced data flows through the poke pipeline (begin/write/commit per poke,
  * truncate on reset). Local writes become `sync.put` / `sync.del` mutations;
  * each handler resolves only when the server confirms the mutation, at which
- * point TanStack DB drops the optimistic overlay (rebase is handled by the
- * store, see DESIGN.md §7).
+ * point TanStack DB drops the optimistic overlay (TanStack's store handles
+ * rebasing overlays on top of newly synced state).
  *
  * Table hooks register with the client at options creation, buffered until
  * TanStack starts the sync pipeline — a lazily-subscribed collection costs no
  * full resync. The collection also serves as `mutate`'s optimistic surface:
- * intent mutations run their shared `apply` against it locally (§7.2).
+ * intent mutations run their shared `apply` against it locally.
  */
 export function workspaceCollectionOptions<S extends AnySyncSchema, K extends TableName<S>>(
   cfg: WorkspaceCollectionConfig<S, K>,
