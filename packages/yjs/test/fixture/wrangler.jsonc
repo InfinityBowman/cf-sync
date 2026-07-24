@@ -6,8 +6,9 @@
     "bindings": [
       { "name": "WORKSPACE", "class_name": "WorkspaceDO" },
       { "name": "AUTHW", "class_name": "AuthWriteDO" },
+      { "name": "PERFIELD", "class_name": "PerFieldDO" },
       { "name": "COMPACT", "class_name": "CompactDO" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO", "AuthWriteDO", "CompactDO"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO", "AuthWriteDO", "PerFieldDO", "CompactDO"] }]
 }

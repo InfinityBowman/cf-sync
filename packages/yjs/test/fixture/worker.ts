@@ -12,6 +12,7 @@ import { yjsFields } from '../../src/server'
 interface Env {
   WORKSPACE: DurableObjectNamespace
   AUTHW: DurableObjectNamespace
+  PERFIELD: DurableObjectNamespace
   COMPACT: DurableObjectNamespace
 }
 
@@ -24,8 +25,16 @@ export const WorkspaceDO = createWorkspaceDO({ app, extension: yjsFields() })
 /** Write-gated on the §15 stamps (the '/auth' route below supplies them). */
 export const AuthWriteDO = createWorkspaceDO({
   app,
+  extension: yjsFields<{ writeAllowed?: boolean }>({
+    authorizeWrite: ({ auth }) => auth?.writeAllowed === true,
+  }),
+})
+
+/** Per-field policy: the write context's fieldId and principal drive the verdict. */
+export const PerFieldDO = createWorkspaceDO({
+  app,
   extension: yjsFields({
-    authorizeWrite: (auth) => (auth as { writeAllowed?: boolean } | undefined)?.writeAllowed === true,
+    authorizeWrite: ({ fieldId, principal }) => fieldId === `notes:${principal}`,
   }),
 })
 
@@ -48,6 +57,14 @@ const authHandler = createSyncFetch<Env>({
     }
   },
 })
+const perFieldHandler = createSyncFetch<Env>({
+  namespace: (env) => env.PERFIELD,
+  pathPrefix: '/perfield',
+  authorize: (request) => ({
+    ok: true,
+    principal: request.headers.get('x-test-principal') ?? undefined,
+  }),
+})
 const compactHandler = createSyncFetch<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact' })
 const adminHandler = createAdminFetch<Env>({
   namespace: (env) => env.WORKSPACE,
@@ -59,6 +76,7 @@ export default {
     const { pathname } = new URL(request.url)
     if (pathname.startsWith('/admin/')) return adminHandler(request, env)
     if (pathname.startsWith('/auth/')) return authHandler(request, env)
+    if (pathname.startsWith('/perfield/')) return perFieldHandler(request, env)
     if (pathname.startsWith('/compact/')) return compactHandler(request, env)
     return mainHandler(request, env)
   },

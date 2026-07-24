@@ -23,6 +23,12 @@ export interface YjsFieldsClient {
   onBinary(listener: (bytes: Uint8Array) => void): () => void
   subscribeStatus(listener: (status: string) => void): () => void
   readonly status: string
+  /**
+   * When the client exposes a destroy hook (`SyncClient` does), the add-on
+   * registers its own `destroy` there, so `client.destroy()` tears down the
+   * fields too — no separate call to remember.
+   */
+  onDestroy?(callback: () => void): () => void
 }
 
 /**
@@ -202,6 +208,7 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
   }
 
   const unsubscribeBinary = client.onBinary(onFrame)
+  const unregisterDestroy = client.onDestroy?.(() => api.destroy())
   const unsubscribeStatus = client.subscribeStatus((status) => {
     // Every connection that reaches ready re-syncs every held doc: GET with
     // the current state vector pulls what we missed, the STATE push-back
@@ -219,7 +226,7 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
     }
   })
 
-  return {
+  const api: YjsFields = {
     getDoc(fieldId: string): YjsFieldHandle {
       if (destroyed) throw new Error('createYjsFields: destroyed')
       // Validate before any state mutation: an id the wire format cannot
@@ -291,10 +298,12 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
     destroy(): void {
       if (destroyed) return
       destroyed = true
+      unregisterDestroy?.()
       unsubscribeBinary()
       unsubscribeStatus()
       for (const entry of entries.values()) entry.doc.destroy()
       entries.clear()
     },
   }
+  return api
 }

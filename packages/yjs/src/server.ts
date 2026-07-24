@@ -18,16 +18,35 @@ import type {
 } from '@cf-sync/server'
 import * as Y from 'yjs'
 
-export interface YjsFieldsOptions {
+/**
+ * What `authorizeWrite` decides on: the target field plus the connection's
+ * §15.3 identity — the auth stamps (`auth` is the authorize verdict's
+ * `context`, `principal` its principal) and the tab's `clientId`. `fieldId`
+ * makes per-field policies expressible (e.g. authors edit their own notes,
+ * everyone else reads); encode the owning entity into your field ids
+ * (`note:<noteId>`) and derive the check from there.
+ */
+export interface YjsFieldWriteContext<AC = unknown> {
+  fieldId: string
+  /** The authorize verdict's context — undefined when no hook stamped one. */
+  auth: AC | undefined
+  principal?: string
+  clientId: string
+}
+
+export interface YjsFieldsOptions<AC = unknown> {
   /**
-   * Gates field writes on the §15 auth stamps (the verdict's `context`, as
-   * stamped at upgrade). Default: any member writes — the same coarse model
-   * as the rest of the engine (membership to read, one app predicate to
-   * write). A `false` verdict is not an error path: it sets `writable: false`
-   * in the `GET` reply so the binding is read-only from the first paint, and
-   * an `UPDATE` that arrives anyway earns a `NotWritable` `REJECT`.
+   * Gates field writes on the write context (field id + §15 auth stamps).
+   * Default: any member writes — the same coarse model as the rest of the
+   * engine (membership to read, one app predicate to write). A `false`
+   * verdict is not an error path: it sets `writable: false` in the `GET`
+   * reply so the binding is read-only from the first paint, and an `UPDATE`
+   * that arrives anyway earns a `NotWritable` `REJECT`.
+   *
+   * Type `auth` by passing the app's authContext shape as the generic:
+   * `yjsFields<MyAuthContext>({ authorizeWrite: ({ auth }) => ... })`.
    */
-  authorizeWrite?: (auth: unknown) => boolean
+  authorizeWrite?: (ctx: YjsFieldWriteContext<AC>) => boolean
   /**
    * Y.Docs held in memory (snapshot-plus-tail loads are served from here).
    * Fields cap at MAX_FIELD_BYTES, so the default 8 bounds worst-case doc
@@ -80,7 +99,9 @@ function fromBase64(value: string): Uint8Array {
  * ```ts
  * export const Workspace = createWorkspaceDO({
  *   app,
- *   extension: yjsFields({ authorizeWrite: (auth) => auth?.writeAllowed === true }),
+ *   extension: yjsFields<{ writeAllowed: boolean }>({
+ *     authorizeWrite: ({ auth }) => auth?.writeAllowed === true,
+ *   }),
  * })
  * ```
  *
@@ -89,11 +110,11 @@ function fromBase64(value: string): Uint8Array {
  * are per-workspace by construction — Cloudflare colocates instances of one
  * class in a shared isolate, and extension state must never cross workspaces.
  */
-export function yjsFields(options: YjsFieldsOptions = {}): () => EngineExtension {
+export function yjsFields<AC = unknown>(options: YjsFieldsOptions<AC> = {}): () => EngineExtension {
   return () => createExtension(options)
 }
 
-function createExtension(options: YjsFieldsOptions): EngineExtension {
+function createExtension(options: YjsFieldsOptions<any>): EngineExtension {
   const authorizeWrite = options.authorizeWrite ?? (() => true)
   const maxCachedDocs = options.maxCachedDocs ?? DEFAULT_MAX_CACHED_DOCS
   const compactionThreshold = options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD
@@ -216,10 +237,16 @@ function createExtension(options: YjsFieldsOptions): EngineExtension {
     ctx!.send(ws, encodeFieldFrame(FIELD_MSG_REJECT, fieldId, encodeFieldReject(reason)))
   }
 
+  function writeContext(fieldId: string, msgCtx: EngineExtensionMessageContext): YjsFieldWriteContext {
+    return { fieldId, auth: msgCtx.auth, principal: msgCtx.principal, clientId: msgCtx.clientId }
+  }
+
   function handleGet(ws: WebSocket, fieldId: string, clientSV: Uint8Array, msgCtx: EngineExtensionMessageContext): void {
     const row = fieldRow(fieldId)
     const writable =
-      authorizeWrite(msgCtx.auth) && !(row?.frozen ?? false) && !(refused.get(ws)?.has(fieldId) ?? false)
+      authorizeWrite(writeContext(fieldId, msgCtx)) &&
+      !(row?.frozen ?? false) &&
+      !(refused.get(ws)?.has(fieldId) ?? false)
     const doc = loadDoc(fieldId)
     let diff: Uint8Array
     try {
@@ -249,7 +276,7 @@ function createExtension(options: YjsFieldsOptions): EngineExtension {
     // writable; anything still arriving is the in-flight tail. Drop it
     // before it can gap the log.
     if (refused.get(ws)?.has(fieldId)) return
-    if (!authorizeWrite(msgCtx.auth)) {
+    if (!authorizeWrite(writeContext(fieldId, msgCtx))) {
       reject(ws, fieldId, 'NotWritable')
       return
     }

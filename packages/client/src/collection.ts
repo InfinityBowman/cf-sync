@@ -327,6 +327,9 @@ export function createCollections<S extends AnySyncSchema>(
     // Attach the applier now (not at first sync) so intents fired before a
     // collection has subscribers still get their optimistic effect.
     client.registerApplier(table, collectionApplier(collection), runIntentTransaction)
+    // Tie the collection's lifetime to the client: client.destroy() cleans
+    // these up too, so teardown (e.g. switching workspaces) is one call.
+    client.onDestroy(() => collection.cleanup())
     collections[table] = collection
   }
   return collections as WorkspaceCollections<S>

@@ -51,6 +51,11 @@ export interface SyncStore {
   saveOutbox(outbox: PersistedOutboxEntry[], confirmedLmid: number): Promise<void>
   /** Discard all persisted state (schema change or corrupt cache). */
   reset(): Promise<void>
+  /**
+   * Release the store's underlying connection (`SyncClient.destroy` calls it
+   * when present). Persisted state stays on disk for the next client.
+   */
+  close?(): Promise<void>
 }
 
 /**

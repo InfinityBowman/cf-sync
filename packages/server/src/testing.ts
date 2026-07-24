@@ -5,6 +5,7 @@ import {
   type AnyMutators,
   type AnySyncSchema,
   type AppDefinition,
+  type EngineErrorCode,
   type MutationArgs,
   type MutatorContext,
   type RowInputOf,
@@ -73,7 +74,8 @@ export interface TestEngineOptions {
 
 /** The outcome of one authoritative mutation: `error` is the permanent app error, if any. */
 export interface TestMutationResult {
-  error?: { code: string; message: string }
+  /** `code` is an {@link EngineErrorCode} built-in or an app-defined `AppError` code. */
+  error?: { code: EngineErrorCode | (string & {}); message: string }
 }
 
 interface StoredRow {

@@ -15,6 +15,8 @@ import {
   type AuthContextOf,
   type ClientMsg,
   type Cursor,
+  type EngineErrorCode,
+  type ErrorCode,
   type ErrorMsg,
   type MutationArgs,
   type MutationResult,
@@ -98,9 +100,24 @@ export type IntentTransactionRunner = (
  */
 export const RAW_MUTATE = Symbol('cf-sync.rawMutate')
 
+/**
+ * The known codes a rejected `mutate` promise carries — the engine's built-in
+ * rejections ({@link EngineErrorCode}) plus the client-local outcomes:
+ *
+ * - `Timeout` — memory-only client, unconfirmed past `confirmTimeoutMs`.
+ * - `Stopped` — `stop()` was called with the mutation still unconfirmed.
+ * - `Fatal` — the client is in (or entered) the fatal state.
+ * - `LocalApplyFailed` — the optimistic apply threw a non-`AppError`; nothing
+ *   was sent.
+ *
+ * App-defined `AppError` codes flow through as themselves, so `code` stays
+ * open to any string — this union is the vocabulary that autocompletes.
+ */
+export type MutationErrorCode = EngineErrorCode | 'Timeout' | 'Stopped' | 'Fatal' | 'LocalApplyFailed'
+
 export class MutationError extends Error {
   constructor(
-    readonly code: string,
+    readonly code: MutationErrorCode | (string & {}),
     message: string,
   ) {
     super(message)
@@ -118,7 +135,7 @@ export class MutationError extends Error {
  */
 export class SyncFatalError extends Error {
   constructor(
-    readonly code: number | string,
+    readonly code: number | ErrorCode,
     readonly reason: string,
   ) {
     super(`sync connection permanently rejected (${code}): ${reason}`)
@@ -422,6 +439,8 @@ export class SyncClient<
   #needsRebase = false
   #started = false
   #stopped = false
+  #destroyed = false
+  readonly #teardown = new Set<() => void | Promise<void>>()
   #attempt = 0
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null
   #retryPushTimer: ReturnType<typeof setTimeout> | null = null
@@ -637,6 +656,9 @@ export class SyncClient<
 
   /** Begins hydration and connection. Called from the constructor unless `autoStart: false`; idempotent. */
   start(): void {
+    if (this.#destroyed) {
+      throw new Error('SyncClient: destroyed — construct a new SyncClient to reconnect this workspace')
+    }
     if (this.#started) return
     this.#started = true
     this.#clearStartNudge()
@@ -656,6 +678,14 @@ export class SyncClient<
     }
   }
 
+  /**
+   * Stops syncing: closes the socket, cancels timers, and rejects every
+   * unconfirmed `mutate` promise with `Stopped`. The durable outbox is NOT
+   * discarded — queued mutations survive and replay when a future client for
+   * this workspace hydrates the same store. Terminal: a stopped client cannot
+   * be restarted; for full teardown (collections, the store connection) use
+   * {@link destroy}, and construct a new SyncClient to reconnect.
+   */
   stop(): void {
     this.#stopped = true
     this.#clearStartNudge()
@@ -675,6 +705,50 @@ export class SyncClient<
     }
     this.#outbox = []
     this.#setStatus('idle')
+  }
+
+  /**
+   * Registers a teardown callback run (and awaited) by {@link destroy} —
+   * how resources created against this client tie their lifetime to it
+   * (`createCollections` registers each collection's cleanup here). Returns
+   * an unregister function. Apps rarely call this directly.
+   */
+  onDestroy(callback: () => void | Promise<void>): () => void {
+    this.#teardown.add(callback)
+    return () => {
+      this.#teardown.delete(callback)
+    }
+  }
+
+  /**
+   * Full teardown, idempotent: {@link stop}s syncing, runs every
+   * {@link onDestroy} callback (collections from `createCollections` clean up
+   * here), and closes the store's connection when it has a `close`. The
+   * instance is inert afterwards — `start()` throws, `mutate` rejects with
+   * `Stopped` — and constructing a fresh SyncClient (plus fresh collections)
+   * for the same or another workspace is the supported way to (re)connect:
+   * the pattern for workspace-per-project apps switching projects. State is
+   * not lost: the durable store keeps its rows and outbox for the next
+   * client, and this tab's managed clientId is reused, so mutations queued
+   * offline still replay exactly once.
+   */
+  async destroy(): Promise<void> {
+    if (this.#destroyed) return
+    this.#destroyed = true
+    this.stop()
+    for (const callback of [...this.#teardown]) {
+      try {
+        await callback()
+      } catch (err) {
+        console.warn('[cf-sync] a destroy callback failed', err)
+      }
+    }
+    this.#teardown.clear()
+    try {
+      await this.#store?.close?.()
+    } catch (err) {
+      console.warn('[cf-sync] failed to close the sync store', err)
+    }
   }
 
   /**
@@ -861,6 +935,11 @@ export class SyncClient<
   #enqueue(name: string, args: unknown): Promise<void> {
     if (this.#status === 'fatal') {
       return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
+    }
+    if (this.#stopped) {
+      // Post-stop mutations would queue forever with no connection to drain
+      // them; reject honestly instead (TanStack rolls back the optimistic write).
+      return Promise.reject(new MutationError('Stopped', 'sync client stopped'))
     }
     return new Promise<void>((resolve, reject) => {
       const entry: OutboxEntry = { id: null, name, args, resolve, reject, timer: null, settled: false }

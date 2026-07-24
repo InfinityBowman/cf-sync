@@ -212,6 +212,31 @@ connectivity returns), and it rejects only on permanent server error,
 after `confirmTimeoutMs` (default 30s), discarding the mutation — honest,
 since without a store it would not survive a reload anyway.
 
+Rejected mutations carry a typed `code` (`MutationError.code`): the engine's
+built-in rejections (`EngineErrorCode`: `InvalidArgs`, `UnknownMutator`,
+`RowTooLarge`), the client-local outcomes (`Timeout`, `Stopped`, `Fatal`,
+`LocalApplyFailed`), or whatever code your own mutators throw in an
+`AppError`. The built-in vocabulary is exported as `MutationErrorCode`, so
+branching on codes autocompletes.
+
+### Closing a workspace (and switching to another)
+
+`client.destroy()` is the one-call teardown: it stops syncing, cleans up every
+collection created by `createCollections`, detaches add-ons registered against
+the client (yjs fields), and closes the store connection. Nothing durable is
+lost — persisted rows and the offline outbox stay on disk, and the managed
+clientId is reused, so mutations queued offline still replay exactly once when
+a client for that workspace is next constructed. A destroyed client is inert
+(`start()` throws, `mutate` rejects with `Stopped`); to switch workspaces —
+e.g. one workspace per project — destroy the old client and construct a fresh
+`SyncClient` + `createCollections` for the new `workspaceId`:
+
+```ts
+await client.destroy()
+client = new SyncClient({ url, workspaceId: nextProjectId, app, persist: true })
+collections = createCollections(client, { startSync: true })
+```
+
 Sync status is observable via `client.subscribeStatus` (returns an
 unsubscribe function, safe to pass unbound) — in React, use the shipped hook:
 

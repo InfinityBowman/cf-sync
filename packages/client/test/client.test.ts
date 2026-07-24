@@ -1,6 +1,7 @@
 import type { Cursor, PatchOp } from '@cf-sync/protocol'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { MutationError, SyncClient, SyncFatalError, type TableWriteOp } from '../src/client'
+import { MemorySyncStore } from '../src/store'
 import { testApp } from './test-schema'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
@@ -308,5 +309,67 @@ describe('SyncClient', () => {
     socket.dropConnection()
     expect(client.status).toBe('reconnecting')
     expect(seen).toEqual(['connecting', 'syncing', 'synced']) // no longer notified
+  })
+})
+
+describe('destroy and teardown', () => {
+  it('stop() rejects later mutations with Stopped instead of queueing them forever', async () => {
+    const { client, latest } = makeClient()
+    client.start()
+    const socket = latest()
+    socket.open()
+    bootstrap(socket)
+    client.stop()
+    await expect(
+      client.mutate('sync.put', { tbl: 'todos', id: 't1', data: { id: 't1' } }),
+    ).rejects.toMatchObject({ code: 'Stopped' })
+  })
+
+  it('destroy() stops, runs registered callbacks once, and closes the store', async () => {
+    const store = new MemorySyncStore()
+    let closed = 0
+    ;(store as { close?: () => Promise<void> }).close = async () => {
+      closed++
+    }
+    const { client } = makeClient({ store })
+    client.start()
+    await flushMicrotasks()
+
+    const calls: string[] = []
+    client.onDestroy(() => {
+      calls.push('kept')
+    })
+    const unregister = client.onDestroy(() => {
+      calls.push('unregistered')
+    })
+    unregister()
+
+    await client.destroy()
+    await client.destroy() // idempotent: callbacks and close run once
+    expect(calls).toEqual(['kept'])
+    expect(closed).toBe(1)
+    expect(client.status).toBe('idle')
+    expect(() => client.start()).toThrow(/destroyed/)
+    await expect(
+      client.mutate('sync.put', { tbl: 'todos', id: 't1', data: { id: 't1' } }),
+    ).rejects.toMatchObject({ code: 'Stopped' })
+  })
+
+  it('destroy() settles in-flight mutations with Stopped and keeps the durable outbox', async () => {
+    const store = new MemorySyncStore()
+    const { client, latest } = makeClient({ store })
+    client.start()
+    await flushMicrotasks()
+    const socket = latest()
+    socket.open()
+    bootstrap(socket)
+
+    const pending = client.mutate('sync.put', { tbl: 'todos', id: 't1', data: { id: 't1' } })
+    await flushMicrotasks() // let the enqueue persist
+    await client.destroy()
+    await expect(pending).rejects.toMatchObject({ code: 'Stopped' })
+    // The durable outbox survives for the next client on this store.
+    const persisted = await store.load()
+    expect(persisted?.outbox).toHaveLength(1)
   })
 })

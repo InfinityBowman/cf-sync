@@ -67,3 +67,31 @@ describe('authorizeWrite over the §15 stamps (§17.4)', () => {
     r.close()
   })
 })
+
+describe('per-field authorizeWrite (fieldId and principal in the write context)', () => {
+  it('one principal is writable on its own field and read-only on another', async () => {
+    const workspace = `y-perfield-${Date.now()}`
+    const ada = await FieldTestClient.ready(workspace, 'ada-tab', '/perfield', { 'x-test-principal': 'ada' })
+
+    // Own field: the UPDATE lands.
+    const doc = new Y.Doc()
+    ada.update('notes:ada', edit(doc, () => doc.getText('t').insert(0, 'mine')))
+    ada.get('notes:ada')
+    const own = decodeFieldState((await ada.nextFrame()).payload)!
+    expect(own.writable).toBe(true)
+    const docCheck = new Y.Doc()
+    applyRemote(docCheck, own.diff)
+    expect(docCheck.getText('t').toString()).toBe('mine')
+
+    // Someone else's field: read-only from first paint, UPDATE refused.
+    ada.get('notes:bob')
+    expect(decodeFieldState((await ada.nextFrame()).payload)!.writable).toBe(false)
+    const foreign = new Y.Doc()
+    ada.update('notes:bob', edit(foreign, () => foreign.getText('t').insert(0, 'sneaky')))
+    const rejectFrame = await ada.nextFrame()
+    expect(rejectFrame.msgType).toBe(FIELD_MSG_REJECT)
+    expect(rejectFrame.fieldId).toBe('notes:bob')
+    expect(decodeFieldReject(rejectFrame.payload)).toBe('NotWritable')
+    ada.close()
+  })
+})

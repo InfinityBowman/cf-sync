@@ -3,10 +3,28 @@ import type { AnySyncSchema, RowInputOf, RowOf, TableName } from './schema'
 import type { StandardSchemaV1 } from './standard-schema'
 
 /**
+ * The codes the engine itself rejects mutations with, reserved alongside
+ * app-defined `AppError` codes:
+ *
+ * - `InvalidArgs` — the mutation's args failed its `args` schema, or a row
+ *   write failed the table schema / referenced an unknown table or bad id.
+ * - `UnknownMutator` — no mutator by that name in the app's registry.
+ * - `RowTooLarge` — a written row exceeds the per-row byte cap.
+ *
+ * All are permanent: the LMID advances, nothing is written. Apps may branch
+ * on them via `MutationError.code` (client) or `result.error.code` (test
+ * engine); pick different codes for your own `AppError`s.
+ */
+export type EngineErrorCode = 'InvalidArgs' | 'UnknownMutator' | 'RowTooLarge'
+
+/**
  * Thrown by mutators to reject a mutation permanently. The engine still
  * advances the client's last_mutation_id (DESIGN.md §6 invariant 2) and
  * reports the error back via mutationResults. Any other thrown error is
  * treated as transient: the transaction rolls back and the client retries.
+ *
+ * `code` is app-defined (`NotFound`, `ReadOnly`, …) — the {@link EngineErrorCode}
+ * values are reserved by the engine's own rejections.
  */
 export class AppError extends Error {
   constructor(

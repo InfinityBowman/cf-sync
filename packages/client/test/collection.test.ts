@@ -251,3 +251,45 @@ describe('createCollections', () => {
     })
   })
 })
+
+describe('client.destroy() with collections', () => {
+  function makeWorkspaceClient(sockets: FakeSocket[]) {
+    return new SyncClient({
+      url: 'ws://test',
+      workspaceId: 'w-reuse',
+      clientId: CLIENT_ID,
+      autoStart: false,
+      app: defineApp({ version: 1, schema, mutators }),
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+  }
+
+  it('cleans up collections, and a fresh client + collections re-create the same workspace', async () => {
+    const sockets: FakeSocket[] = []
+    const first = makeWorkspaceClient(sockets)
+    const { todos: todosFirst } = createCollections(first, { startSync: true })
+    first.start()
+    sockets[sockets.length - 1]!.open()
+    bootstrap(sockets[sockets.length - 1]!, [{ id: 't1', title: 'one', completed: false }])
+    await flushMicrotasks()
+    expect(todosFirst.get('t1')).toMatchObject({ title: 'one' })
+
+    await first.destroy()
+    expect(todosFirst.status).toBe('cleaned-up')
+
+    // Same workspace, fresh client and collections: attaches and syncs again.
+    const second = makeWorkspaceClient(sockets)
+    const { todos: todosSecond } = createCollections(second, { startSync: true })
+    second.start()
+    sockets[sockets.length - 1]!.open()
+    bootstrap(sockets[sockets.length - 1]!, [{ id: 't2', title: 'two', completed: false }])
+    await flushMicrotasks()
+    expect(todosSecond.get('t2')).toMatchObject({ title: 'two' })
+    expect(todosSecond.get('t1')).toBeUndefined()
+    await second.destroy()
+  })
+})

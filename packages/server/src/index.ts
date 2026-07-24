@@ -50,6 +50,7 @@ export {
   type CrudDelArgs,
   type CrudMutators,
   type CrudPutArgs,
+  type EngineErrorCode,
   type MutationArgs,
   type MutatorContext,
   type MutatorDef,
