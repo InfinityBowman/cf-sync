@@ -252,6 +252,34 @@ describe('createCollections', () => {
   })
 })
 
+describe('createCollections startSync default', () => {
+  it('starts syncing at creation — rows land with no subscriber and no preload', async () => {
+    const sockets: FakeSocket[] = []
+    const client = new SyncClient({
+      url: 'ws://test',
+      workspaceId: 'w-eager',
+      clientId: CLIENT_ID,
+      autoStart: false,
+      app: defineApp({ version: 1, schema, mutators }),
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    // No startSync option: the batch helper defaults to eager — the socket
+    // carries every table's pokes anyway, so eager only applies them sooner.
+    const { todos } = createCollections(client)
+    client.start()
+    const socket = sockets[sockets.length - 1]!
+    socket.open()
+    bootstrap(socket, [{ id: 't1', title: 'eager', completed: false }])
+
+    await flushMicrotasks()
+    expect(todos.get('t1')).toMatchObject({ title: 'eager' })
+  })
+})
+
 describe('client.destroy() with collections', () => {
   function makeWorkspaceClient(sockets: FakeSocket[]) {
     return new SyncClient({

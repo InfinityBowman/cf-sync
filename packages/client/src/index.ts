@@ -8,6 +8,7 @@ export {
   type MutationErrorCode,
   type PresenceApi,
   type SyncClientOptions,
+  type SyncFatalCode,
   type SyncStatus,
   type TableApplier,
   type TableHooks,

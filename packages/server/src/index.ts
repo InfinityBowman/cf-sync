@@ -56,6 +56,8 @@ export {
   type MutatorDef,
   type MutatorTx,
   type MutatorsFor,
+  type PresenceOf,
+  type PresencePeer,
   type RowInputOf,
   type RowOf,
   type SchemaMigration,

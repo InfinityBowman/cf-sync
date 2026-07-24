@@ -6,9 +6,9 @@ import {
   defineMutators,
   defineSchema,
   isPermanentCloseCode,
-  truncateCloseReason,
   type MutatorContext,
 } from '../src/index'
+import { truncateCloseReason } from '../src/internal'
 
 // Session-control plumbing (DESIGN.md §15): the authContext schema is
 // declared with the mutators, carried on the registry, and lifted onto the

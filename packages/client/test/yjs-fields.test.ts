@@ -5,7 +5,7 @@ import {
   decodeFieldFrame,
   encodeFieldFrame,
   encodeFieldState,
-} from '@cf-sync/protocol'
+} from '@cf-sync/protocol/internal'
 import { createYjsFields } from '@cf-sync/yjs/client'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'

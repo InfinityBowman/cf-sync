@@ -8,8 +8,13 @@ import {
   decodeFieldFrame,
   decodeFieldState,
   encodeFieldFrame,
-} from '@cf-sync/protocol'
+} from '@cf-sync/protocol/internal'
 import * as Y from 'yjs'
+
+// Re-exported so editors can guard input size (e.g. a textarea `maxLength`)
+// against the same limit the transport enforces, without reaching into
+// @cf-sync/protocol/internal.
+export { MAX_FIELD_UPDATE_BYTES }
 
 /**
  * The client half of the extension seam (DESIGN.md §17.5), structurally

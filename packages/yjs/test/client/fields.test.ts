@@ -10,7 +10,7 @@ import {
   encodeFieldState,
   type FieldFrame,
   type FieldRejectReason,
-} from '@cf-sync/protocol'
+} from '@cf-sync/protocol/internal'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { createYjsFields, type YjsFieldsClient } from '../../src/client'

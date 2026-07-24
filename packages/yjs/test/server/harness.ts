@@ -7,7 +7,7 @@ import {
   serverMsgSchema,
   type FieldFrame,
   type ServerMsg,
-} from '@cf-sync/protocol'
+} from '@cf-sync/protocol/internal'
 import { SELF } from 'cloudflare:test'
 import * as Y from 'yjs'
 

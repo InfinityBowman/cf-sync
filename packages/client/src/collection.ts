@@ -304,8 +304,15 @@ export type WorkspaceCollections<S extends AnySyncSchema> = {
  * block per table:
  *
  * ```ts
- * const { todos, issues } = createCollections(client, { startSync: true })
+ * const { todos, issues } = createCollections(client)
  * ```
+ *
+ * Collections start syncing immediately (`startSync` defaults to true here,
+ * unlike `workspaceCollectionOptions`, which keeps TanStack's lazy default):
+ * the client receives pokes for every table on the one socket regardless, so
+ * eager sync costs no extra network — it only applies already-buffered data,
+ * and first render sees rows without waiting for a subscriber. Pass
+ * `{ startSync: false }` to defer to first subscriber anyway.
  *
  * Rows are keyed by their `id` field (this engine's row model); a table whose
  * rows key differently needs an individual `workspaceCollectionOptions` call
@@ -319,7 +326,7 @@ export function createCollections<S extends AnySyncSchema>(
   for (const table of Object.keys(client.schema.tables)) {
     // The per-table conditional getKey type can't resolve over a table-name
     // union; the runtime default (row.id) is exactly what we document here.
-    const config = { client, table, startSync: options?.startSync } as WorkspaceCollectionConfig<
+    const config = { client, table, startSync: options?.startSync ?? true } as WorkspaceCollectionConfig<
       S,
       TableName<S>
     >

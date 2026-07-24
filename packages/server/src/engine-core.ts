@@ -3,12 +3,11 @@ import {
   MAX_ID_LENGTH,
   MAX_ROW_BYTES,
   TABLE_NAME_RE,
-  formatIssues,
-  jsonByteSize,
   type AnySyncSchema,
   type MutatorTx,
   type StandardSchemaV1,
 } from '@cf-sync/protocol'
+import { formatIssues, jsonByteSize } from '@cf-sync/protocol/internal'
 
 /**
  * The storage-agnostic core of the workspace engine: row validation and the

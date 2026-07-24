@@ -6,7 +6,7 @@ import {
   type PokeEndMsg,
   type PokePartMsg,
   type ServerMsg,
-} from '@cf-sync/protocol'
+} from '@cf-sync/protocol/internal'
 import { SELF } from 'cloudflare:test'
 
 export interface Poke {

@@ -1,4 +1,4 @@
-import { CLOSE_REFRESH, FIELD_MSG_STATE, decodeFieldState } from '@cf-sync/protocol'
+import { CLOSE_REFRESH, FIELD_MSG_STATE, decodeFieldState } from '@cf-sync/protocol/internal'
 import { SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'

@@ -1,4 +1,4 @@
-import { FIELD_MSG_REJECT, FIELD_MSG_STATE, decodeFieldReject, decodeFieldState } from '@cf-sync/protocol'
+import { FIELD_MSG_REJECT, FIELD_MSG_STATE, decodeFieldReject, decodeFieldState } from '@cf-sync/protocol/internal'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { FieldTestClient, applyRemote, edit } from './harness'

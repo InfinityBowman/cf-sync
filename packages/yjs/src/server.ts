@@ -10,7 +10,7 @@ import {
   encodeFieldReject,
   encodeFieldState,
   type FieldRejectReason,
-} from '@cf-sync/protocol'
+} from '@cf-sync/protocol/internal'
 import type {
   EngineExtension,
   EngineExtensionContext,

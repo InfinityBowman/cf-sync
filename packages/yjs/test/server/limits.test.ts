@@ -6,7 +6,7 @@ import {
   MAX_FIELD_UPDATE_BYTES,
   decodeFieldReject,
   decodeFieldState,
-} from '@cf-sync/protocol'
+} from '@cf-sync/protocol/internal'
 import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'

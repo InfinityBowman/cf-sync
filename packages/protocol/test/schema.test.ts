@@ -4,13 +4,13 @@ import {
   crudMutators,
   defineMutators,
   defineSchema,
-  formatIssues,
   type CrudPutArgs,
   type MutationArgs,
   type MutatorTx,
   type RowInputOf,
   type RowOf,
 } from '../src/index'
+import { formatIssues } from '../src/internal'
 
 const todoSchema = z.object({
   id: z.string(),

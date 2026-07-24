@@ -1,4 +1,4 @@
-import { FIELD_MSG_STATE, FIELD_MSG_UPDATE, decodeFieldState } from '@cf-sync/protocol'
+import { FIELD_MSG_STATE, FIELD_MSG_UPDATE, decodeFieldState } from '@cf-sync/protocol/internal'
 import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'

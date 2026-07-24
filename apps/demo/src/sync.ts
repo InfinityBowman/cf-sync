@@ -48,9 +48,9 @@ export const syncClient = new SyncClient({
   initialPresence: { name: displayName },
 })
 
-// One typed collection per schema table; components read status via
-// useSyncStatus(syncClient) from '@cf-sync/client/react'.
-export const { todos } = createCollections(syncClient, { startSync: true })
+// One typed collection per schema table (syncing starts immediately);
+// components read status via useSyncStatus(syncClient) from '@cf-sync/client/react'.
+export const { todos } = createCollections(syncClient)
 
 // Tier 2 fields: real-merge text (two people typing in one prose box) on the
 // same socket, attached through the client's binary seam. Handles are

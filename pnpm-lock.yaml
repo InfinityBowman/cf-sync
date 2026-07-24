@@ -87,6 +87,9 @@ importers:
       '@cf-sync/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@tanstack/react-db':
+        specifier: ^0.1.94
+        version: 0.1.94(react@19.2.7)(typescript@5.9.3)
     devDependencies:
       '@cf-sync/yjs':
         specifier: workspace:*

@@ -4,7 +4,7 @@ import {
   FIELD_MSG_UPDATE,
   decodeFieldState,
   encodeFieldFrame,
-} from '@cf-sync/protocol'
+} from '@cf-sync/protocol/internal'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { FieldTestClient, applyRemote, edit, mulberry32 } from './harness'

@@ -1,32 +1,33 @@
 import {
   AppError,
   CLOSE_REFRESH,
-  KEEPALIVE_PING,
   MAX_PRESENCE_BYTES,
-  PROTOCOL_VERSION,
-  cursorEquals,
-  formatIssues,
   isPermanentCloseCode,
-  jsonByteSize,
-  serverMsgSchema,
   type AnyMutators,
   type AnySyncSchema,
   type AppDefinition,
   type AuthContextOf,
-  type ClientMsg,
   type Cursor,
   type EngineErrorCode,
-  type ErrorCode,
-  type ErrorMsg,
   type MutationArgs,
-  type MutationResult,
   type MutatorTx,
   type PatchOp,
-  type PokeEndMsg,
   type PresencePeer,
   type StandardSchemaV1,
   type TableSchema,
 } from '@cf-sync/protocol'
+import {
+  KEEPALIVE_PING,
+  PROTOCOL_VERSION,
+  cursorEquals,
+  formatIssues,
+  jsonByteSize,
+  serverMsgSchema,
+  type ClientMsg,
+  type ErrorMsg,
+  type MutationResult,
+  type PokeEndMsg,
+} from '@cf-sync/protocol/internal'
 import { IndexedDBSyncStore } from './idb-store'
 import type { PersistedOutboxEntry, PersistedRowOp, PersistedState, SyncStore } from './store'
 
@@ -126,16 +127,21 @@ export class MutationError extends Error {
 }
 
 /**
+ * What {@link SyncFatalError.code} can hold: the WebSocket close code
+ * (4400–4499) when the rejection arrived as a close frame, or the in-band
+ * server code — only `VersionNotSupported` and `Unauthorized` are ever fatal.
+ */
+export type SyncFatalCode = number | 'VersionNotSupported' | 'Unauthorized'
+
+/**
  * What `onFatal` receives when the server permanently rejects this client
- * (DESIGN.md §15.2). `code` is the WebSocket close code (4400–4499) when the
- * rejection arrived as a close frame, or the server error code
- * (`VersionNotSupported`, `Unauthorized`) when it arrived in-band. `reason`
- * is the close frame's slug (`membership-revoked`, `project-deleted`) —
- * stable strings apps can branch on.
+ * (DESIGN.md §15.2). `reason` is the close frame's slug
+ * (`membership-revoked`, `project-deleted`) — stable strings apps can
+ * branch on.
  */
 export class SyncFatalError extends Error {
   constructor(
-    readonly code: number | ErrorCode,
+    readonly code: SyncFatalCode,
     readonly reason: string,
   ) {
     super(`sync connection permanently rejected (${code}): ${reason}`)

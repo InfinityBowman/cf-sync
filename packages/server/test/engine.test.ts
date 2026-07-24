@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION } from '@cf-sync/protocol'
+import { PROTOCOL_VERSION } from '@cf-sync/protocol/internal'
 import { describe, expect, it } from 'vitest'
 import { TestClient } from './harness'
 

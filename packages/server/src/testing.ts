@@ -1,6 +1,5 @@
 import {
   AppError,
-  formatIssues,
   migrationPath,
   type AnyMutators,
   type AnySyncSchema,
@@ -12,6 +11,7 @@ import {
   type RowOf,
   type TableName,
 } from '@cf-sync/protocol'
+import { formatIssues } from '@cf-sync/protocol/internal'
 import { WriteSet, rowKey, validateRow, type EngineRowStore } from './engine-core'
 
 /**
