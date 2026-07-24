@@ -31,9 +31,19 @@ const mutators = defineMutators(schema, {
 // schema-version rollout. Bumping `version` without a matching migrations
 // entry fails at startup — in both bundles — instead of silently skewing.
 export const app = defineApp({
-  version: 2,
+  version: 3,
   schema,
   mutators,
+  // Ephemeral peer state (who's here, live cursors) relayed over the sync
+  // socket — never persisted. The payload shape is app-defined; the server
+  // validates every state against this before relaying, and it counts as
+  // schema surface: adding it required the version bump below (§16.1).
+  // Cursor coordinates are relative to the centered <main> column, so they
+  // line up across differently-sized windows.
+  presence: z.object({
+    name: z.string(),
+    cursor: z.object({ x: z.number(), y: z.number() }).optional(),
+  }),
   migrations: {
     // 1 -> 2: todos gain a priority field. Replays once per workspace,
     // atomically, on the first wake after deploy; old clients are rejected
@@ -44,6 +54,8 @@ export const app = defineApp({
         tx.put('todos', id, { priority: 'normal', ...data })
       }
     },
+    // 2 -> 3: presence schema added — additive, no row rewrite.
+    3: null,
   },
 })
 

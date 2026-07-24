@@ -1,16 +1,71 @@
-import { useSyncStatus } from '@cf-sync/client/react'
+import { usePresence, useSyncStatus } from '@cf-sync/client/react'
 import { useLiveQuery } from '@tanstack/react-db'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ulid } from 'ulidx'
 import { syncClient, todos, workspaceId } from './sync'
+
+// One display name per tab (same lifetime as the clientId): reloads keep it,
+// a second tab gets its own.
+const displayName = (() => {
+  const KEY = 'cf-sync-demo:name'
+  try {
+    const existing = sessionStorage.getItem(KEY)
+    if (existing) return existing
+  } catch {
+    // sessionStorage unavailable: a fresh name per load is fine for a demo
+  }
+  const adjectives = ['amber', 'brisk', 'coral', 'dusky', 'fuzzy', 'ivory', 'lucid', 'mellow', 'nimble', 'vivid']
+  const animals = ['fox', 'heron', 'lynx', 'mole', 'newt', 'otter', 'raven', 'seal', 'tern', 'wren']
+  const pick = (list: string[]) => list[Math.floor(Math.random() * list.length)]!
+  const name = `${pick(adjectives)} ${pick(animals)}`
+  try {
+    sessionStorage.setItem(KEY, name)
+  } catch {
+    // see above
+  }
+  return name
+})()
+
+/** Stable per-peer hue so a cursor keeps its color as it moves. */
+function hueOf(key: string): number {
+  let hash = 0
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0
+  return ((hash % 360) + 360) % 360
+}
 
 export function App() {
   const [title, setTitle] = useState('')
   const status = useSyncStatus(syncClient)
+  const peers = usePresence(syncClient)
+  const mainRef = useRef<HTMLElement>(null)
 
   const { data: items } = useLiveQuery((q) =>
     q.from({ todo: todos }).orderBy(({ todo }) => todo.createdAt, 'asc'),
   )
+
+  // Live cursors: every mousemove calls presence.set raw — the client
+  // coalesces trailing-edge (100ms), so no throttle glue here. Coordinates
+  // are relative to the centered column so they line up across window sizes;
+  // leaving the window drops the cursor but keeps the avatar.
+  useEffect(() => {
+    syncClient.presence.set({ name: displayName })
+    const move = (event: MouseEvent) => {
+      const rect = mainRef.current?.getBoundingClientRect()
+      if (!rect) return
+      syncClient.presence.set({
+        name: displayName,
+        cursor: { x: Math.round(event.clientX - rect.left), y: Math.round(event.clientY - rect.top) },
+      })
+    }
+    const leave = () => syncClient.presence.set({ name: displayName })
+    document.addEventListener('mousemove', move)
+    document.documentElement.addEventListener('mouseleave', leave)
+    return () => {
+      document.removeEventListener('mousemove', move)
+      document.documentElement.removeEventListener('mouseleave', leave)
+      syncClient.presence.clear()
+    }
+  }, [])
 
   const addTodo = () => {
     const trimmed = title.trim()
@@ -30,11 +85,39 @@ export function App() {
   }
 
   return (
-    <main style={{ maxWidth: 480, margin: '3rem auto', fontFamily: 'system-ui, sans-serif' }}>
+    <main
+      ref={mainRef}
+      style={{ maxWidth: 480, margin: '3rem auto', fontFamily: 'system-ui, sans-serif', position: 'relative' }}
+    >
       <h1 style={{ fontSize: '1.4rem' }}>
         cf-sync demo <small style={{ color: '#888' }}>#{workspaceId}</small>
       </h1>
       <p style={{ color: status === 'synced' ? '#2a2' : '#c80' }}>status: {status}</p>
+      <p style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: '0.85rem' }}>
+        <span
+          style={{
+            padding: '2px 8px',
+            borderRadius: 999,
+            background: `hsl(${hueOf(syncClient.clientId)} 70% 90%)`,
+            border: `1px solid hsl(${hueOf(syncClient.clientId)} 60% 60%)`,
+          }}
+        >
+          {displayName} (you)
+        </span>
+        {peers.map((peer) => (
+          <span
+            key={peer.clientId}
+            style={{
+              padding: '2px 8px',
+              borderRadius: 999,
+              background: `hsl(${hueOf(peer.clientId)} 70% 90%)`,
+              border: `1px solid hsl(${hueOf(peer.clientId)} 60% 60%)`,
+            }}
+          >
+            {peer.state.name}
+          </span>
+        ))}
+      </p>
       <div style={{ display: 'flex', gap: 8 }}>
         <input
           value={title}
@@ -64,9 +147,49 @@ export function App() {
         Clear completed (server intent)
       </button>
       <p style={{ color: '#888', fontSize: '0.85rem' }}>
-        Open this page in a second tab to watch mutations sync. Use a URL hash (e.g. #team-a) to
-        switch workspaces.
+        Open this page in a second tab to watch mutations sync and peer cursors move live. Use a URL
+        hash (e.g. #team-a) to switch workspaces.
       </p>
+      {peers.map(
+        (peer) =>
+          peer.state.cursor && (
+            <div
+              key={peer.clientId}
+              style={{
+                position: 'absolute',
+                left: peer.state.cursor.x,
+                top: peer.state.cursor.y,
+                pointerEvents: 'none',
+                zIndex: 10,
+                // Presence frames arrive at the 100ms coalescing cadence;
+                // easing between them keeps the motion smooth.
+                transition: 'left 90ms linear, top 90ms linear',
+              }}
+            >
+              <svg width="14" height="18" viewBox="0 0 14 18" style={{ display: 'block' }}>
+                <path
+                  d="M1 1 L13 10 L7.5 10.8 L4.5 16 Z"
+                  fill={`hsl(${hueOf(peer.clientId)} 70% 55%)`}
+                  stroke="white"
+                  strokeWidth="1"
+                />
+              </svg>
+              <span
+                style={{
+                  marginLeft: 10,
+                  padding: '1px 6px',
+                  borderRadius: 4,
+                  fontSize: '0.7rem',
+                  color: 'white',
+                  background: `hsl(${hueOf(peer.clientId)} 70% 45%)`,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {peer.state.name}
+              </span>
+            </div>
+          ),
+      )}
     </main>
   )
 }
