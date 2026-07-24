@@ -703,9 +703,10 @@ first milestone, not an afterthought:
    once under the LMID contract. Phase 2 *(done)*: optimistic intent mutators
    (§7.2) — `mutate` runs the shared `apply` locally as one atomic overlay, and
    collection hooks register at creation behind a compacting gate (no
-   late-registration resync). Remaining: startup replay of queued intents (§7.2's
-   deferred phase), collaborative text per the tiered strategy in §14 (built only
-   when a field type proves to need real merging).
+   late-registration resync). Collaborative text shipped per §14's tiered
+   strategy: tier 1 (LWW rows + field-level presence, §16) and tier 2 (Yjs
+   fields in the workspace DO, §17) are both implemented. Remaining: startup
+   replay of queued intents (§7.2's deferred phase).
 
 ## 13. Open questions (deliberately deferred)
 
@@ -716,9 +717,9 @@ first milestone, not an afterthought:
 - Hot-workspace sharding (read-replica DOs fanning out pokes) — the ~hundreds of
   pushes/sec per-DO ceiling is far above Linear-style human workloads; revisit only
   with evidence.
-- Presence/ephemeral state (cursors, "who's viewing") — likely a separate lightweight
-  channel on the same socket, never written to SQLite. Note that §14 tier 1 (field
-  edit indicators) is the first concrete consumer.
+- ~~Presence/ephemeral state (cursors, "who's viewing")~~ — resolved: implemented
+  as §16 (2026-07-24), exactly the shape sketched here (a lightweight channel on
+  the same socket, never written to SQLite).
 
 ## 14. Collaborative text (revised 2026-07)
 

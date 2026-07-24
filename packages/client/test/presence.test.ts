@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 import { SyncClient } from '../src/client'
+import { crudMutators, defineApp } from '../src/index'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
-import { presenceApp, testApp } from './test-schema'
+import { presenceApp, testApp, testSchema } from './test-schema'
 
 // Client half of DESIGN.md §16: the library owns pacing and re-announcement —
 // `set` throttles trailing-edge, the last state re-announces on every
@@ -54,6 +56,29 @@ function sentPresence(socket: FakeSocket): unknown[] {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+describe('definition traps surfaced early', () => {
+  it('a presence schema that cannot parse its own output throws at the first set, naming the transform rule', () => {
+    // Typechecks fine; would otherwise break merge/re-announce at runtime.
+    const transformApp = defineApp({
+      version: 1,
+      schema: testSchema,
+      mutators: crudMutators(testSchema),
+      presence: z.object({ name: z.string() }).transform((s) => s.name),
+    })
+    const { client } = makeClient(transformApp as never)
+    expect(() => (client.presence as { set(s: unknown): void }).set({ name: 'ada' })).toThrow(
+      /parse its own output.*no transform/s,
+    )
+    client.stop()
+  })
+
+  it('update() before any presence exists names the mount-order cause and the initialPresence fix', () => {
+    const { client } = makeClient() // presenceApp requires `name`
+    expect(() => client.presence.update({ cursor: { x: 1, y: 2 } })).toThrow(/mount-order.*initialPresence/s)
+    client.stop()
+  })
 })
 
 describe('presence.set', () => {

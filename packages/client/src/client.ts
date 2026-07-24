@@ -490,6 +490,8 @@ export class SyncClient<
   #presenceSnapshot: ReadonlyArray<PresencePeer> | null = null
   #presenceLive = false
   #presenceTimer: ReturnType<typeof setTimeout> | null = null
+  /** One-time guard: the presence schema must parse its own output (§16.1). */
+  #presenceRoundTripChecked = false
   #presenceLastSentAt = 0
 
   /**
@@ -1547,6 +1549,23 @@ export class SyncClient<
         // exposes, what `update` merges into, and — matching the server's
         // relay of parsed state — the same shape peers see of you.
         state = result.value
+        // One-time round-trip check: `update` merges into this *parsed*
+        // output and reconnect re-announces it, so the schema must accept
+        // its own output as input. A schema with a reshaping `transform`
+        // typechecks fine and would otherwise fail later, at some unrelated
+        // update or mid-reconnect — surface it at the first set instead.
+        if (!this.#presenceRoundTripChecked) {
+          this.#presenceRoundTripChecked = true
+          const echo = schema['~standard'].validate(state)
+          if (!(echo instanceof Promise) && echo.issues) {
+            throw new Error(
+              `SyncClient: the presence schema does not parse its own output ` +
+                `(${formatIssues(echo.issues)}). presence.update merges into previously parsed state and ` +
+                `reconnect re-announces it, so the schema must round-trip — use a plain object schema ` +
+                `(no transform/pipe) for presence (DESIGN.md §16.1)`,
+            )
+          }
+        }
       }
       if (jsonByteSize(state) > MAX_PRESENCE_BYTES) {
         throw new Error(`SyncClient: presence state exceeds ${MAX_PRESENCE_BYTES} bytes`)
@@ -1559,7 +1578,22 @@ export class SyncClient<
   #presenceUpdate(partial: unknown): void {
     const current = this.#presenceState
     const base = typeof current === 'object' && current !== null ? current : {}
-    this.#presenceSet({ ...base, ...(partial as object) })
+    try {
+      this.#presenceSet({ ...base, ...(partial as object) })
+    } catch (err) {
+      // The classic mount-order race presents as a schema error: an `update`
+      // fired before any identity was set merges into {} and fails on the
+      // schema's required fields. Name the real cause and the designed fix.
+      if (current === undefined || current === null) {
+        const detail = err instanceof Error ? err.message : String(err)
+        throw new Error(
+          `SyncClient: presence.update() was called before any presence state existed, so the partial ` +
+            `merged into {} — a mount-order race, not a data bug. Pass initialPresence at construction ` +
+            `(or call presence.set once first); every later call can then stay a bare partial. (${detail})`,
+        )
+      }
+      throw err
+    }
   }
 
   /**

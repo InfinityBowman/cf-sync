@@ -63,6 +63,9 @@ export interface AppDefinition<
    * `transform`s: `presence.update` merges partials into the previously
    * *parsed* state and re-validates the result, and reconnect re-announces
    * parsed state, so output that fails input validation breaks both.
+   * Enforced: the client round-trips the first successful parse and throws
+   * a descriptive error at that first `set`/`initialPresence` if the schema
+   * cannot re-parse what it produced.
    */
   readonly presence?: P
 }
