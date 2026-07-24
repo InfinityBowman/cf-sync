@@ -10,7 +10,7 @@ const untouchable = () => {
 }
 
 describe('createSyncRoute', () => {
-  const route = createSyncRoute({ namespace: untouchable })
+  const route = createSyncRoute({ namespace: untouchable, authorize: 'public' })
 
   it('passes on paths outside its prefix, including bare and nested ones', async () => {
     for (const path of ['/', '/other', '/syncx/ws', '/sync', '/sync/', '/sync/ws/extra']) {
@@ -20,9 +20,16 @@ describe('createSyncRoute', () => {
 
   it('answers its own malformed traffic instead of passing it on', async () => {
     // Matched path, no websocket upgrade: 426 is this route's answer.
-    const sync = createSyncRoute({ namespace: untouchable })
+    const sync = createSyncRoute({ namespace: untouchable, authorize: 'public' })
     const res = await sync(new Request('https://w/sync/ws1'), {})
     expect(res?.status).toBe(426)
+  })
+
+  it('a binding typo fails with an error naming the wrangler config, not a bare TypeError', async () => {
+    const sync = createSyncRoute({ namespace: () => undefined as never, authorize: 'public' })
+    await expect(
+      sync(new Request('https://w/sync/ws1?clientId=c1', { headers: { Upgrade: 'websocket' } }), {}),
+    ).rejects.toThrow(/Durable Object binding declared in\s+wrangler config/)
   })
 
   it('strips the authToken credential from the URL forwarded to the DO', async () => {
@@ -36,7 +43,7 @@ describe('createSyncRoute', () => {
         },
       }),
     } as unknown as DurableObjectNamespace
-    const sync = createSyncRoute({ namespace: () => namespace })
+    const sync = createSyncRoute({ namespace: () => namespace, authorize: 'public' })
     await sync(
       new Request('https://w/sync/ws1?clientId=c1&token=super-secret', { headers: { Upgrade: 'websocket' } }),
       {},

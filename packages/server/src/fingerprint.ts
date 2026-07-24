@@ -46,6 +46,23 @@ function tableShape(table: StandardSchemaV1): unknown {
   }
 }
 
+/**
+ * The tables whose shape fingerprints as opaque — non-zod vendors, or zod
+ * schemas JSON Schema cannot represent. Drift in these tables is invisible
+ * to both the runtime warning and `checkSchemaEvolution`, which is why the
+ * latter refuses to run over them: a check that cannot see is a false green.
+ */
+export function unfingerprintableTables(schema: AnySyncSchema): Array<{ table: string; vendor: string }> {
+  const out: Array<{ table: string; vendor: string }> = []
+  for (const [name, table] of Object.entries(schema.tables as Record<string, StandardSchemaV1>)) {
+    const shape = tableShape(table)
+    if (shape !== null && typeof shape === 'object' && 'opaque' in shape) {
+      out.push({ table: name, vendor: String((shape as { opaque: unknown }).opaque) })
+    }
+  }
+  return out
+}
+
 /** Deterministic JSON: object keys sorted recursively, arrays kept in order. */
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'

@@ -25,7 +25,7 @@ createSyncFetch<Env>({
 })
 ```
 
-`authorize` may return:
+`authorize` is required — an unauthenticated deployment must be a written-down choice, not a forgotten option. Pass the literal `'public'` to opt out explicitly (anyone who can reach the worker can read and write every workspace — fine for a demo or first run). The hook form may return:
 
 - `true` / `false` — admit or reject (a bare `false` answers HTTP 403)
 - a `Response` — full control over the rejection

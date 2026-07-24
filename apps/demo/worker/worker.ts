@@ -38,9 +38,10 @@ export class WorkspaceDO extends createWorkspaceDO({
 
 const syncHandler = createSyncFetch<Env>({
   namespace: (env) => env.WORKSPACE,
-  // v1 auth policy (DESIGN.md §10): anyone who can reach the workspace has
-  // full access. Real deployments plug session validation in here.
-  authorize: () => true,
+  // The explicit opt-out: anyone who can reach the worker can read and write
+  // every workspace. Real deployments put session validation here (see the
+  // auth guide) — 'public' exists so that choice is written down.
+  authorize: 'public',
 })
 
 // Admin operations read and destroy whole workspaces: locked behind a bearer

@@ -27,6 +27,16 @@ export function bearerTokenAuth<Env>(token: (env: Env) => string | undefined) {
   }
 }
 
+// The default failure here is `Cannot read properties of undefined (reading
+// 'idFromName')` — this names the actual mistake instead.
+function missingNamespace(): Error {
+  return new Error(
+    'cf-sync: the namespace accessor returned undefined — is the Durable Object binding declared in ' +
+      "wrangler config (durable_objects.bindings) and spelled the same as in `(env) => env.<BINDING>`? " +
+      'Rerun `wrangler types` after fixing the config.',
+  )
+}
+
 function timingSafeEqual(a: string, b: string): boolean {
   const encoder = new TextEncoder()
   const aBytes = encoder.encode(a)
@@ -79,11 +89,18 @@ export interface SyncFetchOptions<Env> {
    * distinguishable rejections and connection stamps. v1 policy: workspace
    * membership grants full access; mutation-level checks live in mutators
    * (reading the verdict's stamps via `ctx`).
+   *
+   * Required, so "forgot auth" cannot ship looking identical to "chose no
+   * auth". The literal `'public'` is the explicit opt-out: anyone who can
+   * reach the worker can read and write every workspace — fine for a demo
+   * or first run, written down where a reviewer will see it.
    */
-  authorize?: (
-    request: Request,
-    params: { workspaceId: string; clientId: string; env: Env },
-  ) => boolean | Response | AuthVerdict | Promise<boolean | Response | AuthVerdict>
+  authorize:
+    | 'public'
+    | ((
+        request: Request,
+        params: { workspaceId: string; clientId: string; env: Env },
+      ) => boolean | Response | AuthVerdict | Promise<boolean | Response | AuthVerdict>)
   /** URL prefix for sync routes. Default: "/sync" (routes are `${prefix}/<workspaceId>`). */
   pathPrefix?: string
 }
@@ -128,7 +145,7 @@ export function createSyncRoute<Env>(opts: SyncFetchOptions<Env>) {
     headers.delete(AUTH_HEADER)
     headers.set(WORKSPACE_HEADER, workspaceId)
 
-    if (opts.authorize) {
+    if (opts.authorize !== 'public') {
       const verdict = await opts.authorize(request, { workspaceId, clientId, env })
       if (verdict instanceof Response) return verdict
       if (verdict === false) return new Response('unauthorized', { status: 403 })
@@ -154,7 +171,8 @@ export function createSyncRoute<Env>(opts: SyncFetchOptions<Env>) {
 
     // Widen to the bare namespace: instantiating DurableObjectStub<any>
     // (Rpc.Provider over `any`) exceeds TS's instantiation depth.
-    const namespace = opts.namespace(env) as DurableObjectNamespace
+    const namespace = opts.namespace(env) as DurableObjectNamespace | undefined
+    if (!namespace) throw missingNamespace()
     const stub = namespace.get(namespace.idFromName(workspaceId))
     // The client's authToken has served its purpose (authorize read it);
     // strip it so the credential never reaches the DO or workspace-side logs.
@@ -234,7 +252,8 @@ export function createAdminRoute<Env>(opts: AdminFetchOptions<Env>) {
     if (verdict instanceof Response) return verdict
     if (!verdict) return new Response('unauthorized', { status: 403 })
 
-    const namespace = opts.namespace(env) as DurableObjectNamespace
+    const namespace = opts.namespace(env) as DurableObjectNamespace | undefined
+    if (!namespace) throw missingNamespace()
     const stub = namespace.get(namespace.idFromName(workspaceId))
     const headers = new Headers(request.headers)
     headers.set(WORKSPACE_HEADER, workspaceId)
@@ -322,7 +341,8 @@ export interface WorkspaceAdmin {
  * `createAdminFetch` and its authorize hook instead.
  */
 export function workspaceAdmin(namespace: DurableObjectNamespace<any>, workspaceId: string): WorkspaceAdmin {
-  const ns = namespace as DurableObjectNamespace
+  const ns = namespace as DurableObjectNamespace | undefined
+  if (!ns) throw missingNamespace()
   const stub = ns.get(ns.idFromName(workspaceId))
   const call = async <T>(op: AdminOp, body?: unknown): Promise<T> => {
     const response = await stub.fetch(`https://do/admin/${op}`, {

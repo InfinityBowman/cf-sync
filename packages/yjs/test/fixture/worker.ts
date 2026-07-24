@@ -57,7 +57,7 @@ export const CompactDO = createWorkspaceDO({
   extension: yjsFields({ compactionThreshold: 3, maxCachedDocs: 2 }),
 })
 
-const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE })
+const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE, authorize: 'public' })
 const authHandler = createSyncFetch<Env>({
   namespace: (env) => env.AUTHW,
   pathPrefix: '/auth',
@@ -78,7 +78,7 @@ const perFieldHandler = createSyncFetch<Env>({
     principal: request.headers.get('x-test-principal') ?? undefined,
   }),
 })
-const compactHandler = createSyncFetch<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact' })
+const compactHandler = createSyncFetch<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact', authorize: 'public' })
 const adminHandler = createAdminFetch<Env>({
   namespace: (env) => env.WORKSPACE,
   authorize: () => true,

@@ -13,9 +13,15 @@ import {
 } from '@cf-sync/protocol'
 import { formatIssues } from '@cf-sync/protocol/internal'
 import { WriteSet, rowKey, validateRow, type EngineRowStore } from './engine-core'
-import { schemaFingerprint } from './fingerprint'
+import { schemaFingerprint, unfingerprintableTables } from './fingerprint'
 
 export { schemaFingerprint }
+
+// One import source for node test files: the definition kit, re-exported so
+// a test never touches the main entry — that one imports `cloudflare:workers`
+// and dies outside workerd with an error that never names this fix.
+export { AppError, crudMutators, defineApp, defineMutators, defineSchema } from '@cf-sync/protocol'
+export type { AppDefinition, MigrationTx, MutatorContext, MutatorTx } from '@cf-sync/protocol'
 
 /** Options for {@link createTestEngine}: initial state, stored schema version, and the identity mutators observe. */
 export interface TestEngineOptions {
@@ -333,6 +339,20 @@ export async function checkSchemaEvolution(
   app: AppDefinition<AnySyncSchema>,
   snapshotPath: string | URL,
 ): Promise<SchemaSnapshot> {
+  // Refuse a false green: fingerprinting reads zod's JSON Schema emission, so
+  // a table this cannot see would sail through every run no matter how its
+  // schema changed — and the runtime drift warning is blind to it too.
+  const opaque = unfingerprintableTables(app.schema)
+  if (opaque.length > 0) {
+    const list = opaque.map(({ table, vendor }) => `"${table}" (${vendor})`).join(', ')
+    throw new Error(
+      `checkSchemaEvolution: table(s) ${list} cannot be fingerprinted — drift detection only covers ` +
+        `zod table schemas, so a schema change in them would pass this check unseen. Passing here ` +
+        `would be a false green, not protection. Define these tables with zod to get the tripwire, ` +
+        `or drop this check and own the version-bump discipline manually (every schema change ` +
+        `requires a bump — DESIGN.md §9).`,
+    )
+  }
   const fs = await import('node:fs')
   // workers-types' global URL and @types/node's URL diverge in lib details;
   // at runtime both are WHATWG URLs, which node's fs accepts directly.

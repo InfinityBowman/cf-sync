@@ -50,6 +50,10 @@ const mutators = defineMutators(schema, {
 export const app = defineApp({ version: 1, schema, mutators })
 ```
 
+::: tip Wire the schema tripwire now, not when drift first bites
+Every future schema change will require bumping `version` — including additive ones. The one mistake the engine can only warn about after the fact is changing a schema *without* a bump, so add the one-line CI check from the start: a test calling [`checkSchemaEvolution`](/guide/schema-evolution#drift-detection) from `@cf-sync/server/testing` fails the build naming the exact fix.
+:::
+
 ## 3. The worker
 
 ```ts

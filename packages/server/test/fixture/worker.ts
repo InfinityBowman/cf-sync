@@ -122,7 +122,7 @@ export const rolloutApp = defineApp({
 export const rolloutConfig: WorkspaceEngineConfig = { app: rolloutApp }
 export const RolloutDO = createWorkspaceDO(rolloutConfig)
 
-const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE })
+const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE, authorize: 'public' })
 
 // Session-control drills (§15): the verdict is driven entirely by request
 // headers so each test scripts its own authorize outcome.
@@ -146,8 +146,8 @@ const verdictRoute = createSyncRoute<Env>({
     }
   },
 })
-const compactRoute = createSyncRoute<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact' })
-const rolloutRoute = createSyncRoute<Env>({ namespace: (env) => env.ROLLOUT, pathPrefix: '/rollout' })
+const compactRoute = createSyncRoute<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact', authorize: 'public' })
+const rolloutRoute = createSyncRoute<Env>({ namespace: (env) => env.ROLLOUT, pathPrefix: '/rollout', authorize: 'public' })
 const adminRoute = createAdminRoute<Env>({
   namespace: (env) => env.WORKSPACE,
   authorize: (request) => request.headers.get('x-test-admin') === 'yes',

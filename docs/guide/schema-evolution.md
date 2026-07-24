@@ -68,6 +68,8 @@ null if the change is additive)
 
 The runtime layer only warns (the fingerprint derives from zod's JSON Schema emission, which a zod upgrade could shift with no semantic change — a heuristic gets to shout, never to brick a workspace). The CI layer can afford to be strict: a false positive there is one deleted snapshot file, not an outage.
 
+Both layers read zod's JSON Schema emission, so **drift detection only covers zod tables**. A table defined with another Standard Schema vendor fingerprints as opaque — its drift is invisible — and rather than silently passing forever, `checkSchemaEvolution` refuses to run over such tables and says so. Non-zod schemas still work for everything else (typing, validation); they just don't get the tripwire.
+
 ## Testing migrations
 
 Migrations are unit-testable in plain node with [`createTestEngine`](/guide/testing) — seed rows in their **old** shape at an old stored version, and the chain replays exactly as it would on the DO's first wake:

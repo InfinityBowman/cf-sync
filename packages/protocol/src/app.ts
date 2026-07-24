@@ -158,6 +158,12 @@ export interface PresencePeer<T = unknown> {
  * oldest declared entry re-raises the error at wake instead of restamping
  * data it cannot interpret.
  *
+ * The one mistake this cannot catch is changing a schema without bumping
+ * `version` at all. That has a CI tripwire — `checkSchemaEvolution` from
+ * `@cf-sync/server/testing`: one test with a committed snapshot file, and a
+ * schema change without a bump fails the build naming the exact migrations
+ * entry to add. Wire it when you define the app, not when drift first bites.
+ *
  * The full-row CRUD mutators (`sync.put` / `sync.del` — what collections emit
  * for local writes) are included automatically; `mutators` adds intent-based
  * mutations alongside them and may be omitted for a pure-CRUD app. Pass

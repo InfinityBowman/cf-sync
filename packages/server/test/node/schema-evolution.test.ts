@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { crudMutators, defineApp, defineSchema } from '@cf-sync/protocol'
+import { crudMutators, defineApp, defineSchema, type StandardSchemaV1 } from '@cf-sync/protocol'
 import { checkSchemaEvolution } from '../../src/testing'
 
 const dirs: string[] = []
@@ -75,5 +75,20 @@ describe('checkSchemaEvolution', () => {
     const path = snapshotPath()
     writeFileSync(path, '{"not": "a snapshot"}')
     await expect(checkSchemaEvolution(makeApp(1), path)).rejects.toThrow(/delete the file to re-baseline/)
+  })
+
+  it('refuses tables it cannot fingerprint instead of passing a false green', async () => {
+    // A minimal non-zod standard schema: drift in it is invisible to the
+    // fingerprint, so the check must refuse rather than always pass.
+    const opaque = {
+      '~standard': {
+        version: 1,
+        vendor: 'valibot',
+        validate: (value: unknown) => ({ value: value as Record<string, unknown> }),
+      },
+    } as StandardSchemaV1<Record<string, unknown>, Record<string, unknown>>
+    const schema = defineSchema({ todos: opaque })
+    const app = defineApp({ version: 1, schema, mutators: crudMutators(schema) })
+    await expect(checkSchemaEvolution(app, snapshotPath())).rejects.toThrow(/"todos" \(valibot\).*false green/s)
   })
 })

@@ -94,9 +94,9 @@ Resolves the workspace Durable Object namespace from the worker env — typicall
 
 ### authorize
 
-`(request, { workspaceId, clientId, env }) => boolean | Response | AuthVerdict | Promise<…>`
+`'public' | ((request, { workspaceId, clientId, env }) => boolean | Response | AuthVerdict | Promise<…>)` · **required**
 
-Connection-time authorization, run in the worker before the DO is reached. v1 policy: workspace membership grants full access; mutation-level checks live in mutators, reading the verdict's stamps via `ctx`. Four return forms:
+Connection-time authorization, run in the worker before the DO is reached. Required, so "forgot auth" cannot ship looking identical to "chose no auth" — the literal `'public'` is the explicit opt-out (anyone who can reach the worker can read and write every workspace; fine for a demo, written down where a reviewer will see it). v1 policy: workspace membership grants full access; mutation-level checks live in mutators, reading the verdict's stamps via `ctx`. Four return forms for the hook:
 
 | Return | Effect |
 |---|---|

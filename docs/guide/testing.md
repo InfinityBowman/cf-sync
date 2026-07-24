@@ -22,7 +22,7 @@ it('clearCompleted deletes only completed todos', () => {
 Runs in plain vitest or jest, in node — no workerd, no miniflare, no bindings.
 
 ::: warning Import paths matter in node
-Import the definition kit from `@cf-sync/protocol` and the test engine from `@cf-sync/server/testing`. The server's **main** entry imports `cloudflare:workers`, which node can't load — never import it in test files that run outside workerd.
+The server's **main** entry imports `cloudflare:workers`, which node can't load — never import it in test files that run outside workerd. To make that mistake hard, `@cf-sync/server/testing` re-exports the whole definition kit (`defineApp`, `defineSchema`, `defineMutators`, `crudMutators`, `AppError`, and their types), so a test file needs exactly one import source. Importing the kit from `@cf-sync/protocol` works identically.
 :::
 
 ## Testing migrations
