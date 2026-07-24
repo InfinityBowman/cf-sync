@@ -14,12 +14,18 @@ import { z } from 'zod'
  * protocol's one dependency); other standard-schema vendors are opaque, so
  * their drift is undetectable and never warns. Object keys are sorted before
  * hashing so a refactor that only reorders declarations hashes the same.
+ *
+ * The app's presence schema joins the fingerprint under `$presence` (`$` is
+ * outside the table-name grammar, so it can never collide) — a presence-shape
+ * change without a version bump trips the same drift warning as a table
+ * change (DESIGN.md §16.1). Apps without one hash exactly as before.
  */
-export function schemaFingerprint(schema: AnySyncSchema): string {
+export function schemaFingerprint(schema: AnySyncSchema, presence?: StandardSchemaV1): string {
   const shape: Record<string, unknown> = {}
   for (const [name, table] of Object.entries(schema.tables as Record<string, StandardSchemaV1>)) {
     shape[name] = tableShape(table)
   }
+  if (presence) shape.$presence = tableShape(presence)
   return fnv1a(stableStringify(shape))
 }
 

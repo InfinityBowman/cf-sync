@@ -11,6 +11,12 @@ export const MAX_FRAME_BYTES = 900_000
 export const MAX_PART_PATCH_BYTES = 850_000
 /** A single row must fit inside a frame with room to spare. */
 export const MAX_ROW_BYTES = 700_000
+/**
+ * Presence payloads are cursor-cadence ephemera, not documents (DESIGN.md
+ * §16.2). Oversized states are rejected with an error frame — never truncated
+ * or coerced.
+ */
+export const MAX_PRESENCE_BYTES = 8_192
 
 /**
  * Keepalive frames. The server registers this exact pair with
@@ -118,7 +124,23 @@ export const pushMsgSchema = z.object({
 })
 export type PushMsg = z.infer<typeof pushMsgSchema>
 
-export const clientMsgSchema = z.discriminatedUnion('type', [helloMsgSchema, pushMsgSchema])
+/**
+ * The client's own presence state (DESIGN.md §16.2); null clears it. The
+ * payload is opaque here — the server validates it against the app's
+ * `presence` schema before relaying, and identity is never carried in the
+ * message: the relay stamps `clientId`/`principal` from the socket attachment.
+ */
+export const presenceMsgSchema = z.object({
+  type: z.literal('presence'),
+  state: z.unknown(),
+})
+export type PresenceMsg = z.infer<typeof presenceMsgSchema>
+
+export const clientMsgSchema = z.discriminatedUnion('type', [
+  helloMsgSchema,
+  pushMsgSchema,
+  presenceMsgSchema,
+])
 export type ClientMsg = z.infer<typeof clientMsgSchema>
 
 // ---------------------------------------------------------------------------
@@ -175,11 +197,51 @@ export const pokeEndMsgSchema = z.object({
 })
 export type PokeEndMsg = z.infer<typeof pokeEndMsgSchema>
 
+/**
+ * A peer's presence changed: payload is client-claimed, identity is
+ * server-attested — `clientId`/`principal` come from the socket attachment,
+ * never from the sender's payload. `state: null` means the peer cleared its
+ * presence or disconnected.
+ */
+export const presenceUpdateMsgSchema = z.object({
+  type: z.literal('presence'),
+  clientId: z.string().min(1),
+  principal: z.string().optional(),
+  state: z.unknown(),
+})
+export type PresenceUpdateMsg = z.infer<typeof presenceUpdateMsgSchema>
+
+export const presencePeerSchema = z.object({
+  clientId: z.string().min(1),
+  principal: z.string().optional(),
+  state: z.unknown(),
+})
+
+/**
+ * Full peer snapshot, sent once right after hello completes. Doubles as the
+ * client's "presence is live on this connection" signal: receipt triggers
+ * re-announcement of its own state (DESIGN.md §16.4).
+ */
+export const presencePeersMsgSchema = z.object({
+  type: z.literal('presencePeers'),
+  peers: z.array(presencePeerSchema),
+})
+export type PresencePeersMsg = z.infer<typeof presencePeersMsgSchema>
+
+/**
+ * "Re-send your state": hibernation dropped the server's in-memory presence
+ * map while the sockets survived; the map converges in one round-trip as
+ * clients re-announce (DESIGN.md §16.3).
+ */
+export const presencePollMsgSchema = z.object({ type: z.literal('presencePoll') })
+export type PresencePollMsg = z.infer<typeof presencePollMsgSchema>
+
 export const errorCodeSchema = z.enum([
   'VersionNotSupported',
   'CursorInvalid',
   'BadMessage',
   'PushInvalid',
+  'PresenceInvalid',
   'Unauthorized',
   'Internal',
 ])
@@ -196,6 +258,9 @@ export const serverMsgSchema = z.discriminatedUnion('type', [
   pokeStartMsgSchema,
   pokePartMsgSchema,
   pokeEndMsgSchema,
+  presenceUpdateMsgSchema,
+  presencePeersMsgSchema,
+  presencePollMsgSchema,
   errorMsgSchema,
 ])
 export type ServerMsg = z.infer<typeof serverMsgSchema>

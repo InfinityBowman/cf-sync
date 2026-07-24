@@ -18,3 +18,14 @@ export const testApp = defineApp({
 export function testAppAt(version: number) {
   return defineApp({ version, schema: testSchema, mutators: crudMutators(testSchema) })
 }
+
+/** testApp plus a presence schema (§16 drills). */
+export const presenceApp = defineApp({
+  version: 1,
+  schema: testSchema,
+  mutators: crudMutators(testSchema),
+  presence: z.object({
+    name: z.string(),
+    cursor: z.object({ x: z.number(), y: z.number() }).optional(),
+  }),
+})

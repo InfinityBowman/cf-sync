@@ -2,10 +2,12 @@ import {
   AppError,
   CLOSE_REFRESH,
   KEEPALIVE_PING,
+  MAX_PRESENCE_BYTES,
   PROTOCOL_VERSION,
   cursorEquals,
   formatIssues,
   isPermanentCloseCode,
+  jsonByteSize,
   serverMsgSchema,
   type AnyMutators,
   type AnySyncSchema,
@@ -19,6 +21,8 @@ import {
   type MutatorTx,
   type PatchOp,
   type PokeEndMsg,
+  type PresencePeer,
+  type StandardSchemaV1,
   type TableSchema,
 } from '@cf-sync/protocol'
 import { IndexedDBSyncStore } from './idb-store'
@@ -117,6 +121,30 @@ export class SyncFatalError extends Error {
   }
 }
 
+type PresenceInputOf<P> = P extends StandardSchemaV1 ? StandardSchemaV1.InferInput<P> : never
+type PresenceStateOf<P> = P extends StandardSchemaV1 ? StandardSchemaV1.InferOutput<P> : never
+
+/**
+ * `client.presence` — ephemeral peer state on the existing socket (DESIGN.md
+ * §16). The library owns transport and lifecycle: `set` coalesces
+ * trailing-edge at `presenceThrottleMs` (safe to call at input frequency) and
+ * the last state is re-announced on every reconnect, so apps write neither
+ * throttle nor reconnect glue. Peers exclude self (render your own state from
+ * your own source of truth) and reset to empty on disconnect — stale presence
+ * is worse than absent presence. Requires a `presence` schema in `defineApp`;
+ * without one `set`/`clear` throw (and the state type is `never`).
+ */
+export interface PresenceApi<TIn = unknown, TOut = unknown> {
+  /** Replace this client's presence state. Validated locally; fail-fast like mutate-time args. */
+  set(state: TIn): void
+  /** Clear this client's presence; peers see `state: null`. */
+  clear(): void
+  /** Synchronous snapshot of peers, self excluded. Stable identity between changes. */
+  readonly peers: ReadonlyArray<PresencePeer<TOut>>
+  /** Notifies on any peer change; returns an unsubscribe function. Plugs into `useSyncExternalStore`. */
+  subscribe(listener: () => void): () => void
+}
+
 type NamespaceHeads<K extends string> = K extends `${infer H}.${string}` ? H : K
 type NamespaceSub<M, H extends string> = {
   [K in keyof M & `${H}.${string}` as K extends `${H}.${infer R}` ? R : never]: M[K]
@@ -178,6 +206,7 @@ function buildMutate(names: Iterable<string>, invoke: (name: string, args: unkno
 export interface SyncClientOptions<
   S extends AnySyncSchema = AnySyncSchema,
   M extends AnyMutators = AnyMutators,
+  P extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined,
 > {
   /**
    * Base URL of the sync worker — origin plus any mount path, no sync route:
@@ -211,7 +240,7 @@ export interface SyncClientOptions<
    * fail immediately instead of surfacing as a server round-trip error (the
    * server's validation remains authoritative).
    */
-  app: AppDefinition<S, M>
+  app: AppDefinition<S, M, P>
   /**
    * This client's own view of its auth context — the same shape the server's
    * `authorize` hook stamps (typed by the registry's `authContext` schema).
@@ -270,6 +299,13 @@ export interface SyncClientOptions<
    * event. Default: 2×pingInterval + 5s.
    */
   idleTimeoutMs?: number
+  /**
+   * Trailing-edge coalescing cadence for `presence.set` — the client sends at
+   * most one presence frame per window, carrying the latest state, so apps
+   * call `set` at input frequency without throttle glue. Default: 100ms
+   * (Liveblocks' default, proven at far larger scale).
+   */
+  presenceThrottleMs?: number
   /** Constructor-time convenience; for dynamic subscribers use `subscribeStatus`. */
   onStatusChange?: (status: SyncStatus) => void
   /**
@@ -316,8 +352,12 @@ interface PokeBuffer {
   mutationResults: MutationResult[]
 }
 
-export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMutators = AnyMutators> {
-  readonly #opts: SyncClientOptions<S, M>
+export class SyncClient<
+  S extends AnySyncSchema = AnySyncSchema,
+  M extends AnyMutators = AnyMutators,
+  P extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined,
+> {
+  readonly #opts: SyncClientOptions<S, M, P>
   readonly #clientId: string
   readonly #url: string
   readonly #store: SyncStore | undefined
@@ -357,6 +397,19 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   #startNudgeTimer: ReturnType<typeof setTimeout> | null = null
   #lastFrameAt = 0
 
+  // Presence (§16). `#presenceState` is this client's last-set state
+  // (undefined = never set, null = cleared); it survives reconnects so the
+  // library can re-announce. `#presenceLive` flips on `presencePeers` receipt
+  // — the server's "presence is live on this connection" signal — and off on
+  // disconnect.
+  readonly #presencePeers = new Map<string, PresencePeer>()
+  readonly #presenceListeners = new Set<() => void>()
+  #presenceState: unknown = undefined
+  #presenceSnapshot: ReadonlyArray<PresencePeer> | null = null
+  #presenceLive = false
+  #presenceTimer: ReturnType<typeof setTimeout> | null = null
+  #presenceLastSentAt = 0
+
   /**
    * Applies a named mutation optimistically and queues it for the server.
    * Callable two ways — `mutate.todos.clearCompleted(args)` (dots in mutator
@@ -388,7 +441,10 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
    */
   readonly mutate: Mutate<M>
 
-  constructor(opts: SyncClientOptions<S, M>) {
+  /** Ephemeral peer state on the sync socket — see {@link PresenceApi}. */
+  readonly presence: PresenceApi<PresenceInputOf<P>, PresenceStateOf<P>>
+
+  constructor(opts: SyncClientOptions<S, M, P>) {
     if (!opts.workspaceId) throw new Error('SyncClient: workspaceId is required')
     if (opts.store && opts.persist) {
       throw new Error('SyncClient: pass either `store` or `persist`, not both')
@@ -412,6 +468,20 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, this.#clientId)
     this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId) : undefined)
     this.mutate = buildMutate(Object.keys(opts.app.mutators), (name, args) => this.#mutateByName(name, args))
+    const self = this
+    this.presence = {
+      set: (state) => this.#presenceSet(state),
+      clear: () => this.#presenceSet(null),
+      get peers() {
+        return self.#presencePeersList()
+      },
+      subscribe: (listener) => {
+        self.#presenceListeners.add(listener)
+        return () => {
+          self.#presenceListeners.delete(listener)
+        }
+      },
+    } as PresenceApi<PresenceInputOf<P>, PresenceStateOf<P>>
     // Nothing consumes registered tables synchronously (hydration awaits the
     // store; a real socket's open event is async), so collections created
     // right after the constructor still attach before the first sync.
@@ -522,6 +592,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer)
     if (this.#retryPushTimer) clearTimeout(this.#retryPushTimer)
     this.#stopHeartbeat()
+    this.#presenceDisconnected()
     const socket = this.#socket
     this.#socket = null
     try {
@@ -793,6 +864,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     this.#poke = null
     this.#awaitingCatchUp = false
     this.#stopHeartbeat()
+    this.#presenceDisconnected()
     // Close codes are the rejection channel (DESIGN.md §15.2): a browser
     // cannot see the HTTP status of a failed upgrade, so the server
     // accept-then-closes with a policy code instead.
@@ -854,6 +926,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
         this.#poke = null
         this.#awaitingCatchUp = false
         this.#stopHeartbeat()
+        this.#presenceDisconnected()
         this.#scheduleReconnect()
         return
       }
@@ -959,6 +1032,29 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
         this.#applyPoke(poke, msg)
         break
       }
+      case 'presence':
+        this.#applyPeerUpdate(msg.clientId, msg.principal, msg.state)
+        break
+      case 'presencePeers': {
+        // The snapshot right after hello is the server's "presence is live"
+        // signal: adopt it, then re-announce our own state (§16.4) — apps
+        // never write reconnect glue.
+        this.#presenceLive = true
+        this.#presencePeers.clear()
+        for (const peer of msg.peers) {
+          if (peer.clientId === this.#clientId) continue
+          const entry: PresencePeer = { clientId: peer.clientId, state: peer.state }
+          if (peer.principal !== undefined) entry.principal = peer.principal
+          this.#presencePeers.set(peer.clientId, entry)
+        }
+        this.#notifyPresence()
+        if (this.#presenceState !== undefined && this.#presenceState !== null) this.#sendPresence()
+        break
+      }
+      case 'presencePoll':
+        // Hibernation dropped the server's map (§16.3): re-send unprompted.
+        if (this.#presenceState !== undefined && this.#presenceState !== null) this.#sendPresence()
+        break
       case 'error':
         this.#onServerError(msg)
         break
@@ -1073,6 +1169,12 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
         this.#needsRebase = true
         this.#requestResync()
         break
+      case 'PresenceInvalid':
+        // Local validation should have caught this — reaching here means
+        // client/server schema skew (mid-deploy) or a bug. Not worth a
+        // reconnect: presence self-heals on the next set.
+        console.warn(`[cf-sync] server rejected presence state: ${msg.message ?? 'PresenceInvalid'}`)
+        break
       case 'BadMessage':
       case 'Internal':
         if (this.#retryPushTimer) clearTimeout(this.#retryPushTimer)
@@ -1173,6 +1275,94 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   }
 
   // -------------------------------------------------------------------------
+  // presence (§16)
+  // -------------------------------------------------------------------------
+
+  #presenceSet(state: unknown): void {
+    const schema = this.#opts.app.presence
+    if (!schema) {
+      throw new Error(
+        'SyncClient: the app declares no presence schema — add `presence: <schema>` to defineApp to use client.presence',
+      )
+    }
+    if (state !== null) {
+      const result = schema['~standard'].validate(state)
+      if (result instanceof Promise) {
+        // Async validators can't gate a synchronous set; the server's parse
+        // rejects authoritatively (same policy as mutate-time args).
+        void result.catch(() => {})
+      } else if (result.issues) {
+        throw new Error(`SyncClient: presence state fails the app's presence schema: ${formatIssues(result.issues)}`)
+      }
+      if (jsonByteSize(state) > MAX_PRESENCE_BYTES) {
+        throw new Error(`SyncClient: presence state exceeds ${MAX_PRESENCE_BYTES} bytes`)
+      }
+    }
+    this.#presenceState = state
+    this.#schedulePresenceSend()
+  }
+
+  /**
+   * Trailing-edge coalescing: at most one frame per cadence window, carrying
+   * whatever `#presenceState` holds when it fires — so `set` is safe at input
+   * frequency and the last call always wins.
+   */
+  #schedulePresenceSend(): void {
+    if (this.#presenceTimer !== null) return // the pending send picks up the latest state
+    const cadence = this.#opts.presenceThrottleMs ?? 100
+    const elapsed = Date.now() - this.#presenceLastSentAt
+    if (elapsed >= cadence) {
+      this.#sendPresence()
+      return
+    }
+    this.#presenceTimer = setTimeout(() => {
+      this.#presenceTimer = null
+      this.#sendPresence()
+    }, cadence - elapsed)
+  }
+
+  #sendPresence(): void {
+    if (!this.#presenceLive || !this.#socket || this.#presenceState === undefined) return
+    this.#presenceLastSentAt = Date.now()
+    this.#send({ type: 'presence', state: this.#presenceState })
+  }
+
+  #applyPeerUpdate(clientId: string, principal: string | undefined, state: unknown): void {
+    if (clientId === this.#clientId) return // self renders from its own source of truth
+    if (state === null || state === undefined) {
+      if (!this.#presencePeers.delete(clientId)) return
+    } else {
+      const peer: PresencePeer = { clientId, state }
+      if (principal !== undefined) peer.principal = principal
+      this.#presencePeers.set(clientId, peer)
+    }
+    this.#notifyPresence()
+  }
+
+  /** Peers reset to empty on disconnect — stale presence is worse than absent presence. */
+  #presenceDisconnected(): void {
+    this.#presenceLive = false
+    if (this.#presenceTimer) {
+      clearTimeout(this.#presenceTimer)
+      this.#presenceTimer = null
+    }
+    if (this.#presencePeers.size === 0) return
+    this.#presencePeers.clear()
+    this.#notifyPresence()
+  }
+
+  #notifyPresence(): void {
+    this.#presenceSnapshot = null
+    for (const listener of this.#presenceListeners) listener()
+  }
+
+  #presencePeersList(): ReadonlyArray<PresencePeer> {
+    // Cached between changes so useSyncExternalStore sees a stable snapshot.
+    this.#presenceSnapshot ??= [...this.#presencePeers.values()]
+    return this.#presenceSnapshot
+  }
+
+  // -------------------------------------------------------------------------
   // plumbing
   // -------------------------------------------------------------------------
 
@@ -1194,6 +1384,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   #fatal(error: SyncFatalError): void {
     this.#setStatus('fatal')
     this.#stopHeartbeat()
+    this.#presenceDisconnected()
     // markReady so any pending collection.preload() settles instead of hanging.
     for (const hooks of this.#tables.values()) hooks.markReady()
     for (const entry of [...this.#outbox]) this.#settleEntry(entry, error)

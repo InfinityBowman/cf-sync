@@ -963,7 +963,7 @@ consecutive 4300s without a `ready` back off instead of looping; a
 second upgrade with the same clientId closes the first socket, and a frame
 sent on the superseded socket is not processed.
 
-## 16. Presence (designed 2026-07-23, not implemented)
+## 16. Presence (implemented 2026-07-24)
 
 Ephemeral peer state on the existing socket: who's here, what they're doing.
 The §14 Tier 1 mitigation ("X is editing this field") and typical
@@ -1065,6 +1065,39 @@ related zombie-socket race — a late frame from an abandoned half-open socket
 can't overwrite the reconnected client's fresh state, which is why
 awareness-style clocks stay unnecessary in this single-relay topology.
 
+**Relay goes through the §15 send gate (noted 2026-07-24).** This section was
+designed before the close-beats-push discovery recorded in §15.3. Presence
+relay is a second fan-out path beside pokes, so every per-socket delivery must
+apply the same two gates the poke loop applies: skip sockets marked `defunct`
+(a DO-initiated close is in flight; the socket is dead even though frames
+still dispatch), and a socket past its `expiresAt` is closed with 4300
+instead of being sent to — the §15.6 test "a relay (poke, presence, or field
+update) to a socket past `expiresAt` closes it" already anticipates this.
+Implemented as the one `#deliver` helper both fan-out paths send through;
+§17 field updates reuse it rather than growing a third copy of the checks.
+
+**Implementation decisions (2026-07-24):**
+
+- Map entries remember their **owning socket**. The supersede rule closes the
+  old socket *before* the new one announces, but the old socket's close
+  *event* can be delivered after — teardown cleanup only removes an entry the
+  closing socket still owns, so a lagged close cannot wipe the reconnected
+  client's fresh state (locked by test).
+- Relay carries the presence schema's **parsed output** (defaults applied),
+  matching what the typed surface promises — the same rule row validation
+  follows (§6a: the validated output is what gets stored).
+- Rejections use a dedicated `PresenceInvalid` error code rather than
+  overloading `BadMessage`; the client treats it as a warning (presence
+  self-heals on the next set), never a reconnect.
+- The null broadcast on close/clear keeps the attested `principal`, so peers
+  know *whose* presence vanished without holding their own id→principal map.
+- The wake poll is broadcast from the DO constructor — the constructor *is*
+  the wake signal — guarded on the app declaring presence and ≥1 ready
+  socket, so cold starts and presence-free apps pay nothing.
+- Without a `presence` schema in `defineApp`, `presence.set`/`clear` throw
+  (and the state type is `never`), the server rejects presence frames, and
+  no snapshot/poll traffic exists at all.
+
 ### 16.4 Client: the library owns re-announcement
 
 `presence.set` validates against the app's presence schema (fail fast, same
@@ -1086,10 +1119,25 @@ per workspace; revisit with evidence), no cross-workspace presence.
 ### 16.6 Tests that lock this
 
 Relay reaches all ready sockets but not the sender or non-ready sockets;
-snapshot arrives after hello; poll-after-eviction converges (runInDurableObject
-+ state.abort, then assert peers rebuilt); close broadcasts the null; oversized
-payload rejected without disconnect; identity stamping ignores any
-clientId/principal a client embeds in its own payload.
+snapshot arrives after hello; poll-after-eviction converges; close broadcasts
+the null; a supersede-lagged close cannot wipe the reconnected client's fresh
+entry; oversized payload rejected without disconnect; identity stamping
+ignores any clientId/principal a client embeds in its own payload; relay
+skips defunct sockets, and relay to a socket past `expiresAt` closes it with
+4300 instead of delivering (the §15.6 send-gate test, exercised on the
+presence path). Client side: trailing-edge coalescing, re-announce on
+`presencePeers` and `presencePoll`, peers reset on disconnect, `set` throws
+without a schema.
+
+**Testing hibernation (learned 2026-07-24):** `state.abort()` simulates a
+*crash* — it kills the sockets with the instance (clients observe 1006) — so
+it can never exercise the wake-poll path. The right tool is
+`evictDurableObject(stub)` from `cloudflare:test` (vitest-pool-workers ≥
+0.16.20), which preserves hibernatable sockets through the eviction like
+production does; `{webSockets: 'close'}` opts into the crash shape instead.
+Both shapes are locked: eviction → constructor poll → one-round-trip
+convergence, and crash → sockets die → convergence purely from
+re-announcement on reconnect.
 
 ## 17. Tier 2 Yjs fields (designed 2026-07-23, not implemented)
 

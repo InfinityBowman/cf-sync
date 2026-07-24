@@ -83,6 +83,13 @@ export const testApp = defineApp({
   version: 1,
   schema: testSchema,
   mutators: testMutators,
+  // Presence drills (§16). `label` has a default so tests can assert the
+  // relayed state is the parsed output, not the raw payload.
+  presence: z.object({
+    name: z.string(),
+    label: z.string().default('peer'),
+    cursor: z.object({ x: z.number(), y: z.number() }).optional(),
+  }),
 })
 
 export const WorkspaceDO = createWorkspaceDO({

@@ -18,6 +18,14 @@ export interface Poke {
   end: PokeEndMsg
 }
 
+/** Presence frames travel beside poke traffic; tests read them from their own lane. */
+export type PresenceLaneMsg = Extract<ServerMsg, { type: 'presence' | 'presencePeers' | 'presencePoll' }>
+type SyncLaneMsg = Exclude<ServerMsg, PresenceLaneMsg>
+
+function isPresenceLane(msg: ServerMsg): msg is PresenceLaneMsg {
+  return msg.type === 'presence' || msg.type === 'presencePeers' || msg.type === 'presencePoll'
+}
+
 /**
  * A raw protocol client for exercising the DO contract from tests. It keeps a
  * materialized row map so convergence can be asserted structurally.
@@ -33,8 +41,10 @@ export class TestClient {
   closeEvent: { code: number; reason: string } | null = null
 
   #ws!: WebSocket
-  #queue: ServerMsg[] = []
-  #waiters: Array<(msg: ServerMsg) => void> = []
+  #queue: SyncLaneMsg[] = []
+  #waiters: Array<(msg: SyncLaneMsg) => void> = []
+  #presenceQueue: PresenceLaneMsg[] = []
+  #presenceWaiters: Array<(msg: PresenceLaneMsg) => void> = []
   #closeWaiters: Array<(event: { code: number; reason: string }) => void> = []
   #partial: { pokeId: string; baseCursor: Cursor | null; parts: PokePartMsg[] } | null = null
 
@@ -71,6 +81,12 @@ export class TestClient {
       const parsed = serverMsgSchema.safeParse(JSON.parse(String(event.data)))
       if (!parsed.success) return
       const msg = parsed.data
+      if (isPresenceLane(msg)) {
+        const waiter = this.#presenceWaiters.shift()
+        if (waiter) waiter(msg)
+        else this.#presenceQueue.push(msg)
+        return
+      }
       if (msg.type === 'error') this.errors.push(msg)
       const waiter = this.#waiters.shift()
       if (waiter) waiter(msg)
@@ -104,6 +120,7 @@ export class TestClient {
     // Discard anything from the old connection, including a half-received
     // poke: the post-reconnect catch-up supersedes it.
     this.#queue = []
+    this.#presenceQueue = []
     this.#partial = null
     await this.#open()
   }
@@ -123,7 +140,7 @@ export class TestClient {
     })
   }
 
-  next(timeoutMs = 2_000): Promise<ServerMsg> {
+  next(timeoutMs = 2_000): Promise<SyncLaneMsg> {
     const queued = this.#queue.shift()
     if (queued) return Promise.resolve(queued)
     return new Promise((resolve, reject) => {
@@ -133,6 +150,27 @@ export class TestClient {
         resolve(msg)
       })
     })
+  }
+
+  /** Reads the next presence-lane frame (presence / presencePeers / presencePoll). */
+  nextPresence(timeoutMs = 2_000): Promise<PresenceLaneMsg> {
+    const queued = this.#presenceQueue.shift()
+    if (queued) return Promise.resolve(queued)
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`timed out waiting for a presence frame (client ${this.clientId})`)),
+        timeoutMs,
+      )
+      this.#presenceWaiters.push((msg) => {
+        clearTimeout(timer)
+        resolve(msg)
+      })
+    })
+  }
+
+  /** Sets or clears (null) this client's presence state. */
+  presence(state: unknown): void {
+    this.send({ type: 'presence', state })
   }
 
   /** Reads one complete poke (start → parts → end) and applies it to `rows`. */
@@ -185,6 +223,13 @@ export class TestClient {
     await new Promise((resolve) => setTimeout(resolve, waitMs))
     if (this.#queue.length > 0) {
       throw new Error(`expected silence, got ${JSON.stringify(this.#queue[0])}`)
+    }
+  }
+
+  async expectNoPresence(waitMs = 150): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, waitMs))
+    if (this.#presenceQueue.length > 0) {
+      throw new Error(`expected presence silence, got ${JSON.stringify(this.#presenceQueue[0])}`)
     }
   }
 

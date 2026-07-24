@@ -35,6 +35,7 @@ export interface SchemaMigration {
 export interface AppDefinition<
   S extends AnySyncSchema = AnySyncSchema,
   M extends AnyMutators = AnyMutators,
+  P extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined,
 > {
   readonly version: number
   readonly schema: S
@@ -48,6 +49,38 @@ export interface AppDefinition<
    * fail-fast-validate its `auth` option (DESIGN.md §15.4).
    */
   readonly authContext?: StandardSchemaV1<any, any>
+  /**
+   * Schema for the app's ephemeral presence payload (DESIGN.md §16). Declaring
+   * it enables `client.presence` / `usePresence`; the server validates every
+   * inbound state against it before relaying, so peers' state reaches app
+   * code as a checked, typed value. Like the table schemas, it joins the
+   * structural fingerprint: a presence-shape change without a version bump
+   * trips the same drift warning (§9).
+   */
+  readonly presence?: P
+}
+
+/**
+ * The presence payload type of an app definition — what `presence.set` takes
+ * and what peers' `state` carries. `never` when the app declares no presence
+ * schema (so `presence.set` is uncallable at the type level, matching the
+ * runtime throw).
+ */
+export type PresenceOf<A extends { presence?: StandardSchemaV1 | undefined }> =
+  NonNullable<A['presence']> extends never
+    ? never
+    : StandardSchemaV1.InferOutput<NonNullable<A['presence']>>
+
+/**
+ * One peer's presence as apps consume it (`client.presence.peers`,
+ * `usePresence`): identity is server-attested — `clientId`/`principal` are
+ * stamped from the socket attachment, never taken from the payload — and
+ * `state` is validated against the app's presence schema before relay.
+ */
+export interface PresencePeer<T = unknown> {
+  clientId: string
+  principal?: string
+  state: T
 }
 
 /**
@@ -84,25 +117,36 @@ export interface AppDefinition<
  * `crud: false` for an intent-only registry — collections then refuse to
  * attach, and every write must go through a named mutator.
  */
-export function defineApp<S extends AnySyncSchema, M extends MutatorsFor<S>>(def: {
+export function defineApp<
+  S extends AnySyncSchema,
+  M extends MutatorsFor<S>,
+  P extends StandardSchemaV1 | undefined = undefined,
+>(def: {
   version: number
   schema: S
   mutators: M
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
+  presence?: P
   crud: false
-}): AppDefinition<S, M>
-export function defineApp<S extends AnySyncSchema, M extends MutatorsFor<S> = Record<never, never>>(def: {
+}): AppDefinition<S, M, P>
+export function defineApp<
+  S extends AnySyncSchema,
+  M extends MutatorsFor<S> = Record<never, never>,
+  P extends StandardSchemaV1 | undefined = undefined,
+>(def: {
   version: number
   schema: S
   mutators?: M
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
+  presence?: P
   crud?: true
-}): AppDefinition<S, M & CrudMutators<S>>
+}): AppDefinition<S, M & CrudMutators<S>, P>
 export function defineApp<S extends AnySyncSchema>(def: {
   version: number
   schema: S
   mutators?: MutatorsFor<S>
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
+  presence?: StandardSchemaV1
   crud?: boolean
 }): AppDefinition<S, AnyMutators> {
   const { version, schema } = def
@@ -161,9 +205,17 @@ export function defineApp<S extends AnySyncSchema>(def: {
   // The registry carries its authContext schema under a symbol key (survives
   // the spread above); lift it onto the definition for server and client.
   const authContext = (mutators as Record<typeof AUTH_CONTEXT, StandardSchemaV1<any, any> | undefined>)[AUTH_CONTEXT]
-  return authContext !== undefined
-    ? { version, schema, mutators, migrations, authContext }
-    : { version, schema, mutators, migrations }
+  const app: {
+    version: number
+    schema: S
+    mutators: AnyMutators
+    migrations: SchemaMigration[]
+    authContext?: StandardSchemaV1<any, any>
+    presence?: StandardSchemaV1
+  } = { version, schema, mutators, migrations }
+  if (authContext !== undefined) app.authContext = authContext
+  if (def.presence !== undefined) app.presence = def.presence
+  return app
 }
 
 /**

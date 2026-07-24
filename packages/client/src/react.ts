@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
-import type { SyncClient, SyncStatus } from './client'
+import type { PresencePeer } from '@cf-sync/protocol'
+import type { PresenceApi, SyncClient, SyncStatus } from './client'
 
 /**
  * The client's sync status as React state — re-renders on every transition:
@@ -17,5 +18,26 @@ export function useSyncStatus(client: SyncClient<any, any>): SyncStatus {
     client.subscribeStatus,
     () => client.status,
     () => client.status,
+  )
+}
+
+/**
+ * Peers' presence as React state, typed by the app's presence schema and
+ * excluding self (DESIGN.md §16.1):
+ *
+ * ```tsx
+ * const peers = usePresence(syncClient)
+ * return <>{peers.map((p) => <Avatar key={p.clientId} name={p.state.name} />)}</>
+ * ```
+ *
+ * The snapshot is stable between changes, and the server pre-render sees the
+ * same empty peers a fresh client does, so SSR/hydration match.
+ */
+export function usePresence<TOut>(client: { presence: PresenceApi<any, TOut> }): ReadonlyArray<PresencePeer<TOut>> {
+  const presence = client.presence
+  return useSyncExternalStore(
+    presence.subscribe,
+    () => presence.peers,
+    () => presence.peers,
   )
 }

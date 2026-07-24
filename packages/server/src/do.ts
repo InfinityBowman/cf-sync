@@ -9,6 +9,7 @@ import {
   KEEPALIVE_PONG,
   MAX_ID_LENGTH,
   MAX_PART_PATCH_BYTES,
+  MAX_PRESENCE_BYTES,
   MAX_ROW_BYTES,
   PROTOCOL_VERSION,
   TABLE_NAME_RE,
@@ -30,7 +31,11 @@ import {
   type PokeEndMsg,
   type PokePartMsg,
   type PokeStartMsg,
+  type PresenceMsg,
+  type PresencePeersMsg,
+  type PresenceUpdateMsg,
   type PushMsg,
+  type ServerMsg,
 } from '@cf-sync/protocol'
 import { DurableObject } from 'cloudflare:workers'
 import { z } from 'zod'
@@ -283,6 +288,15 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     #sql: SqlStorage
     #rows: SqlRowStore
     #meta!: Meta
+    /**
+     * Presence, keyed by clientId — in DO memory only, never persisted
+     * (DESIGN.md §16.3): a storage write per cursor move would defeat
+     * hibernation. Hibernation drops the map while sockets survive; the
+     * constructor's presencePoll rebuilds it in one round-trip. Each entry
+     * remembers its owning socket so a superseded socket's late close event
+     * cannot wipe the reconnected client's fresh state.
+     */
+    #presence = new Map<string, { ws: WebSocket; principal?: string; state: unknown }>()
     // Since-start operational counters (reset on eviction; durable gauges come
     // from SQL in #stats). No wall-clock latency here: workers freeze Date.now
     // during synchronous execution, so honest latency must be measured by
@@ -304,9 +318,16 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       this.#rows = new SqlRowStore(this.#sql)
       // Keepalives answered by the runtime so idle sockets never wake the DO.
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG))
+      // The constructor runs on every wake: surviving ready sockets mean
+      // hibernation just dropped the presence map — ask clients to re-send
+      // their state (§16.3). A cold start has no sockets, so this is free.
+      if (config.app.presence) {
+        const poll = JSON.stringify({ type: 'presencePoll' } satisfies ServerMsg)
+        for (const socket of this.#readySockets()) this.#deliver(socket, [poll])
+      }
       ctx.blockConcurrencyWhile(async () => {
         migrate(this.#sql)
-        const fingerprint = schemaFingerprint(config.app.schema)
+        const fingerprint = schemaFingerprint(config.app.schema, config.app.presence)
         this.#meta = loadOrInitMeta(this.#sql, config.app.version, fingerprint)
         if (this.#meta.schemaVersion !== config.app.version) {
           this.#migrateAppSchema(fingerprint)
@@ -589,6 +610,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           return
         }
         if (parsed.data.type === 'hello') this.#handleHello(ws, attachment, parsed.data)
+        else if (parsed.data.type === 'presence') this.#handlePresence(ws, attachment, parsed.data)
         else this.#handlePush(ws, attachment, parsed.data)
       } catch (err) {
         console.error('cf-sync-engine internal error', err)
@@ -597,6 +619,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     }
 
     override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+      this.#dropPresence(ws)
       // Reciprocate the close or clients observe an abnormal 1006.
       if (!RESERVED_CLOSE_CODES.has(code)) {
         try {
@@ -605,6 +628,10 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           // already closed
         }
       }
+    }
+
+    override async webSocketError(ws: WebSocket): Promise<void> {
+      this.#dropPresence(ws)
     }
 
     #rememberWorkspaceId(request: Request): void {
@@ -710,7 +737,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           const workspaceId = this.#meta.workspaceId
           await this.ctx.storage.deleteAll()
           migrate(this.#sql)
-          this.#meta = loadOrInitMeta(this.#sql, config.app.version, schemaFingerprint(config.app.schema))
+          this.#meta = loadOrInitMeta(this.#sql, config.app.version, schemaFingerprint(config.app.schema, config.app.presence))
           if (workspaceId) {
             this.#sql.exec(`UPDATE meta SET workspace_id = ? WHERE id = 1`, workspaceId)
             this.#meta.workspaceId = workspaceId
@@ -782,6 +809,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         connections: {
           total: this.ctx.getWebSockets().length,
           ready: this.#readySockets().length,
+          presence: this.#presence.size,
         },
         counters: { ...this.#counters },
       }
@@ -815,6 +843,94 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         lastMutationIdChanges: { [attachment.clientId]: lmid },
       })
       ws.serializeAttachment({ ...attachment, ready: true } satisfies Attachment)
+      if (config.app.presence) {
+        // Snapshot so late joiners render peers immediately (§16.2). Sent
+        // even when empty: receipt is the client's re-announce trigger. After
+        // a hibernation wake this can be sparse until poll replies relay — a
+        // recorded decision (§16.3); presence is eventually-correct.
+        const peers: PresencePeersMsg['peers'] = []
+        for (const [clientId, entry] of this.#presence) {
+          if (clientId === attachment.clientId) continue
+          const peer: PresencePeersMsg['peers'][number] = { clientId, state: entry.state }
+          if (entry.principal !== undefined) peer.principal = entry.principal
+          peers.push(peer)
+        }
+        this.#deliver(ws, [JSON.stringify({ type: 'presencePeers', peers } satisfies PresencePeersMsg)])
+      }
+    }
+
+    /**
+     * Set/clear the sender's presence and relay it (DESIGN.md §16.2). Payload
+     * is client-claimed but schema-validated; identity is server-attested —
+     * clientId/principal come from the attachment, so a client cannot
+     * impersonate another user's presence. Invalid or oversized states are
+     * rejected with an error frame (never truncated or coerced) and the
+     * socket stays open.
+     */
+    #handlePresence(ws: WebSocket, attachment: Attachment, msg: PresenceMsg): void {
+      const schema = config.app.presence
+      if (!schema) {
+        this.#sendError(ws, 'PresenceInvalid', 'the app declares no presence schema')
+        return
+      }
+      if (!attachment.ready) {
+        this.#sendError(ws, 'PresenceInvalid', 'presence before hello')
+        return
+      }
+      let state: unknown = null
+      if (msg.state !== null && msg.state !== undefined) {
+        if (jsonByteSize(msg.state) > MAX_PRESENCE_BYTES) {
+          this.#sendError(ws, 'PresenceInvalid', `presence state exceeds ${MAX_PRESENCE_BYTES} bytes`)
+          return
+        }
+        const result = schema['~standard'].validate(msg.state)
+        if (result instanceof Promise) {
+          void result.catch(() => {})
+          this.#sendError(ws, 'PresenceInvalid', 'async presence validation is not supported')
+          return
+        }
+        if (result.issues) {
+          this.#sendError(ws, 'PresenceInvalid', formatIssues(result.issues))
+          return
+        }
+        // Peers receive the parsed output (defaults applied) — the same
+        // shape the presence schema types promise.
+        state = result.value
+      }
+      if (state === null) {
+        if (!this.#presence.delete(attachment.clientId)) return // clearing nothing: relay nothing
+      } else {
+        this.#presence.set(attachment.clientId, { ws, principal: attachment.principal, state })
+      }
+      this.#relayPresence(ws, attachment.clientId, attachment.principal, state)
+    }
+
+    /** Fan a peer's state change out to every ready socket except its own. */
+    #relayPresence(from: WebSocket | null, clientId: string, principal: string | undefined, state: unknown): void {
+      const update: PresenceUpdateMsg = { type: 'presence', clientId, state }
+      if (principal !== undefined) update.principal = principal
+      const frame = JSON.stringify(update)
+      for (const socket of this.#readySockets()) {
+        if (socket === from) continue
+        this.#deliver(socket, [frame])
+      }
+    }
+
+    /**
+     * Socket teardown half of presence (§16.3): remove the entry and
+     * broadcast the null. Ownership check: after a supersede, the old
+     * socket's close event can land *after* the new socket announced — an
+     * entry owned by a different socket is the reconnected client's fresh
+     * state, not ours to wipe.
+     */
+    #dropPresence(ws: WebSocket): void {
+      if (!config.app.presence) return
+      for (const [clientId, entry] of this.#presence) {
+        if (entry.ws !== ws) continue
+        this.#presence.delete(clientId)
+        this.#relayPresence(ws, clientId, entry.principal, null)
+        return
+      }
     }
 
     #handlePush(ws: WebSocket, attachment: Attachment, msg: PushMsg): void {
@@ -1041,24 +1157,32 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       this.#counters.pokesSent++
       this.#counters.lastFanout = sockets.length
 
-      for (const socket of sockets) {
-        const attachment = socket.deserializeAttachment() as Attachment | null
-        if (attachment?.defunct) continue // already closed by us; nothing to deliver
-        // Reads are gated at the fan-out (§15.2): a passive reader generates
-        // no inbound frames, so this is the one place its expiry can bite.
-        // Close instead of sending; the reconnect re-runs authorize.
-        if (attachment?.expiresAt !== undefined && Date.now() >= attachment.expiresAt) {
-          this.#closeSocket(socket, CLOSE_REFRESH, 'auth-expired')
-          continue
-        }
-        try {
-          for (const frame of frames) socket.send(frame)
-          this.#counters.framesSent += frames.length
-        } catch {
-          // Slow/broken socket: dropping it is always safe — the client
-          // catches up by cursor on reconnect (DESIGN.md §8).
-          this.#closeSocket(socket, 1011, 'send failed')
-        }
+      for (const socket of sockets) this.#deliver(socket, frames)
+    }
+
+    /**
+     * The one per-socket delivery gate — every fan-out path (pokes, presence
+     * relay/snapshot/poll, and §17 field updates when they land) sends through
+     * here so the §15 checks are never duplicated. Skips sockets the DO
+     * already closed (defunct — the close is in flight but frames would still
+     * dispatch), and closes past-due stamps with 4300 instead of delivering:
+     * reads are gated at the fan-out (§15.2) because a passive reader
+     * generates no inbound frames, so this is the one place expiry can bite.
+     */
+    #deliver(socket: WebSocket, frames: readonly string[]): void {
+      const attachment = socket.deserializeAttachment() as Attachment | null
+      if (attachment?.defunct) return
+      if (attachment?.expiresAt !== undefined && Date.now() >= attachment.expiresAt) {
+        this.#closeSocket(socket, CLOSE_REFRESH, 'auth-expired')
+        return
+      }
+      try {
+        for (const frame of frames) socket.send(frame)
+        this.#counters.framesSent += frames.length
+      } catch {
+        // Slow/broken socket: dropping it is always safe — the client
+        // catches up by cursor on reconnect (DESIGN.md §8).
+        this.#closeSocket(socket, 1011, 'send failed')
       }
     }
 
@@ -1078,6 +1202,10 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       } catch {
         // unreadable attachment — still close below
       }
+      // A DO-initiated close may never fire webSocketClose (the peer can be
+      // gone); drop the presence entry now rather than waiting for a close
+      // event that might not come.
+      this.#dropPresence(ws)
       try {
         ws.close(code, truncateCloseReason(reason))
       } catch {
