@@ -27,7 +27,7 @@ await client.mutate.issue.move({ id, column })   // one intent, one wire op, ato
 - **Server-authoritative** — the DO re-runs every mutator with full authority; clients are optimistic caches that always converge. No merge functions in app code.
 - **Optimistic by default** — a mutator's `apply` runs instantly on the client and authoritatively on the server; rollback, rebase, and replay are the engine's job.
 - **Offline that survives reloads** — IndexedDB mirror, durable outbox, exactly-once replay via the per-client `lastMutationId` contract.
-- **Schema evolution with teeth** — versioned migration chains, validated at boot, with per-workspace drift detection that names the fix.
+- **Schema evolution with teeth** — versioned migration chains, validated at boot; a one-line CI tripwire (`checkSchemaEvolution`) fails the build on a schema change without a version bump, and per-workspace drift detection backstops it at runtime.
 - **Typed presence** — declare a zod shape, get throttled live cursors and server-attested identity.
 - **Collaborative text where it counts** — rows stay LWW; `@cf-sync/yjs` adds Yjs fields in the same DO for the fields that genuinely need merging.
 - **Testable** — `createTestEngine` runs the real engine semantics in plain node; the engine itself is locked by contract tests and a multi-client convergence simulation in workerd.

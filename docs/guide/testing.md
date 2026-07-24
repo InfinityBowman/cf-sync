@@ -41,6 +41,18 @@ it('the 1 -> 2 migration backfills priority', () => {
 
 A chain that produces schema-invalid rows throws from `createTestEngine` itself — you find out in the test run, not on a production workspace's first wake.
 
+## The schema-evolution tripwire
+
+One more test makes the *forgotten* migration impossible to ship — a schema change with no version bump fails CI with the exact `migrations` entry to add:
+
+```ts
+it('every schema change ships with a version bump', async () => {
+  await checkSchemaEvolution(app, new URL('./schema-snapshot.json', import.meta.url))
+})
+```
+
+Commit the snapshot file it scaffolds; a legitimate version bump rewrites it automatically. Details in [Schema evolution](/guide/schema-evolution#drift-detection).
+
 ## The semantics are the real ones
 
 The engine honors the [engine invariants](https://github.com/InfinityBowman/cf-sync-engine/blob/main/DESIGN.md):

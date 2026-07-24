@@ -13,6 +13,9 @@ import {
 } from '@cf-sync/protocol'
 import { formatIssues } from '@cf-sync/protocol/internal'
 import { WriteSet, rowKey, validateRow, type EngineRowStore } from './engine-core'
+import { schemaFingerprint } from './fingerprint'
+
+export { schemaFingerprint }
 
 /**
  * In-memory workspace engine for unit-testing app definitions — mutators and
@@ -266,4 +269,101 @@ export function createTestEngine<S extends AnySyncSchema, M extends AnyMutators>
   opts?: TestEngineOptions,
 ): TestEngine<S, M> {
   return new TestEngine(app, opts)
+}
+
+// ---------------------------------------------------------------------------
+// Schema-evolution tripwire
+// ---------------------------------------------------------------------------
+
+/** What `checkSchemaEvolution` stores in its snapshot file. */
+export interface SchemaSnapshot {
+  version: number
+  /** Structural fingerprint of the table schemas — the same one the DO stores for drift detection. */
+  fingerprint: string
+}
+
+/**
+ * The CI tripwire for the one schema mistake the type system cannot catch:
+ * **changing a table schema without bumping `version`** (DESIGN.md §9 —
+ * without a bump, rows written before the change never gain new fields at
+ * runtime, and old bundles sharing the version can silently strip them via
+ * full-row writes). The deployed engine only detects this after the fact, as
+ * a warning in Durable Object logs; this check fails the build instead.
+ *
+ * Add one test next to your app definition:
+ *
+ * ```ts
+ * it('every schema change ships with a version bump', async () => {
+ *   await checkSchemaEvolution(app, new URL('./schema-snapshot.json', import.meta.url))
+ * })
+ * ```
+ *
+ * The snapshot file works like a jest snapshot — commit it. The first run
+ * scaffolds it; a version bump rewrites it automatically (the bump is the
+ * fix, so the test passes); a schema change **without** a bump throws with
+ * the exact migrations entry to add. Node-only (reads and writes the file),
+ * like everything in this subpath.
+ *
+ * Presence is deliberately outside the fingerprint: presence is ephemeral
+ * and reshaping it needs no version bump (DESIGN.md §16.1).
+ *
+ * Rare false positive: the fingerprint derives from zod's JSON Schema
+ * emission, so a zod upgrade can shift it with no semantic change — the
+ * thrown message says so; delete the snapshot file to re-baseline.
+ */
+export async function checkSchemaEvolution(
+  app: AppDefinition<AnySyncSchema>,
+  snapshotPath: string | URL,
+): Promise<SchemaSnapshot> {
+  const fs = await import('node:fs')
+  // workers-types' global URL and @types/node's URL diverge in lib details;
+  // at runtime both are WHATWG URLs, which node's fs accepts directly.
+  const path = snapshotPath as unknown as string
+  const current: SchemaSnapshot = { version: app.version, fingerprint: schemaFingerprint(app.schema) }
+  const serialize = (snap: SchemaSnapshot): string =>
+    `${JSON.stringify({ __comment: 'cf-sync schema snapshot (checkSchemaEvolution) — commit this file', ...snap }, null, 2)}\n`
+
+  let raw: string
+  try {
+    raw = fs.readFileSync(path, 'utf8')
+  } catch {
+    fs.writeFileSync(path, serialize(current))
+    return current
+  }
+
+  let stored: SchemaSnapshot
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    if (typeof parsed.version !== 'number' || typeof parsed.fingerprint !== 'string') throw new Error('shape')
+    stored = { version: parsed.version, fingerprint: parsed.fingerprint }
+  } catch {
+    throw new Error(
+      `checkSchemaEvolution: ${String(snapshotPath)} is not a schema snapshot this helper wrote — ` +
+        `delete the file to re-baseline from the current app definition`,
+    )
+  }
+
+  if (stored.version === current.version) {
+    if (stored.fingerprint === current.fingerprint) return current
+    throw new Error(
+      `checkSchemaEvolution: table schemas changed but version is still ${current.version} ` +
+        `(fingerprint ${stored.fingerprint} -> ${current.fingerprint}). Every schema change requires a ` +
+        `version bump — additive ones too. Bump defineApp to version: ${current.version + 1} and add ` +
+        `migrations[${current.version + 1}] (null when new fields have defaults and no rows need ` +
+        `rewriting; a backfill function otherwise). If nothing semantic changed and this is a zod ` +
+        `upgrade reshaping its JSON Schema emission, delete ${String(snapshotPath)} to re-baseline.`,
+    )
+  }
+  if (stored.version > current.version) {
+    throw new Error(
+      `checkSchemaEvolution: the snapshot records version ${stored.version} but the app declares ` +
+        `${current.version} — a version rollback (or a stale branch merged over a newer snapshot). ` +
+        `Deployed versions never roll back (DESIGN.md §9): restore the higher version, or delete ` +
+        `${String(snapshotPath)} if this branch intentionally diverged.`,
+    )
+  }
+  // Version legitimately bumped: re-baseline (defineApp already validated the
+  // migration chain reaches the new version in both bundles).
+  fs.writeFileSync(path, serialize(current))
+  return current
 }

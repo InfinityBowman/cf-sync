@@ -602,6 +602,11 @@ settled:
   warning, not a hard error: the fingerprint derives from zod's JSON Schema
   emission, which a zod upgrade could shift with no semantic change — a
   heuristic detector gets to shout, never to take down availability.
+  The strict layer lives in CI instead (added 2026-07-24):
+  `checkSchemaEvolution(app, snapshotPath)` in `@cf-sync/server/testing`
+  compares the same fingerprint against a committed snapshot file and fails
+  the build when schemas change under an unbumped version — a false positive
+  there costs one deleted file, not availability, so it gets to be an error.
 - Storage-format changes inside the DO are ordinary SQLite migrations in `onStart`,
   invisible to the protocol.
 - **App-schema rollout (drilled, M3):** exact-match policy — the server rejects any
