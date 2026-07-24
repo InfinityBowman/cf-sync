@@ -747,7 +747,9 @@ outside the workspace (identity, role, entitlement) is looked up once in
 stamped onto the connection — so the connection's auth state needs a lifecycle:
 a way to carry it to mutators, a way to revoke it (membership removal must stop
 *reads*, not just writes), and a way to refresh it (billing changed → reconnect
-re-runs `authorize`). Designed top-down from what the app writes.
+re-runs `authorize`). Designed top-down from what the app writes. Presence
+(§16) and Tier 2 fields (§17) both consume the stamps defined here — this
+section sequences first in any implementation order.
 
 ### 15.1 What the app writes
 
@@ -804,8 +806,25 @@ new SyncClient({
 ### 15.2 Verdicts and rejection delivery
 
 `authorize` may return `boolean | Response` (unchanged) or an `AuthVerdict`:
-`{ok: true, principal?: string, context?: unknown}` /
+`{ok: true, principal?: string, context?: unknown, expiresAt?: number}` /
 `{ok: false, code?: number, reason?: string}`.
+
+`expiresAt` (epoch ms) bounds how long the stamps stay trusted without being
+re-derived. Revocation is otherwise entirely push-driven (webhook →
+`disconnect`), and a missed webhook would leave a socket authorized forever;
+the ecosystem answer is periodic revalidation (Zero re-runs auth context on a
+`revalidateAt` deadline, Liveblocks bounds exposure with short-lived tokens).
+The engine's variant fits the hibernation constraints: the deadline is stamped
+in the attachment and checked at two synchronous points, both closing past-due
+sockets with 4300 so the reconnect re-runs `authorize`. Inbound frames gate
+*writes*. Reads are gated at the **broadcast fan-out**: before relaying any
+frame (poke, presence, field update) to a socket, the DO reads its attachment
+deadline and closes instead of sending. Fan-out is where reads happen, so
+checking there is both necessary and sufficient — a passive reader generates
+no inbound frames the DO ever sees (keepalive pings are auto-responded
+without waking it, per §16.3), and a fully idle workspace relays nothing, so
+there is nothing to bound. No alarm, no await, no background timer. Omitted
+means no expiry — apps with reliable revocation webhooks don't pay for one.
 
 The delivery problem: a browser WebSocket client cannot observe the HTTP status
 of a failed upgrade — a 403 looks identical to a network error, which is why
@@ -814,17 +833,40 @@ instead. The engine adopts the same trick, but in the **worker router**: on a
 structured rejection,
 `createSyncFetch` completes the upgrade with a local `WebSocketPair` and
 immediately closes it with `(code, reason)` — the client gets a real close
-event, and the DO never wakes. A bare `false` keeps returning HTTP 403
-(back-compat, and correct for non-browser callers).
+event, and the DO never wakes. (partyserver does the same accept-then-close
+for the same devtools-visibility reason, but inside the DO; doing it in the
+router is the platform win. The worker-side pair initiates the close itself,
+so §8's close-reciprocation rule doesn't apply to it.) A bare `false` keeps
+returning HTTP 403 (back-compat, and correct for non-browser callers).
+
+`reason` strings ride the WebSocket close frame, which caps reasons at **123
+bytes** of UTF-8 — reasons are short stable slugs (`membership-revoked`,
+`project-deleted`), not prose; anything longer belongs in logs.
 
 Close-code space (constants exported from `@cf-sync/protocol`):
 
 - `[4400, 4499]` — **permanent**: the client stops reconnecting and calls
   `onFatal` with `{code, reason}` attached to the error. Existing: 4400
-  VersionNotSupported. New: 4403 default rejection/kick.
+  VersionNotSupported. New: 4403 default rejection/kick, 4401 auth-context
+  validation failure (15.4).
 - `4300` — **refresh**: the client reconnects immediately (fresh `authorize`
   run, fresh stamps). Not fatal, not backoff — this is the entitlement/role
-  freshness mechanism, expected during normal operation.
+  freshness mechanism, expected during normal operation. Loop guard: only the
+  first 4300 reconnects immediately; consecutive 4300s with no intervening
+  `ready` fall back to the normal reconnect backoff, so a bug (or a stuck
+  webhook retrying `disconnect({mode: 'refresh'})`) that refreshes on every
+  connect degrades to a paced retry instead of a zero-delay `authorize` storm
+  against the app's database.
+
+The ecosystem alternative — in-band reauth over the live socket (Zero's
+`updateAuth` message, Ably's `AUTH` frame) — was considered and rejected:
+`authorize` runs in the worker against the app's database, and the DO cannot
+re-run it; a reconnect keeps all auth evaluation in exactly one place at the
+cost of a socket bounce, which the cursor catch-up path already makes cheap.
+A workspace-wide `refresh` makes every socket reconnect at once; at the
+target workload (≤4 sockets per workspace) the herd is a non-issue — revisit
+with server-paced backoff hints (what Zero's backoff errors carry) if
+fan-outs grow.
 
 ### 15.3 Carrying the verdict to the DO
 
@@ -837,6 +879,14 @@ serialized: the docs state the budget and the DO fails the upgrade loudly if
 the auth payload doesn't fit, rather than truncating. The trust model is
 unchanged: the DO believes whatever the router says (do.ts already requires an
 authorize hook in front of it).
+
+**Supersede rule**: an upgrade whose `clientId` already has a live socket
+closes the old socket before accepting the new one — newer wins. The old
+socket is almost always a half-open zombie the client already abandoned
+(reconnect after a silent network death); without the rule, an edge-buffered
+frame from the zombie can arrive *after* the fresh socket's traffic and be
+attributed to the same client — the stale-overwrite race that awareness-style
+clocks exist to prevent (§16 leans on this rule instead of clocks).
 
 ### 15.4 MutatorContext grows three fields
 
@@ -855,7 +905,10 @@ interface MutatorContext<A = unknown> {
   it; without one it stays `unknown`.
 - **Validation**: the DO validates the verdict's `context` against
   `authContext` at upgrade time, so drift between the app's authorize hook and
-  its mutators fails at connect, not mid-mutation.
+  its mutators fails at connect, not mid-mutation. A failure closes with
+  permanent 4401 and a descriptive reason — it's an app configuration bug
+  (authorize and mutators shipped disagreeing shapes), so reconnecting cannot
+  help and backoff would only hide it.
 - **Optimistic runs**: mutators also run client-side, where no server verdict
   exists. `ctx.authoritative` is the honest signal — permission checks written
   as `if (ctx.authoritative && !allowed) throw` enforce on the server and let
@@ -888,7 +941,13 @@ Kick closes only matching sockets and the client goes fatal with the reason;
 refresh triggers a reconnect that re-runs authorize (assert new stamps
 observable via a mutator); attachment auth survives `state.abort()` eviction;
 oversized auth context fails the upgrade; spoofed `x-cf-sync-auth` from outside
-is stripped; a kicked client's queued push never lands (close beats push).
+is stripped; a kicked client's queued push never lands (close beats push); a
+frame arriving after `expiresAt` gets 4300 and the reconnect carries fresh
+stamps; a relay (poke, presence, or field update) to a socket past
+`expiresAt` closes it with 4300 and the frame is not delivered;
+consecutive 4300s without a `ready` back off instead of looping; a
+second upgrade with the same clientId closes the first socket, and a frame
+sent on the superseded socket is not processed.
 
 ## 16. Presence (designed 2026-07-23, not implemented)
 
@@ -922,8 +981,17 @@ const peers = usePresence(client)
 // Array<{ clientId: string, principal?: string, state: PresenceOf<typeof app> }>
 ```
 
-Throttling (e.g. a 50ms cursor cadence) stays app-side — the library relays
-what it's given; policy about how often to give it is the app's.
+`presence.set` is safe to call at input frequency: the client coalesces
+trailing-edge at a configurable cadence (default 100ms — Liveblocks' default,
+proven at far larger scale) so apps never write throttle glue. The server
+still relays what it receives — pacing is a client-library concern, not a
+protocol one.
+
+The presence schema joins the §9 structural fingerprint alongside the table
+schemas: a presence-shape change without a version bump trips the same drift
+warning, keeping the "every schema change bumps the version" story uniform —
+otherwise two bundles could disagree about the presence shape at runtime with
+nothing to catch it.
 
 ### 16.2 Wire protocol
 
@@ -941,8 +1009,13 @@ Three new message types beside hello/push/poke:
   hibernation wake (16.3).
 
 Presence frames are ordinary frames for keepalive/idle accounting and are only
-accepted on `ready` sockets. Payload cap `MAX_PRESENCE_BYTES` (8KB) — oversized
-states are rejected with an error frame, never truncated.
+accepted on `ready` sockets. The server validates inbound state against the
+app's presence schema before relaying — `usePresence` hands peers' state to
+app code as a typed value, and a typed surface the server never checked would
+let one modified client feed junk into every peer's code path; at the target
+workload (≤4 collaborators, ≤8KB payloads) validation costs microseconds even
+at cursor cadence. Invalid or oversized (`MAX_PRESENCE_BYTES`, 8KB) states are
+rejected with an error frame, never truncated or coerced.
 
 ### 16.3 Server: in-memory only, rebuilt by polling
 
@@ -950,11 +1023,33 @@ A `Map<clientId, state>` in DO memory; relay handlers are synchronous fan-out
 (invariant §6.3). Nothing is ever persisted — presence never touches SQLite or
 the mutation log. Hibernation drops the map while sockets survive; on wake the
 DO broadcasts `presencePoll` and the map converges in one round-trip as clients
-re-send. Socket close/error removes the entry and broadcasts the null. This
+re-send. A client whose hello lands during that window gets a sparse
+`presencePeers` snapshot that fills in as poll replies relay — a recorded
+decision, not a surprise: presence is eventually-correct by construction, and
+holding the snapshot until the poll settles would add a wait to every wake for
+a cosmetic gap. Socket close/error removes the entry and broadcasts the null. This
 buys hibernation-compatibility without a single storage write on the 50ms
 cursor path — the reason presence must NOT live in socket attachments
 (`serializeAttachment` is a storage write per update; at cursor frequency that
 would defeat hibernation entirely).
+
+**The ghost window (recorded trade).** There is no TTL/heartbeat expiry: the
+keepalive ping is auto-responded without waking the DO, so the server never
+observes client liveness — a peer that dies silently (network partition,
+laptop lid) lingers in the map until TCP teardown surfaces a close, observed
+anywhere from ~75s to a couple of minutes. This is the same trade the
+hibernating-CF prior art makes deliberately: y-partyserver strips y-awareness's
+15s/30s clock-renewal interval and tldraw's CF template sets
+`clientTimeout: Infinity`, both to preserve hibernation. At the target
+workload a minutes-stale avatar is cosmetic, but apps using presence for the
+§14 "X is editing this field" mitigation should treat the claim as advisory —
+render it with a client-side staleness bound from the update's local receipt
+time, never hard-lock a field on it. Revisit shape if evidence demands: a
+low-cadence client renewal plus an alarm sweep armed only while the map is
+non-empty. The §15 supersede rule (newer socket wins per clientId) closes the
+related zombie-socket race — a late frame from an abandoned half-open socket
+can't overwrite the reconnected client's fresh state, which is why
+awareness-style clocks stay unnecessary in this single-relay topology.
 
 ### 16.4 Client: the library owns re-announcement
 
@@ -994,7 +1089,8 @@ else stays rows. Designed top-down from what the app writes.
 ```ts
 // worker — register the extension on the DO:
 import { yjsFields } from '@cf-sync/yjs/server'
-export const Workspace = createWorkspaceDO(app, {
+export const Workspace = createWorkspaceDO({
+  app,
   extension: yjsFields({
     // optional: gate writes on the §15 auth stamps (default: any member writes)
     authorizeWrite: (auth) => auth?.writeAllowed === true,
@@ -1042,19 +1138,44 @@ Three message types:
 
 - `GET` (client → server): payload = Yjs state vector (empty for a fresh
   client). Server replies with `STATE`.
-- `STATE` (server → client): payload = the update diff the client is missing
-  (`Y.encodeStateAsUpdate(doc, stateVector)`).
+- `STATE` (server → client): payload = `[u16 svLen][server state vector][diff]`
+  — the update diff the client is missing
+  (`Y.encodeStateAsUpdate(doc, clientSV)`) plus the server's own state vector.
+  On receipt the client applies the diff, then computes
+  `Y.encodeStateAsUpdate(doc, serverSV)` and, when non-empty, sends it back as
+  an ordinary `UPDATE`. Sync is **bidirectional** (y-protocols' step-1/step-2
+  in both directions) — pull-only would leave permanent gaps: an `UPDATE` lost
+  in flight (socket died before the server persisted it) or a corrupt row
+  skipped on load (17.4) would never be re-uploaded, and Yjs makes gaps silent
+  and sticky — later ops that depend on the missing one park in the pending
+  queue forever, quietly truncating the field for every future reader. The
+  push-back leg is what makes both recovery stories true.
 - `UPDATE` (both directions): one incremental Yjs update. Client → server:
   persist, then relay. Server → client: apply.
 
+This is y-protocols' symmetric sync folded into fewer frames: `GET` is the
+client's syncStep1, `STATE` is the server's syncStep2 *and* its syncStep1 (the
+appended state vector), the push-back `UPDATE` is the client's syncStep2 —
+full cross-sync in two messages instead of four. The one deliberate drop from
+y-websocket's flow is server-initiated syncStep1 on connect: y-partyserver
+needs it because its doc is memory-only and hibernation wake must beg
+surviving clients for state back; here authority lives in SQLite, wake loses
+nothing, and the server never has a reason to ask first.
+
 **No subscription tracking.** The server relays every field `UPDATE` to every
 ready socket; clients ignore fields they don't have open. This is the
-load-bearing simplification: per-socket subscription sets would need to
-survive hibernation (attachment space is budgeted for auth, §15.3) or be
-silently lost (dropped relays = divergence). Broadcasting makes wake a
-non-event with zero recovery machinery. Cost: idle tabs receive keystroke-size
-frames — trivial at the target workload (§14: ≤4 collaborators, low typing
-frequency). Revisit trigger: many concurrently-active fields × many clients.
+load-bearing simplification: per-socket subscription sets *could* survive
+hibernation in attachments (tldraw stores per-socket session state there), but
+attachment space is budgeted for auth (§15.3) and subscription recovery
+machinery buys nothing at this scale — broadcasting makes wake a non-event.
+Cost: idle tabs receive keystroke-size frames, ~4 clients × ~5 updates/s ×
+~100B ≈ 2KB/s per socket worst case — trivial. (Prior art for many docs on
+one socket: Liveblocks Yjs subdocuments sync over a single room connection;
+one-doc-per-connection y-websocket is the pattern this outgrows.) The real
+revisit trigger is not typing volume but **bulk programmatic writes**: a
+migration or seed pushing hundreds of fields through the socket path would
+broadcast the whole corpus to every tab — seeding goes through admin import
+(17.7), which bypasses the relay entirely.
 
 Binary frames are only accepted on `ready` sockets; caps: `MAX_FIELD_UPDATE_BYTES`
 (64KB per update), `MAX_FIELD_BYTES` (1MB materialized per field — a field is a
@@ -1069,12 +1190,22 @@ Storage, two tables beside the engine's own:
 
 The typing path never materializes a document: an inbound `UPDATE` is appended
 to `yjs_updates` and relayed, synchronously — persist-then-broadcast, so no
-client ever sees state the server hasn't durably stored (the same ordering rule
-as poke-after-commit). Y.Docs are only built for `GET` (diff needs a doc) and
-compaction, loaded snapshot-plus-tail behind a small LRU (~8 docs). Corrupt
-update rows are skipped-and-logged on load (the client that produced them
-re-converges via its next `GET`); corrupt snapshots throw — fail loudly, never
-guess. Compaction rides the existing alarm: any field with more than ~200
+client ever sees state the server hasn't durably stored (the same ordering
+rule as poke-after-commit; strictly stronger than the debounce-savers in this
+space — y-partyserver's 2s-debounced `onSave` and y-sweet's background S3
+flush can both lose the last seconds of typing on a crash). Y.Docs are only
+built for `GET` (diff needs a doc) and compaction, loaded snapshot-plus-tail
+behind a small LRU (~8 docs; fields cap at 1MB so worst case ~8MB). One
+coherence rule on the append path: if the field's doc is already in the LRU,
+the inbound update is also applied to it (or the entry evicted) — a cached
+doc must never fall behind the log, or the next `GET` it serves returns an
+incomplete diff with a stale server state vector. Corrupt update rows are
+skipped-and-logged on load; any connected client still holding the lost ops
+re-uploads them through the push-back leg in 17.3 (not just the client that
+produced them). If no live client holds them, dependent later ops park
+permanently in the doc's pending queue and the field is truncated at the gap
+— logged and visible in stats, unrecoverable by design (fail loudly, never
+guess); corrupt snapshots throw outright. Compaction rides the existing alarm: any field with more than ~200
 pending updates gets materialized, re-encoded as one snapshot at
 `snapshot_seq`, tail deleted. Fields are capped (17.3) so snapshots never
 approach SQLite's 2MB row limit — no chunking machinery.
@@ -1111,11 +1242,17 @@ privileged access.
 ### 17.6 Client: in-memory docs, re-sync on ready, no persistence
 
 `getDoc(fieldId)` is ref-counted: first call creates the Y.Doc and sends
-`GET`; `release()` drops local state at refcount zero. Local `update` events
-(non-remote origin) send immediately when connected, else buffer in memory.
-On every reconnect that reaches ready, the add-on re-sends `GET` with the
-current state vector for every held doc — edits typed during a disconnect
-merge server-side on resume, because that's what Yjs is for.
+`GET`; `release()` drops local state at refcount zero. (Ref-counted shared
+handles are the Liveblocks `getYjsProviderForRoom` shape, not y-partyserver's
+provider-per-component — two components on one field share one doc.) Local
+`update` events (non-remote origin) send immediately when connected, else
+buffer in memory. On every reconnect that reaches ready, the add-on re-sends
+`GET` with the current state vector for every held doc — edits typed during a
+disconnect merge server-side on resume, because that's what Yjs is for.
+`whenSynced` is one-shot: it resolves on the first `STATE` and stays
+resolved — it answers "can I render this field", not "am I currently live";
+liveness is the client's sync status. (y-websocket's `synced` flag re-arms on
+disconnect; apps that need that granularity can combine the two signals.)
 
 **Decided: no local persistence of field docs in v1** (resolving the open
 question carried since the §14 revision). Field co-editing is an online
@@ -1137,7 +1274,18 @@ The extension contributes to the existing ops via 17.5 hooks: export gains a
 import restores it, reset clears both tables, stats reports field count and
 byte totals. This is also the migration seam: seeding a workspace's Tier 2
 fields is just an admin import whose `fields` map was built by encoding fresh
-Y.Docs from source text. Orphaned fields (row deleted, field remains) are an
+Y.Docs from source text.
+
+Import under live sockets: the client-side re-`GET` fires on ready
+*transitions*, so an import that lands while sockets stay ready would go
+unnoticed — clients holding docs would neither pull the restored state nor
+push back ops the restore lost. Import therefore closes every socket with a
+refresh (4300); reconnecting clients re-`GET` and the bidirectional exchange
+merges any ops they still hold — restore is **convergence-preserving**
+(crash-recovery semantics). A rollback that must *discard* client-held ops is
+the other admin gesture: `disconnect` kick before importing, so apps reload
+and rebuild every doc from the restored server state (no client persistence
+makes this clean). Orphaned fields (row deleted, field remains) are an
 explicit v1 punt: cheap to store, visible in stats, cleanable by a future
 admin op — not worth automatic GC coupled to app-side pointer conventions.
 
@@ -1147,9 +1295,15 @@ Persist-then-relay ordering (a relayed update is always readable back);
 `GET` with a stale state vector returns exactly the missing diff; compaction
 round-trips content byte-for-byte (encode → compact → load → same state);
 eviction mid-session (`state.abort`) followed by client `GET` converges,
-including updates typed while disconnected; corrupt update row skipped, doc
+including updates typed while disconnected; reconnect after a send the server
+never persisted converges (the `STATE` push-back leg re-uploads the missing
+ops); corrupt update row skipped, doc
 still loads; oversized update and oversized field refused with error frames,
 socket stays open; binary frame before ready rejected; `authorizeWrite: false`
 socket can `GET` but not `UPDATE`; export → reset → import round-trips fields;
-two clients typing concurrently in one field converge to identical state
-(seeded interleaving, the §11 convergence-sim pattern applied to text).
+an `UPDATE` arriving while the field's doc sits in the LRU keeps the cached
+doc log-coherent (a `GET` served right after returns the complete diff);
+import under live sockets cycles them and both directions converge (restored
+state pulled, client-held ops pushed back); two clients typing concurrently
+in one field converge to identical state (seeded interleaving, the §11
+convergence-sim pattern applied to text).
