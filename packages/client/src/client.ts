@@ -214,7 +214,15 @@ export interface SyncClientOptions<
    */
   autoStart?: boolean
   createSocket?: (url: string) => WebSocketLike
-  /** Reject unconfirmed mutations after this long; TanStack DB then rolls back. */
+  /**
+   * Memory-only clients (no `store`/`persist`): reject unconfirmed mutations
+   * after this long — the mutation is discarded and TanStack DB rolls the
+   * optimistic overlay back, which is honest because nothing would survive a
+   * reload anyway. Ignored when a durable store is present: a queued mutation
+   * survives reloads and still applies when connectivity returns, so the
+   * promise stays pending until a connection confirms it (it settles early
+   * only on permanent app error, `stop()`, or a fatal). Default: 30s.
+   */
   confirmTimeoutMs?: number
   maxBackoffMs?: number
   /**
@@ -316,10 +324,14 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
    * them with the server's authoritative result (which ran against current
    * state). A mutator that throws `AppError` locally rejects immediately and
    * queues nothing; one that touches a table without an attached collection
-   * skips the overlay (warns once) but still reaches the server. Note that a
-   * `Timeout` rejection rolls the overlay back while — with a durable store —
-   * the mutation *stays queued*: rejection means "your overlay is gone", not
-   * "this will never apply"; the rows reappear if the mutation later confirms.
+   * skips the overlay (warns once) but still reaches the server.
+   *
+   * Settlement is honest about durability: with a durable store
+   * (`persist`/`store`) the promise stays *pending* while offline — the
+   * mutation is queued durably and applies when connectivity returns, so a
+   * rejection always means the mutation will not apply (permanent app error,
+   * `stop()`, or fatal). Only memory-only clients reject with `Timeout` after
+   * `confirmTimeoutMs`, discarding the mutation along with its overlay.
    */
   readonly mutate: Mutate<M>
 
@@ -640,17 +652,19 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (this.#status === 'fatal') {
       return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
     }
-    const timeoutMs = this.#opts.confirmTimeoutMs ?? 30_000
     return new Promise<void>((resolve, reject) => {
       const entry: OutboxEntry = { id: null, name, args, resolve, reject, timer: null, settled: false }
-      entry.timer = setTimeout(() => {
-        // With a durable store the timeout only settles the promise (so the
-        // caller's optimistic overlay rolls back); the mutation itself stays
-        // queued and still applies when connectivity returns.
-        this.#settleEntry(entry, new MutationError('Timeout', `mutation "${name}" unconfirmed after ${timeoutMs}ms`), {
-          keepQueued: this.#store !== undefined,
-        })
-      }, timeoutMs)
+      if (this.#store === undefined) {
+        // Memory-only: an unconfirmed mutation would not survive a reload, so
+        // rejecting (and discarding it) after the timeout is honest. With a
+        // durable store the mutation is queued and still applies when
+        // connectivity returns — a Timeout rejection there would report a
+        // failure that isn't one, so the promise stays pending instead.
+        const timeoutMs = this.#opts.confirmTimeoutMs ?? 30_000
+        entry.timer = setTimeout(() => {
+          this.#settleEntry(entry, new MutationError('Timeout', `mutation "${name}" unconfirmed after ${timeoutMs}ms`))
+        }, timeoutMs)
+      }
       this.#outbox.push(entry)
       if (this.#syncedThisConnection) {
         entry.id = this.#nextMutationId()
@@ -1015,7 +1029,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     }
   }
 
-  #settleEntry(entry: OutboxEntry, error?: Error, opts?: { keepQueued?: boolean }): void {
+  #settleEntry(entry: OutboxEntry, error?: Error): void {
     if (!entry.settled) {
       entry.settled = true
       if (entry.timer) {
@@ -1025,10 +1039,8 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
       if (error) entry.reject(error)
       else entry.resolve()
     }
-    if (!opts?.keepQueued) {
-      this.#outbox = this.#outbox.filter((e) => e !== entry)
-      this.#persistOutbox()
-    }
+    this.#outbox = this.#outbox.filter((e) => e !== entry)
+    this.#persistOutbox()
   }
 
   #schedulePush(): void {

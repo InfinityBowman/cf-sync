@@ -326,7 +326,7 @@ describe('optimistic intent mutations', () => {
     expect(todos.size).toBe(0)
   })
 
-  it('a timeout rejection rolls the overlay back', async () => {
+  it('a timeout rejection (memory-only client) rolls the overlay back', async () => {
     vi.useFakeTimers()
     try {
       const { client, todos, socket } = setup({ confirmTimeoutMs: 50 })

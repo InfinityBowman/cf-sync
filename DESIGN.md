@@ -365,9 +365,15 @@ guard in `applyPoke`).
   the UI shows last-synced state until the server confirms. (§7.2's local apply
   makes Replicache-style startup replay *possible*; it is deliberately deferred —
   see the phase-2 note there — so this rule stands.)
-- With a store, a confirm timeout settles the caller's promise (rejects, so the
-  optimistic overlay rolls back) but keeps the mutation queued: durable intent
-  outlives the UI signal. Without a store, timeout still discards.
+- With a store, there is **no confirm timeout** (revised 2026-07-23): the
+  caller's promise stays pending until a connection confirms — the durable
+  intent *will* apply, so a `Timeout` rejection would report a failure that
+  isn't one (the original design rejected-but-kept-queued, which made
+  rejection mean "overlay gone" rather than "won't apply" — a trap for every
+  `catch` block). A rejection now always means the mutation will not apply:
+  permanent app error, `stop()`, or fatal. Without a store,
+  `confirmTimeoutMs` still rejects *and discards* — honest, because a
+  memory-only mutation would not survive a reload anyway.
 - `stop()` rejects in-flight callers but leaves the durable outbox intact; a
   schema-version mismatch at hydration discards cache *and* queued mutations
   (they target the old schema); a `backendId` change flows through naturally as
@@ -479,17 +485,18 @@ recursively spawn a second transaction.
   local view) must still reach the server: empty buffer → enqueue directly.
 - **Offline/reload semantics unchanged (phase 2).** §7.1's rules stand:
   no optimistic display of replayed-but-unconfirmed mutations after reload;
-  timeout rolls the overlay back but keeps the mutation queued. Startup
+  durably queued mutations stay pending rather than timing out. Startup
   replay of queued intents (Replicache does this) is now *possible* and
   deliberately deferred — it needs its own pass on ordering and error
   handling before `markReady`.
-- **Timeout is unchanged but now visible.** A `Timeout` rejection rolls the
-  overlay back while a durably-stored mutation stays queued and still applies
-  on reconnect — the rows then *reappear* via the confirm patch. Identical to
-  today's collection-handler behavior, but auto-optimistic intents make it
-  observable; the README must say plainly that rejection means "your overlay
-  rolled back," not "the mutation won't apply," and a test pins the
-  rollback-then-reappear sequence.
+- **Timeout only exists without a store** (revised 2026-07-23; supersedes the
+  original "reject but keep queued" behavior — see the §7.1 rule). With a
+  durable store the promise stays pending while offline, so the overlay
+  stays up and there is no rollback-then-reappear flicker to explain; a
+  rejection always means the mutation will not apply. Memory-only clients
+  keep `confirmTimeoutMs`, and the rejection there discards the mutation
+  along with its overlay. Tests pin both: pending-past-timeout-then-confirm
+  (with store) and reject-and-roll-back (without).
 
 **Registration is at creation, not sync-start.** `workspaceCollectionOptions`
 registers its table hooks with the client when the options are created,

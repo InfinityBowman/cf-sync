@@ -204,12 +204,13 @@ confirm, rolled back together if the server rejects. Multi-row intents like
 `clearCompleted` are therefore one line and one wire mutation; there is no
 separate "optimistic effect" to hand-write, and no per-row crud echo.
 
-One semantic to know: a **rejection means your overlay rolled back, not that
-the mutation won't apply**. In particular a `Timeout` rejection (offline
-longer than `confirmTimeoutMs`) rolls the overlay back while — with `persist`
-on — the mutation stays durably queued and still applies when connectivity
-returns, at which point the rows reappear via the server patch. Check
-`MutationError.code` before telling the user something failed permanently.
+One semantic to know: **a rejection always means the mutation will not
+apply.** With `persist` on there is no confirm timeout — while offline the
+promise simply stays pending (the mutation is durably queued and applies when
+connectivity returns), and it rejects only on permanent server error,
+`client.stop()`, or a fatal. Memory-only clients do reject with `Timeout`
+after `confirmTimeoutMs` (default 30s), discarding the mutation — honest,
+since without a store it would not survive a reload anyway.
 
 Sync status is observable via `client.subscribeStatus` (returns an
 unsubscribe function, safe to pass unbound) — in React, use the shipped hook:

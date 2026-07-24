@@ -213,7 +213,7 @@ describe('SyncClient persistence', () => {
     expect(drained?.confirmedLmid).toBe(1)
   })
 
-  it('keeps a timed-out mutation queued when a store is present', async () => {
+  it('never times out a mutation when a store is present: pending, then confirmed', async () => {
     const store = new MemorySyncStore()
     const { client, latest } = makeClient(store, { confirmTimeoutMs: 5 })
     client.registerTable('todos', recorder.hooks)
@@ -223,19 +223,19 @@ describe('SyncClient persistence', () => {
     socket.open()
     poke(socket, { base: null, patch: [{ op: 'clear' }], cursor: cursor(1), lmid: 0 })
 
-    let rejected: Error | null = null
-    client.mutate('sync.put', { tbl: 'todos', id: 't1', data: {} }).catch((err: Error) => {
-      rejected = err
-    })
+    let settled: 'resolved' | Error | null = null
+    client.mutate('sync.put', { tbl: 'todos', id: 't1', data: {} }).then(
+      () => (settled = 'resolved'),
+      (err: Error) => (settled = err),
+    )
     await new Promise((r) => setTimeout(r, 20))
 
-    // The caller was told (optimistic overlay rolls back)…
-    expect(rejected).toMatchObject({ code: 'Timeout' })
-    // …but the durable intent survives and would replay next session.
-    const state = await store.load()
-    expect(state?.outbox).toHaveLength(1)
+    // Well past confirmTimeoutMs: the promise is still pending (a Timeout
+    // rejection would lie — the durable intent will apply) and still queued.
+    expect(settled).toBeNull()
+    expect((await store.load())?.outbox).toHaveLength(1)
 
-    // Late confirmation still drains it.
+    // The late confirmation resolves it and drains the outbox.
     poke(socket, {
       pokeId: 'poke-late',
       base: cursor(1),
@@ -244,6 +244,7 @@ describe('SyncClient persistence', () => {
       lmid: 1,
     })
     await flushMicrotasks()
+    expect(settled).toBe('resolved')
     expect((await store.load())?.outbox).toEqual([])
   })
 
