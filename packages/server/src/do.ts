@@ -40,7 +40,7 @@ import {
 import { DurableObject } from 'cloudflare:workers'
 import { z } from 'zod'
 import { WriteSet, validateRow, type EngineRowStore } from './engine-core'
-import { schemaFingerprint } from './fingerprint'
+import { presenceFingerprint, schemaFingerprint } from './fingerprint'
 import { loadOrInitMeta, migrate, type Meta } from './storage'
 
 /** Set by the worker routers so the DO can learn its own workspace id. */
@@ -349,11 +349,32 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
 
     async #initialize(): Promise<void> {
       migrate(this.#sql)
-      const fingerprint = schemaFingerprint(config.app.schema, config.app.presence)
-      this.#meta = loadOrInitMeta(this.#sql, config.app.version, fingerprint)
+      const fingerprint = schemaFingerprint(config.app.schema)
+      const presenceHash = presenceFingerprint(config.app.presence)
+      this.#meta = loadOrInitMeta(this.#sql, config.app.version, fingerprint, presenceHash)
       if (this.#meta.schemaVersion !== config.app.version) {
-        this.#migrateAppSchema(fingerprint)
-      } else if (this.#meta.schemaHash !== fingerprint) {
+        // The bump path restamps both hashes inside its transaction — a
+        // version bump legitimately carries any shape change, so no drift
+        // warning applies.
+        this.#migrateAppSchema(fingerprint, presenceHash)
+      } else if (this.#meta.presenceHash !== presenceHash) {
+        // Presence drift is advisory (§16.1): ephemera is never stored, so a
+        // shape change needs no version bump — warn softly (mid-deploy skew
+        // should stay on the radar) and restamp. '' means the presence schema
+        // is new (or the row predates the column): silent.
+        if (this.#meta.presenceHash !== '') {
+          console.warn(
+            `[cf-sync] presence schema changed under schema version ${config.app.version}. ` +
+              `Presence is ephemeral (never stored), so no version bump or migration is needed — ` +
+              `but until every tab reloads, old and new bundles share this workspace: prefer ` +
+              `tolerant changes (add optional fields rather than reshaping); invalid peer state ` +
+              `is dropped gracefully on both sides.`,
+          )
+        }
+        this.#sql.exec(`UPDATE meta SET presence_hash = ? WHERE id = 1`, presenceHash)
+        this.#meta.presenceHash = presenceHash
+      }
+      if (this.#meta.schemaHash !== fingerprint) {
         // Same version, different table schemas: a forgotten version bump
         // (DESIGN.md §9 — every schema change requires one). Warn once per
         // change and restamp; a hard error here would brick workspaces on a
@@ -387,7 +408,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      * chain throws before the transaction opens (migrationPath) — the DO
      * aborts initialization rather than restamp data it cannot interpret.
      */
-    #migrateAppSchema(fingerprint: string): void {
+    #migrateAppSchema(fingerprint: string, presenceHash: string): void {
       const from = this.#meta.schemaVersion
       const to = config.app.version
       const steps = migrationPath(config.app, from)
@@ -410,7 +431,12 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           )
         }
         // schema_version is a TEXT column (STRICT): bind the string form.
-        this.#sql.exec(`UPDATE meta SET schema_version = ?, schema_hash = ? WHERE id = 1`, String(to), fingerprint)
+        this.#sql.exec(
+          `UPDATE meta SET schema_version = ?, schema_hash = ?, presence_hash = ? WHERE id = 1`,
+          String(to),
+          fingerprint,
+          presenceHash,
+        )
         // Audit trail: the exported log explains the version jump.
         this.#sql.exec(
           `INSERT INTO mutation_log (version, client_id, mutation_id, name, args, result, created_at)
@@ -422,6 +448,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       })
       this.#meta.schemaVersion = to
       this.#meta.schemaHash = fingerprint
+      this.#meta.presenceHash = presenceHash
       if (migratedVersion !== null) {
         this.#meta.currentVersion = migratedVersion
         this.#meta.minCursorVersion = migratedVersion
@@ -788,7 +815,12 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
             ''
           await this.ctx.storage.deleteAll()
           migrate(this.#sql)
-          this.#meta = loadOrInitMeta(this.#sql, config.app.version, schemaFingerprint(config.app.schema, config.app.presence))
+          this.#meta = loadOrInitMeta(
+            this.#sql,
+            config.app.version,
+            schemaFingerprint(config.app.schema),
+            presenceFingerprint(config.app.presence),
+          )
           this.#initError = null
           if (workspaceId) {
             this.#sql.exec(`UPDATE meta SET workspace_id = ? WHERE id = 1`, workspaceId)

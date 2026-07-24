@@ -137,8 +137,22 @@ type PresenceStateOf<P> = P extends StandardSchemaV1 ? StandardSchemaV1.InferOut
 export interface PresenceApi<TIn = unknown, TOut = unknown> {
   /** Replace this client's presence state. Validated locally; fail-fast like mutate-time args. */
   set(state: TIn): void
+  /**
+   * Shallow-merge into the current state — `update({ cursor })` from one call
+   * site never clobbers what another call site set, so no component has to
+   * hold the canonical whole. The merged result is validated like `set`
+   * (starting from `{}` when nothing is set, so required fields must arrive
+   * by then). Clear one field with `update({ field: undefined })`.
+   */
+  update(state: Partial<TIn>): void
   /** Clear this client's presence; peers see `state: null`. */
   clear(): void
+  /**
+   * This client's own last-set state (parsed, defaults applied — the same
+   * shape peers receive of you), or null when unset/cleared. Presence never
+   * round-trips to self: render "you" from here, not from `peers`.
+   */
+  readonly self: TOut | null
   /** Synchronous snapshot of peers, self excluded. Stable identity between changes. */
   readonly peers: ReadonlyArray<PresencePeer<TOut>>
   /** Notifies on any peer change; returns an unsubscribe function. Plugs into `useSyncExternalStore`. */
@@ -471,7 +485,11 @@ export class SyncClient<
     const self = this
     this.presence = {
       set: (state) => this.#presenceSet(state),
+      update: (partial) => this.#presenceUpdate(partial),
       clear: () => this.#presenceSet(null),
+      get self() {
+        return self.#presenceState === undefined ? null : self.#presenceState
+      },
       get peers() {
         return self.#presencePeersList()
       },
@@ -1285,6 +1303,10 @@ export class SyncClient<
         'SyncClient: the app declares no presence schema — add `presence: <schema>` to defineApp to use client.presence',
       )
     }
+    // Validation runs per call even though sends coalesce to one frame per
+    // window — deliberate: the throw lands at the offending call site, and
+    // `self` always holds a checked value. At presence's 8KB cap the parse
+    // plus size measure is microseconds; revisit only with profiler evidence.
     if (state !== null) {
       const result = schema['~standard'].validate(state)
       if (result instanceof Promise) {
@@ -1293,6 +1315,11 @@ export class SyncClient<
         void result.catch(() => {})
       } else if (result.issues) {
         throw new Error(`SyncClient: presence state fails the app's presence schema: ${formatIssues(result.issues)}`)
+      } else {
+        // Keep the parsed output (defaults applied): it is what `self`
+        // exposes, what `update` merges into, and — matching the server's
+        // relay of parsed state — the same shape peers see of you.
+        state = result.value
       }
       if (jsonByteSize(state) > MAX_PRESENCE_BYTES) {
         throw new Error(`SyncClient: presence state exceeds ${MAX_PRESENCE_BYTES} bytes`)
@@ -1300,6 +1327,12 @@ export class SyncClient<
     }
     this.#presenceState = state
     this.#schedulePresenceSend()
+  }
+
+  #presenceUpdate(partial: unknown): void {
+    const current = this.#presenceState
+    const base = typeof current === 'object' && current !== null ? current : {}
+    this.#presenceSet({ ...base, ...(partial as object) })
   }
 
   /**

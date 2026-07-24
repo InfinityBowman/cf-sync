@@ -1,7 +1,7 @@
 import { env, evictDurableObject, runInDurableObject, SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { schemaFingerprint } from '../src/fingerprint'
+import { presenceFingerprint, schemaFingerprint } from '../src/fingerprint'
 import { testSchema } from './fixture/worker'
 import { TestClient, type PresenceLaneMsg } from './harness'
 
@@ -321,12 +321,14 @@ describe('restart recovery', () => {
 })
 
 describe('fingerprint', () => {
-  it('the presence schema joins the structural fingerprint (§16.1)', () => {
-    const base = schemaFingerprint(testSchema)
-    const withPresence = schemaFingerprint(testSchema, z.object({ name: z.string() }))
-    const withOtherPresence = schemaFingerprint(testSchema, z.object({ name: z.string(), x: z.number() }))
-    expect(withPresence).not.toBe(base)
-    expect(withOtherPresence).not.toBe(withPresence)
-    expect(schemaFingerprint(testSchema, z.object({ name: z.string() }))).toBe(withPresence)
+  it('presence has its own fingerprint, independent of the table fingerprint (§16.1)', () => {
+    // Declaring or changing presence never moves the table fingerprint —
+    // that is what keeps its drift decoupled from the version-bump economy.
+    expect(schemaFingerprint(testSchema)).toBe(schemaFingerprint(testSchema))
+    const a = presenceFingerprint(z.object({ name: z.string() }))
+    const b = presenceFingerprint(z.object({ name: z.string(), x: z.number() }))
+    expect(a).not.toBe(b)
+    expect(presenceFingerprint(z.object({ name: z.string() }))).toBe(a)
+    expect(presenceFingerprint(undefined)).toBe('')
   })
 })

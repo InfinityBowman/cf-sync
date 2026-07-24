@@ -107,6 +107,42 @@ describe('presence.set', () => {
     client.stop()
   })
 
+  it('update shallow-merges into the current state and validates the merged result', () => {
+    vi.useFakeTimers()
+    const { client, latest } = makeClient()
+    const socket = goLive(client, latest)
+
+    // Before anything is set, update merges into {} — required fields must
+    // arrive by validation time.
+    expect(() => client.presence.update({ cursor: { x: 1, y: 2 } })).toThrow(/presence schema/)
+
+    client.presence.set({ name: 'ada' })
+    client.presence.update({ cursor: { x: 1, y: 2 } }) // no need to re-state name
+    vi.advanceTimersByTime(100)
+    client.presence.update({ cursor: undefined }) // clears one field, keeps the rest
+    vi.advanceTimersByTime(100)
+    expect(sentPresence(socket)).toEqual([
+      { name: 'ada' },
+      { name: 'ada', cursor: { x: 1, y: 2 } },
+      { name: 'ada' },
+    ])
+    client.stop()
+  })
+
+  it('self exposes the parsed last-set state, and null when unset or cleared', () => {
+    vi.useFakeTimers()
+    const { client, latest } = makeClient()
+    goLive(client, latest)
+    expect(client.presence.self).toBeNull()
+    client.presence.set({ name: 'ada' })
+    expect(client.presence.self).toEqual({ name: 'ada' })
+    client.presence.update({ cursor: { x: 3, y: 4 } })
+    expect(client.presence.self).toEqual({ name: 'ada', cursor: { x: 3, y: 4 } })
+    client.presence.clear()
+    expect(client.presence.self).toBeNull()
+    client.stop()
+  })
+
   it('re-sends the current state on presencePoll', () => {
     const { client, latest } = makeClient()
     const socket = goLive(client, latest)

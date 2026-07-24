@@ -36,10 +36,11 @@ export const app = defineApp({
   mutators,
   // Ephemeral peer state (who's here, live cursors) relayed over the sync
   // socket — never persisted. The payload shape is app-defined; the server
-  // validates every state against this before relaying, and it counts as
-  // schema surface: adding it required the version bump below (§16.1).
-  // Cursor coordinates are relative to the centered <main> column, so they
-  // line up across differently-sized windows.
+  // validates every state against this before relaying. Changing this shape
+  // needs NO version bump (presence drift only warns softly) — prefer
+  // additive/optional changes, like `cursor?` here. Cursor coordinates are
+  // relative to the centered <main> column, so they line up across
+  // differently-sized windows.
   presence: z.object({
     name: z.string(),
     cursor: z.object({ x: z.number(), y: z.number() }).optional(),
@@ -54,7 +55,9 @@ export const app = defineApp({
         tx.put('todos', id, { priority: 'normal', ...data })
       }
     },
-    // 2 -> 3: presence schema added — additive, no row rewrite.
+    // 2 -> 3: shipped alongside adding presence, before presence changes
+    // were exempted from version bumps. Harmless history; kept because a
+    // deployed version can never roll back.
     3: null,
   },
 })

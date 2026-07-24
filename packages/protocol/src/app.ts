@@ -53,9 +53,11 @@ export interface AppDefinition<
    * Schema for the app's ephemeral presence payload (DESIGN.md §16). Declaring
    * it enables `client.presence` / `usePresence`; the server validates every
    * inbound state against it before relaying, so peers' state reaches app
-   * code as a checked, typed value. Like the table schemas, it joins the
-   * structural fingerprint: a presence-shape change without a version bump
-   * trips the same drift warning (§9).
+   * code as a checked, typed value. Unlike table schemas, changing it needs
+   * NO version bump: presence is never stored, so drift only warns softly.
+   * Prefer tolerant changes (add optional fields rather than reshaping) —
+   * during a deploy window old and new bundles share the workspace, and
+   * invalid peer state is dropped gracefully on both sides.
    */
   readonly presence?: P
 }

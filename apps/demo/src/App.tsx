@@ -43,21 +43,22 @@ export function App() {
     q.from({ todo: todos }).orderBy(({ todo }) => todo.createdAt, 'asc'),
   )
 
-  // Live cursors: every mousemove calls presence.set raw — the client
-  // coalesces trailing-edge (100ms), so no throttle glue here. Coordinates
-  // are relative to the centered column so they line up across window sizes;
-  // leaving the window drops the cursor but keeps the avatar.
+  // Live cursors: announce identity once, then every mousemove calls
+  // presence.update raw — the client coalesces trailing-edge (100ms), so no
+  // throttle glue here, and the shallow merge means cursor updates never
+  // have to re-state `name`. Coordinates are relative to the centered column
+  // so they line up across window sizes; leaving the window drops the cursor
+  // (`cursor: undefined` clears just that field) but keeps the avatar.
   useEffect(() => {
     syncClient.presence.set({ name: displayName })
     const move = (event: MouseEvent) => {
       const rect = mainRef.current?.getBoundingClientRect()
       if (!rect) return
-      syncClient.presence.set({
-        name: displayName,
+      syncClient.presence.update({
         cursor: { x: Math.round(event.clientX - rect.left), y: Math.round(event.clientY - rect.top) },
       })
     }
-    const leave = () => syncClient.presence.set({ name: displayName })
+    const leave = () => syncClient.presence.update({ cursor: undefined })
     document.addEventListener('mousemove', move)
     document.documentElement.addEventListener('mouseleave', leave)
     return () => {

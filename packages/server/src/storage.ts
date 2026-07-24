@@ -20,6 +20,13 @@ export interface Meta {
    * '' on rows that predate the column (backfilled silently).
    */
   schemaHash: string
+  /**
+   * Fingerprint of the app's presence schema (fingerprint.ts), tracked apart
+   * from `schemaHash` because presence drift is advisory only: ephemera needs
+   * no version bump, so its change warns softly instead of demanding one.
+   * '' when no presence schema is declared or the row predates the column.
+   */
+  presenceHash: string
 }
 
 // Storage schema per DESIGN.md §5. mutation_log has its own sequence because a
@@ -74,6 +81,9 @@ const MIGRATIONS: ReadonlyArray<readonly string[]> = [
   // v4 — schema fingerprint for drift detection (schemas changed, version not
   //      bumped). '' = predates the column; backfilled without warning.
   [`ALTER TABLE meta ADD COLUMN schema_hash TEXT NOT NULL DEFAULT ''`],
+  // v5 — presence fingerprint, separate from schema_hash: presence drift is
+  //      advisory (soft warning, no version bump), table drift is a bug.
+  [`ALTER TABLE meta ADD COLUMN presence_hash TEXT NOT NULL DEFAULT ''`],
 ]
 
 export function migrate(sql: SqlStorage): void {
@@ -86,7 +96,7 @@ export function migrate(sql: SqlStorage): void {
   }
 }
 
-export function loadOrInitMeta(sql: SqlStorage, schemaVersion: number, schemaHash: string): Meta {
+export function loadOrInitMeta(sql: SqlStorage, schemaVersion: number, schemaHash: string, presenceHash: string): Meta {
   const rows = sql
     .exec<{
       backend_id: string
@@ -96,8 +106,9 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: number, schemaHas
       workspace_id: string
       last_exported_seq: number
       schema_hash: string
+      presence_hash: string
     }>(
-      `SELECT backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq, schema_hash
+      `SELECT backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq, schema_hash, presence_hash
        FROM meta WHERE id = 1`,
     )
     .toArray()
@@ -105,11 +116,12 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: number, schemaHas
   if (!row) {
     const backendId = crypto.randomUUID()
     sql.exec(
-      `INSERT INTO meta (id, backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq, schema_hash)
-       VALUES (1, ?, 0, 0, ?, '', 0, ?)`,
+      `INSERT INTO meta (id, backend_id, current_version, min_cursor_version, schema_version, workspace_id, last_exported_seq, schema_hash, presence_hash)
+       VALUES (1, ?, 0, 0, ?, '', 0, ?, ?)`,
       backendId,
       String(schemaVersion),
       schemaHash,
+      presenceHash,
     )
     return {
       backendId,
@@ -119,6 +131,7 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: number, schemaHas
       lastExportedSeq: 0,
       schemaVersion,
       schemaHash,
+      presenceHash,
     }
   }
   // A stored schema version differing from the configured one is surfaced to
@@ -139,5 +152,6 @@ export function loadOrInitMeta(sql: SqlStorage, schemaVersion: number, schemaHas
     lastExportedSeq: Number(row.last_exported_seq),
     schemaVersion: storedSchemaVersion,
     schemaHash: row.schema_hash,
+    presenceHash: row.presence_hash,
   }
 }

@@ -992,8 +992,10 @@ const app = defineApp({
   }),
 })
 
-// client — set/clear own state; the library re-announces it on reconnect:
+// client — set/update/clear own state; the library re-announces it on reconnect:
 client.presence.set({ user, editingField: 'q3-notes' })
+client.presence.update({ cursor: { x, y } }) // shallow merge: no re-stating `user`
+client.presence.self                         // own parsed state (never in `peers`)
 client.presence.clear()
 
 // react — peers, self excluded, typed by the app's presence schema:
@@ -1007,11 +1009,21 @@ proven at far larger scale) so apps never write throttle glue. The server
 still relays what it receives — pacing is a client-library concern, not a
 protocol one.
 
-The presence schema joins the §9 structural fingerprint alongside the table
-schemas: a presence-shape change without a version bump trips the same drift
-warning, keeping the "every schema change bumps the version" story uniform —
-otherwise two bundles could disagree about the presence shape at runtime with
-nothing to catch it.
+**Presence drift is advisory — no version bump (revised 2026-07-24).** The
+original design put presence in the §9 structural fingerprint, pricing a
+presence change like a table change. Review caught what that costs: a version
+bump force-reloads every connected client and discards every client's
+IndexedDB cache for a full re-bootstrap — all for data that is never stored
+and lives at most one connection long. The skew the bump would prevent (an
+old bundle sending old-shape presence mid-deploy) already degrades
+gracefully: the server rejects with `PresenceInvalid`, the client warns and
+self-heals on the next set. Liveblocks and Yjs awareness version presence not
+at all. So presence gets its own fingerprint (`presence_hash` in meta, apart
+from `schema_hash`): reshaping it under an unchanged version logs a soft
+one-time warning and restamps — no rejection, no cache discard, no migration
+entry. First declaration is silent (additive by construction). Prefer
+tolerant changes (add optional fields rather than reshaping), since old and
+new bundles share the workspace during a deploy window.
 
 ### 16.2 Wire protocol
 
@@ -1108,7 +1120,11 @@ Implemented as the one `#deliver` helper both fan-out paths send through;
 
 `presence.set` validates against the app's presence schema (fail fast, same
 philosophy as mutate-time args validation), sends when connected, and stores
-the last state. On every (re)connect that reaches `ready`, and on
+the last state — the *parsed* output, which `presence.self` exposes and
+`presence.update(partial)` shallow-merges into (added 2026-07-24 on review:
+full-replace `set` alone forces every call site to re-state the whole payload,
+the tax Liveblocks' `updateMyPresence` and Yjs' `setLocalStateField` exist to
+remove; the merged result re-validates, so required fields still fail fast). On every (re)connect that reaches `ready`, and on
 `presencePoll`, the client re-sends that state unprompted — apps never write
 reconnect glue. `presence.peers` is a synchronous snapshot;
 `presence.subscribe` notifies on any change; `usePresence` wraps them with
@@ -1133,7 +1149,10 @@ skips defunct sockets, and relay to a socket past `expiresAt` closes it with
 4300 instead of delivering (the §15.6 send-gate test, exercised on the
 presence path). Client side: trailing-edge coalescing, re-announce on
 `presencePeers` and `presencePoll`, peers reset on disconnect, `set` throws
-without a schema.
+without a schema, `update` merges without clobbering and validates the
+merged result, `self` tracks set/update/clear. Presence drift under an
+unchanged version warns softly once and is never priced as table drift
+(`schema-drift.test.ts`).
 
 **Testing hibernation (learned 2026-07-24):** `state.abort()` simulates a
 *crash* — it kills the sockets with the instance (clients observe 1006) — so

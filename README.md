@@ -221,6 +221,61 @@ import { useSyncStatus } from '@cf-sync/client/react'
 const status = useSyncStatus(client) // 'idle' | 'connecting' | … | 'synced'
 ```
 
+## Presence (ephemeral peer state)
+
+Who's online, live cursors, "X is editing this field" — relayed over the same
+socket, never persisted. Declare a payload schema in `defineApp` and the whole
+surface lights up, typed end to end:
+
+```ts
+// shared — the payload shape is yours; the server validates every inbound
+// state against it before relaying, so peers can't feed junk into your UI
+export const app = defineApp({
+  version: 1,
+  schema,
+  mutators,
+  presence: z.object({
+    name: z.string(),
+    cursor: z.object({ x: z.number(), y: z.number() }).optional(),
+  }),
+})
+
+// client
+client.presence.set({ name: 'ada' })          // announce; validated locally, fail-fast
+client.presence.update({ cursor: { x, y } })  // shallow merge — no re-stating `name`
+client.presence.update({ cursor: undefined }) // clear one field, keep the rest
+client.presence.self                          // your own parsed state (never in peers)
+client.presence.clear()                       // peers see you go quiet
+```
+
+```tsx
+import { usePresence } from '@cf-sync/client/react'
+
+const peers = usePresence(client) // typed by the app's presence schema, self excluded
+peers.map((p) => <Cursor key={p.clientId} name={p.state.name} at={p.state.cursor} />)
+```
+
+What the library owns so apps don't:
+
+- **Pacing** — call `set`/`update` straight from a `mousemove` handler; the
+  client coalesces trailing-edge (one frame per `presenceThrottleMs`, default
+  100ms, latest state wins). No throttle glue.
+- **Lifecycle** — the last-set state re-announces on every reconnect and after
+  DO hibernation wakes; peers reset to empty on disconnect (stale presence is
+  worse than absent presence).
+- **Identity** — `clientId`/`principal` on every peer update are stamped by
+  the server from the connection's auth verdict, never read from the payload,
+  so a modified client cannot impersonate another user's presence.
+
+Two semantics to know. Presence is *ephemeral*: nothing is ever stored, so
+changing the presence schema needs **no version bump** — a reshape logs a
+soft server-side warning and that is all; prefer additive changes (optional
+fields), since old and new bundles share a workspace during a deploy window
+and invalid state is dropped gracefully on both sides. And liveness is
+*TCP-bound*: a peer that dies silently (laptop lid, network partition)
+lingers until socket teardown surfaces, anywhere from ~75s to a couple of
+minutes — treat presence as advisory and never hard-lock UI on it.
+
 ## Testing your app
 
 `@cf-sync/server/testing` exports an in-memory workspace engine that runs the
@@ -276,7 +331,14 @@ GET  /admin/<workspaceId>/stats    gauges + counters (rows, versions, connection
 GET  /admin/<workspaceId>/export   JSON snapshot of live rows
 POST /admin/<workspaceId>/import   replace state from a snapshot (live clients converge via reset poke)
 POST /admin/<workspaceId>/reset    wipe the workspace; new history (backendId)
+POST /admin/<workspaceId>/disconnect  kick or refresh live sessions ({principal?, clientId?, mode})
 ```
+
+`reset` also heals a workspace whose stored state can no longer be loaded
+(e.g. one written by a much older deploy): such a workspace is quarantined —
+sync upgrades answer 503, admin ops report the failure — but `reset` stays
+reachable by design. For same-worker callers, `workspaceAdmin(namespace, id)`
+wraps all of these as typed methods.
 
 With `export: { bucket: (env: Env) => env.EXPORT_BUCKET }` on the DO config (the
 annotation types the whole DO's env), a periodic
@@ -285,12 +347,15 @@ alarm streams the mutation log to R2 as ndjson (`cf-sync/<workspaceId>/mutation-
 
 ## Status
 
-M0 (protocol core), M1 (resilience), M2 (operability), and M3 phases 1–2 (client
-persistence, optimistic intent mutators) are complete: push/pull/poke over
-hibernating WebSockets, the LMID idempotency contract, chunked bootstrap, catch-up
-by cursor, TanStack DB adapter, a seeded multi-client convergence simulation,
-tombstone compaction, schema-version rollout with migration chains, R2 mutation-log
-export, the admin surface, an IndexedDB-backed local mirror with a durable offline
-outbox, and optimistic execution of intent mutations via the shared mutator
-registry. See DESIGN.md §12 for the roadmap (remaining: startup replay of queued
-intents, collaborative text per §14's tiered strategy).
+M0 (protocol core), M1 (resilience), M2 (operability), M3 phases 1–2 (client
+persistence, optimistic intent mutators), session control (§15), and presence
+(§16) are complete: push/pull/poke over hibernating WebSockets, the LMID
+idempotency contract, chunked bootstrap, catch-up by cursor, TanStack DB
+adapter, a seeded multi-client convergence simulation, tombstone compaction,
+schema-version rollout with migration chains, R2 mutation-log export, the
+admin surface (including kick/refresh session revocation), an IndexedDB-backed
+local mirror with a durable offline outbox, optimistic execution of intent
+mutations via the shared mutator registry, auth verdict stamps carried on the
+connection with expiry gating, and typed ephemeral presence with live-cursor
+coalescing. See DESIGN.md §12 for the roadmap (remaining: startup replay of
+queued intents, collaborative text per §14's tiered strategy).

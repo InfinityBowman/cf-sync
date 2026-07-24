@@ -23,12 +23,13 @@ async function evict(workspaceId: string): Promise<void> {
   })
 }
 
-function deploy(version: number, schema: AnySyncSchema): void {
+function deploy(version: number, schema: AnySyncSchema, presence?: z.ZodType): void {
   rolloutConfig.app = defineApp({
     version,
     schema,
     mutators: { ...crudMutators(schema) },
     migrations: version === 1 ? {} : { 2: null },
+    presence,
   })
 }
 
@@ -53,6 +54,9 @@ const driftedSchema = defineSchema({
 
 const driftWarnings = (spy: { mock: { calls: unknown[][] } }) =>
   spy.mock.calls.filter((args) => String(args[0]).includes('table schemas changed'))
+
+const presenceWarnings = (spy: { mock: { calls: unknown[][] } }) =>
+  spy.mock.calls.filter((args) => String(args[0]).includes('presence schema changed'))
 
 afterEach(() => {
   rolloutConfig.app = rolloutApp
@@ -130,5 +134,41 @@ describe('schema drift under an unchanged version', () => {
 
   it('the fixture schema fingerprints differently from the drifted one', () => {
     expect(schemaFingerprint(testSchema)).not.toBe(schemaFingerprint(driftedSchema))
+  })
+})
+
+describe('presence drift under an unchanged version (§16.1)', () => {
+  it('first declaration is silent; reshaping warns softly once with no version machinery', async () => {
+    const workspace = `presence-drift-${Date.now()}`
+    const warn = vi.spyOn(console, 'warn')
+
+    const c1 = await connect(workspace)
+    await c1.syncOnce()
+    c1.close()
+
+    // Declaring presence for the first time: additive by construction, silent.
+    deploy(1, testSchema, z.object({ name: z.string() }))
+    await evict(workspace)
+    const c2 = await connect(workspace)
+    await c2.syncOnce() // same schemaVersion: clients are NOT rejected
+    c2.close()
+    expect(presenceWarnings(warn)).toHaveLength(0)
+
+    // Reshaping it: one soft warning, clients still connect, and it is
+    // never priced as table drift.
+    deploy(1, testSchema, z.object({ user: z.string() }))
+    await evict(workspace)
+    const c3 = await connect(workspace)
+    await c3.syncOnce()
+    c3.close()
+    expect(presenceWarnings(warn)).toHaveLength(1)
+    expect(driftWarnings(warn)).toHaveLength(0)
+
+    // Restamped: the same shape does not warn again.
+    await evict(workspace)
+    const c4 = await connect(workspace)
+    await c4.syncOnce()
+    c4.close()
+    expect(presenceWarnings(warn)).toHaveLength(1)
   })
 })
