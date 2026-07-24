@@ -44,6 +44,13 @@ export const app = defineApp({
   presence: z.object({
     name: z.string(),
     cursor: z.object({ x: z.number(), y: z.number() }).optional(),
+    /**
+     * Which notes field this peer has focused (`todo-notes:<id>`), if any —
+     * field-level "who's editing" comes from presence (§16), while the text
+     * itself merges through the Yjs field (§17). Added later, additively:
+     * exactly the kind of presence change that needs no version bump.
+     */
+    editing: z.string().optional(),
   }),
   migrations: {
     // 1 -> 2: todos gain a priority field. Replays once per workspace,

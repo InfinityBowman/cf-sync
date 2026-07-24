@@ -2,6 +2,7 @@ import { usePresence, useSyncStatus } from '@cf-sync/client/react'
 import { useLiveQuery } from '@tanstack/react-db'
 import { useEffect, useRef, useState } from 'react'
 import { ulid } from 'ulidx'
+import { NotesField, notesFieldId } from './NotesField'
 import { displayName, syncClient, todos, workspaceId } from './sync'
 
 /** Stable per-peer hue so a cursor keeps its color as it moves. */
@@ -13,6 +14,9 @@ function hueOf(key: string): number {
 
 export function App() {
   const [title, setTitle] = useState('')
+  // Which todos have their notes open — purely local UI state; the field
+  // handle underneath is acquired/released as the panel mounts/unmounts.
+  const [openNotes, setOpenNotes] = useState<ReadonlySet<string>>(new Set())
   const status = useSyncStatus(syncClient)
   const peers = usePresence(syncClient)
   const mainRef = useRef<HTMLElement>(null)
@@ -54,6 +58,14 @@ export function App() {
     // `priority` is omitted: the schema default fills it in (client and server).
     todos.insert({ id: ulid(), title: trimmed, completed: false, createdAt: new Date().toISOString() })
     setTitle('')
+  }
+
+  const toggleNotes = (id: string) => {
+    setOpenNotes((open) => {
+      const next = new Set(open)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
   }
 
   const clearCompleted = () => {
@@ -110,26 +122,44 @@ export function App() {
         <button onClick={addTodo}>Add</button>
       </div>
       <ul style={{ listStyle: 'none', padding: 0 }}>
-        {items.map((todo) => (
-          <li key={todo.id} style={{ display: 'flex', gap: 8, padding: '6px 0', alignItems: 'center' }}>
-            <input
-              type="checkbox"
-              checked={todo.completed}
-              onChange={() => todos.update(todo.id, (draft) => (draft.completed = !draft.completed))}
-            />
-            <span style={{ flex: 1, textDecoration: todo.completed ? 'line-through' : 'none' }}>
-              {todo.title}
-            </span>
-            <button onClick={() => todos.delete(todo.id)}>×</button>
-          </li>
-        ))}
+        {items.map((todo) => {
+          const notesOpen = openNotes.has(todo.id)
+          // Presence-driven invitation: a badge when someone is typing in
+          // this todo's notes, visible even while the panel is closed.
+          const typingHere = peers.some((peer) => peer.state.editing === notesFieldId(todo.id))
+          return (
+            <li key={todo.id} style={{ padding: '6px 0' }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={todo.completed}
+                  onChange={() => todos.update(todo.id, (draft) => (draft.completed = !draft.completed))}
+                />
+                <span style={{ flex: 1, textDecoration: todo.completed ? 'line-through' : 'none' }}>
+                  {todo.title}
+                </span>
+                <button
+                  onClick={() => toggleNotes(todo.id)}
+                  style={{ fontSize: '0.8rem' }}
+                  title="Collaborative notes (Yjs field)"
+                >
+                  {notesOpen ? 'notes ▾' : 'notes ▸'}
+                  {typingHere && <span style={{ color: '#2a2' }}> ●</span>}
+                </button>
+                <button onClick={() => todos.delete(todo.id)}>×</button>
+              </div>
+              {notesOpen && <NotesField todoId={todo.id} />}
+            </li>
+          )
+        })}
       </ul>
       <button onClick={clearCompleted} disabled={!items.some((t) => t.completed)}>
         Clear completed (server intent)
       </button>
       <p style={{ color: '#888', fontSize: '0.85rem' }}>
-        Open this page in a second tab to watch mutations sync and peer cursors move live. Use a URL
-        hash (e.g. #team-a) to switch workspaces.
+        Open this page in a second tab: mutations sync, peer cursors move live, and a todo's notes
+        merge character-by-character while both tabs type. Use a URL hash (e.g. #team-a) to switch
+        workspaces.
       </p>
       {peers.map(
         (peer) =>

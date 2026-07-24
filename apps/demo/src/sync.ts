@@ -1,4 +1,5 @@
 import { SyncClient, createCollections } from '@cf-sync/client'
+import { createYjsFields } from '@cf-sync/yjs/client'
 import { app } from './schema'
 
 // Dev runs vite (:5173) and wrangler (:8787) separately; the deployed build
@@ -50,5 +51,11 @@ export const syncClient = new SyncClient({
 // One typed collection per schema table; components read status via
 // useSyncStatus(syncClient) from '@cf-sync/client/react'.
 export const { todos } = createCollections(syncClient, { startSync: true })
+
+// Tier 2 fields: real-merge text (two people typing in one prose box) on the
+// same socket, attached through the client's binary seam. Handles are
+// ref-counted (`getDoc`/`release`) and re-sync themselves on every
+// reconnect — components write no reconnect glue.
+export const yfields = createYjsFields(syncClient)
 
 export { workspaceId }

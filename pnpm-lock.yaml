@@ -32,6 +32,9 @@ importers:
       '@cf-sync/server':
         specifier: workspace:*
         version: link:../../packages/server
+      '@cf-sync/yjs':
+        specifier: workspace:*
+        version: link:../../packages/yjs
       '@tanstack/react-db':
         specifier: ^0.1.94
         version: 0.1.94(react@19.2.7)(typescript@5.9.3)
@@ -44,6 +47,9 @@ importers:
       ulidx:
         specifier: ^2.4.0
         version: 2.4.1
+      yjs:
+        specifier: ^13.6.0
+        version: 13.6.31
       zod:
         specifier: ^4.0.0
         version: 4.4.3
