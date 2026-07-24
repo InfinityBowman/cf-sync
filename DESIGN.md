@@ -1,8 +1,8 @@
 # cf-sync-engine — Design
 
-A server-authoritative, Linear-style sync engine built on Cloudflare Durable Objects,
-intended as the data foundation for documents/repos/corates. Client state is managed by
-TanStack DB via a custom collection adapter.
+A server-authoritative, Linear-style sync engine built on Cloudflare Durable Objects —
+a standalone library intended as the data foundation for collaborative, offline-capable
+apps. Client state is managed by TanStack DB via a custom collection adapter.
 
 This document locks the decisions that are expensive to reverse. Every mechanism here is
 grounded in prior art cloned into `reference/` (file:line citations throughout):
@@ -622,7 +622,7 @@ settled:
 Workspace-coarse: membership is checked at upgrade and re-checked inside every mutator;
 every member syncs the entire workspace. No row-level read filtering exists anywhere in
 the broadcast path — this is an explicit punt, recorded here so it is a decision and
-not an accident. If corates later needs finer read scopes, the plan is separate sync
+not an accident. If an app later needs finer read scopes, the plan is separate sync
 scopes (additional DOs / filtered spaces with their own cursors), not per-row filtering
 of pokes. Zero's approach (permission rules compiled into query rewrites,
 `read-authorizer.ts:61-119`) is the reference if we ever need the general thing —
@@ -670,7 +670,7 @@ first milestone, not an afterthought:
    `Date.now()` during execution, so latency is measured from clients). Import
    replaces state at one new version and bumps `min_cursor_version`; reset mints a
    new `backendId`.
-4. **M3 — product hardening for corates.** Phase 1 *(done)*: client persistence via
+4. **M3 — product hardening.** Phase 1 *(done)*: client persistence via
    the `SyncStore` seam (§7.1) — IndexedDB-backed row mirror + cursor + durable
    outbox, instant hydration before connect, offline mutations replayed exactly
    once under the LMID contract. Phase 2 *(done)*: optimistic intent mutators
@@ -697,7 +697,8 @@ first milestone, not an afterthought:
 
 The original plan was one Yjs DO per document, modeled on Linear/Notion-style
 products: a handful of long pages, opened one at a time, sometimes heavily
-co-edited. The actual corates workload is the opposite shape — **hundreds of small
+co-edited. The engine's target workload (form-heavy collaborative record apps) is
+the opposite shape — **hundreds of small
 text fields per workspace, at most ~4 collaborators, low typing frequency** — and
 that shape inverts the tradeoff. A record view showing 30 fields would need 30
 sockets and 30 DO wakes just to render, and per-document isolation defends against
@@ -728,3 +729,420 @@ demonstrably falls short:
    composes cleanly alongside tiers 1–2 — a second DO class and a `/doc/<docId>`
    route — and nothing in the workspace DO changes. Do not build it on
    speculation.
+
+## 15. Session control (designed 2026-07-23, not implemented)
+
+Membership-gated apps keep identity, roles, and entitlements in an external
+authority (their app database), and under the one-authority-per-fact model that
+data is never mirrored into the workspace: everything a mutator needs from
+outside the workspace (identity, role, entitlement) is looked up once in
+`authorize` and
+stamped onto the connection — so the connection's auth state needs a lifecycle:
+a way to carry it to mutators, a way to revoke it (membership removal must stop
+*reads*, not just writes), and a way to refresh it (billing changed → reconnect
+re-runs `authorize`). Designed top-down from what the app writes.
+
+### 15.1 What the app writes
+
+```ts
+// worker — the authorize hook grows a structured verdict (boolean | Response
+// still accepted, unchanged semantics):
+createSyncFetch<Env>({
+  namespace: (env) => env.WORKSPACE,
+  authorize: async (request, { workspaceId, clientId, env }) => {
+    const session = await verifyAuth(request, env)
+    if (!session) return { ok: false, reason: 'unauthenticated' }
+    const member = await getProjectMember(env.DB, workspaceId, session.userId)
+    if (!member) {
+      const exists = await projectExists(env.DB, workspaceId)
+      return { ok: false, reason: exists ? 'not-a-member' : 'project-deleted' }
+    }
+    return {
+      ok: true,
+      principal: session.userId,
+      context: { role: member.role, writeAllowed: await entitled(env.DB, workspaceId) },
+    }
+  },
+})
+
+// shared — mutators read the stamps synchronously:
+const mutators = defineMutators(schema, {
+  'study.delete': {
+    args: z.object({ id: z.string() }),
+    apply(tx, { id }, ctx) {
+      if (ctx.authoritative && !ctx.auth?.writeAllowed)
+        throw new AppError('ReadOnly', 'subscription lapsed')
+      tx.del('studies', id)
+    },
+  },
+}, { authContext: z.object({ role: z.enum(['owner', 'member']), writeAllowed: z.boolean() }) })
+
+// worker (commands/webhooks) — revoke or refresh live sessions:
+import { workspaceAdmin } from '@cf-sync/server'
+const ws = workspaceAdmin(env.WORKSPACE, projectId)
+await ws.disconnect({ principal: userId, mode: 'kick', reason: 'membership-revoked' })
+await ws.disconnect({ mode: 'refresh' }) // e.g. subscription changed: everyone re-authorizes
+
+// client — distinguishable rejection surfaces:
+new SyncClient({
+  ...,
+  onFatal: (err) => {
+    if (err.reason === 'membership-revoked') return leaveProject()
+    if (err.reason === 'project-deleted') return cleanupAndRedirect()
+    location.reload()
+  },
+})
+```
+
+### 15.2 Verdicts and rejection delivery
+
+`authorize` may return `boolean | Response` (unchanged) or an `AuthVerdict`:
+`{ok: true, principal?: string, context?: unknown}` /
+`{ok: false, code?: number, reason?: string}`.
+
+The delivery problem: a browser WebSocket client cannot observe the HTTP status
+of a failed upgrade — a 403 looks identical to a network error, which is why
+collaborative apps conventionally accept-then-close with a policy code + reason
+instead. The engine adopts the same trick, but in the **worker router**: on a
+structured rejection,
+`createSyncFetch` completes the upgrade with a local `WebSocketPair` and
+immediately closes it with `(code, reason)` — the client gets a real close
+event, and the DO never wakes. A bare `false` keeps returning HTTP 403
+(back-compat, and correct for non-browser callers).
+
+Close-code space (constants exported from `@cf-sync/protocol`):
+
+- `[4400, 4499]` — **permanent**: the client stops reconnecting and calls
+  `onFatal` with `{code, reason}` attached to the error. Existing: 4400
+  VersionNotSupported. New: 4403 default rejection/kick.
+- `4300` — **refresh**: the client reconnects immediately (fresh `authorize`
+  run, fresh stamps). Not fatal, not backoff — this is the entitlement/role
+  freshness mechanism, expected during normal operation.
+
+### 15.3 Carrying the verdict to the DO
+
+The router serializes `{principal, context}` into an internal header
+(`x-cf-sync-auth`) on the forwarded request, exactly like `WORKSPACE_HEADER` —
+and strips any inbound value of that header first, so it cannot be spoofed from
+outside. The DO parses it at upgrade and stores both in the socket attachment
+beside `clientId`/`ready`, so they survive hibernation. Attachments cap at 2KB
+serialized: the docs state the budget and the DO fails the upgrade loudly if
+the auth payload doesn't fit, rather than truncating. The trust model is
+unchanged: the DO believes whatever the router says (do.ts already requires an
+authorize hook in front of it).
+
+### 15.4 MutatorContext grows three fields
+
+```ts
+interface MutatorContext<A = unknown> {
+  clientId: string
+  principal?: string   // from the verdict; undefined when no authorize hook set it
+  auth?: A             // the verdict's context, validated against authContext
+  authoritative: boolean // true on the server, false in optimistic client runs
+}
+```
+
+- **Typing**: the optional `authContext` standard schema is declared as a third
+  argument to `defineMutators` — mutators are its consumer, so it lives with
+  them — and `defineApp` picks it up from the registry. `ctx.auth` infers from
+  it; without one it stays `unknown`.
+- **Validation**: the DO validates the verdict's `context` against
+  `authContext` at upgrade time, so drift between the app's authorize hook and
+  its mutators fails at connect, not mid-mutation.
+- **Optimistic runs**: mutators also run client-side, where no server verdict
+  exists. `ctx.authoritative` is the honest signal — permission checks written
+  as `if (ctx.authoritative && !allowed) throw` enforce on the server and let
+  the optimistic apply proceed (a rejected mutation rolls back through the
+  normal permanent-error path, which is already the model for any server-only
+  failure). Apps that want fail-fast UX can pass `authContext` to `SyncClient`
+  options and check it without the `authoritative` guard; the server remains
+  authoritative either way.
+
+### 15.5 The `disconnect` op and `workspaceAdmin`
+
+New admin op beside stats/export/import/reset:
+`POST /admin/<workspaceId>/disconnect` with body
+`{principal?: string, clientId?: string, mode?: 'kick' | 'refresh', code?: number, reason?: string}` —
+no selector means all sockets. `kick` closes with 4403 (or the given code) and
+the reason; `refresh` closes with 4300. The DO walks `getWebSockets()`,
+matching on attachment principal/clientId — synchronous, no awaits (invariant
+§6.3 applies to this handler like any other).
+
+`workspaceAdmin(namespace, workspaceId)` is a thin typed helper over
+`stub.fetch` for same-worker callers (app command handlers, billing webhooks) so
+server code doesn't hand-build admin HTTP requests against its own routes; it
+exposes the existing ops too (`stats()`, `export()`, `import(body)`,
+`reset()`, `disconnect(opts)`). `createAdminFetch` gains the op for external
+callers; its `authorize` receives `op: 'disconnect'` like any other.
+
+### 15.6 Tests that lock this
+
+Kick closes only matching sockets and the client goes fatal with the reason;
+refresh triggers a reconnect that re-runs authorize (assert new stamps
+observable via a mutator); attachment auth survives `state.abort()` eviction;
+oversized auth context fails the upgrade; spoofed `x-cf-sync-auth` from outside
+is stripped; a kicked client's queued push never lands (close beats push).
+
+## 16. Presence (designed 2026-07-23, not implemented)
+
+Ephemeral peer state on the existing socket: who's here, what they're doing.
+The §14 Tier 1 mitigation ("X is editing this field") and typical
+collaborative-review UIs (live cursors, per-field presence, online avatars)
+both need it. The
+library owns transport and lifecycle; the payload is opaque app data.
+
+### 16.1 What the app writes
+
+```ts
+// shared — presence payload schema is part of the app definition:
+const app = defineApp({
+  version: 3,
+  schema,
+  mutators,
+  presence: z.object({
+    user: z.object({ userId: z.string(), name: z.string(), image: z.string().optional() }),
+    cursor: z.object({ x: z.number(), y: z.number() }).optional(),
+    editingField: z.string().optional(),
+  }),
+})
+
+// client — set/clear own state; the library re-announces it on reconnect:
+client.presence.set({ user, editingField: 'q3-notes' })
+client.presence.clear()
+
+// react — peers, self excluded, typed by the app's presence schema:
+const peers = usePresence(client)
+// Array<{ clientId: string, principal?: string, state: PresenceOf<typeof app> }>
+```
+
+Throttling (e.g. a 50ms cursor cadence) stays app-side — the library relays
+what it's given; policy about how often to give it is the app's.
+
+### 16.2 Wire protocol
+
+Three new message types beside hello/push/poke:
+
+- client → server `{type: 'presence', state: <json> | null}` — null clears.
+- server → clients `{type: 'presence', clientId, principal?, state | null}` —
+  the relay. `clientId`/`principal` are stamped by the server from the socket
+  attachment: payload is client-claimed, **identity is server-attested** (a
+  client cannot impersonate another user's presence).
+- server → client `{type: 'presencePeers', peers: [...]}` — full snapshot,
+  sent once right after hello completes so late joiners render peers
+  immediately.
+- server → clients `{type: 'presencePoll'}` — "re-send your state", used after
+  hibernation wake (16.3).
+
+Presence frames are ordinary frames for keepalive/idle accounting and are only
+accepted on `ready` sockets. Payload cap `MAX_PRESENCE_BYTES` (8KB) — oversized
+states are rejected with an error frame, never truncated.
+
+### 16.3 Server: in-memory only, rebuilt by polling
+
+A `Map<clientId, state>` in DO memory; relay handlers are synchronous fan-out
+(invariant §6.3). Nothing is ever persisted — presence never touches SQLite or
+the mutation log. Hibernation drops the map while sockets survive; on wake the
+DO broadcasts `presencePoll` and the map converges in one round-trip as clients
+re-send. Socket close/error removes the entry and broadcasts the null. This
+buys hibernation-compatibility without a single storage write on the 50ms
+cursor path — the reason presence must NOT live in socket attachments
+(`serializeAttachment` is a storage write per update; at cursor frequency that
+would defeat hibernation entirely).
+
+### 16.4 Client: the library owns re-announcement
+
+`presence.set` validates against the app's presence schema (fail fast, same
+philosophy as mutate-time args validation), sends when connected, and stores
+the last state. On every (re)connect that reaches `ready`, and on
+`presencePoll`, the client re-sends that state unprompted — apps never write
+reconnect glue. `presence.peers` is a synchronous snapshot;
+`presence.subscribe` notifies on any change; `usePresence` wraps them with
+`useSyncExternalStore`. Self is excluded from peers (apps render their own
+state from their own source of truth). Peers reset to empty on disconnect —
+stale presence is worse than absent presence.
+
+### 16.5 Non-goals
+
+No persistence, no history, no delivery guarantees (a dropped presence frame
+is repaired by the next one), no server-side throttling in v1 (≤4 collaborators
+per workspace; revisit with evidence), no cross-workspace presence.
+
+### 16.6 Tests that lock this
+
+Relay reaches all ready sockets but not the sender or non-ready sockets;
+snapshot arrives after hello; poll-after-eviction converges (runInDurableObject
++ state.abort, then assert peers rebuilt); close broadcasts the null; oversized
+payload rejected without disconnect; identity stamping ignores any
+clientId/principal a client embeds in its own payload.
+
+## 17. Tier 2 Yjs fields (designed 2026-07-23, not implemented)
+
+The §14 Tier 2 design made concrete: individual text fields that need real
+merging (two people typing in the same prose box at once) get per-field Yjs
+documents hosted inside the workspace DO, on the existing socket. Everything
+else stays rows. Designed top-down from what the app writes.
+
+### 17.1 What the app writes
+
+```ts
+// worker — register the extension on the DO:
+import { yjsFields } from '@cf-sync/yjs/server'
+export const Workspace = createWorkspaceDO(app, {
+  extension: yjsFields({
+    // optional: gate writes on the §15 auth stamps (default: any member writes)
+    authorizeWrite: (auth) => auth?.writeAllowed === true,
+  }),
+})
+
+// browser — attach to the SyncClient, get live docs by field id:
+import { createYjsFields } from '@cf-sync/yjs/client'
+const yfields = createYjsFields(client)
+
+const handle = yfields.getDoc('recon-notes:q3')  // { doc: Y.Doc, whenSynced, release }
+await handle.whenSynced                          // server state applied
+editorBinding(handle.doc.getText('t'), textarea) // any standard Yjs editor binding
+// on unmount:
+handle.release()
+```
+
+The convention connecting rows to fields is the app's: a row stores a fieldId
+string (`recon-notes:q3`), the UI calls `getDoc` with it. Fields are created
+implicitly on first use — no registration, no schema entry; to the engine a
+fieldId is an opaque key. Which fields are Tier 2 is a UI decision, invisible
+to the sync schema.
+
+### 17.2 Packaging: an add-on, core stays yjs-free
+
+New package `@cf-sync/yjs` with `/server` and `/client` entry points and
+**`yjs` as a peer dependency**. Rationale: most apps (and most fields in any
+app) live entirely on Tier 1 — baking yjs into `@cf-sync/server`/`client`
+would tax every app with a dependency it may never use, and `@cf-sync/protocol`
+keeps its no-deps-but-zod rule (the binary frame helpers in 17.3 are
+dependency-free). Peer-dep because the app's editor bindings must share one
+yjs module instance with the sync layer — two copies of yjs in a bundle is a
+known footgun. The alternative (yjs in core) was rejected for exactly the
+standalone-library reason; the seam it plugs into is 17.5.
+
+### 17.3 Wire: a binary lane beside the JSON protocol
+
+All existing protocol messages are JSON text frames. Field traffic is **binary
+frames** — the frame type itself is the mux, no envelope inside the JSON
+protocol and no base64 inflation. Layout (helpers in `@cf-sync/protocol`):
+
+    [u8 msgType][u16 fieldIdLen][fieldId utf8][payload bytes]
+
+Three message types:
+
+- `GET` (client → server): payload = Yjs state vector (empty for a fresh
+  client). Server replies with `STATE`.
+- `STATE` (server → client): payload = the update diff the client is missing
+  (`Y.encodeStateAsUpdate(doc, stateVector)`).
+- `UPDATE` (both directions): one incremental Yjs update. Client → server:
+  persist, then relay. Server → client: apply.
+
+**No subscription tracking.** The server relays every field `UPDATE` to every
+ready socket; clients ignore fields they don't have open. This is the
+load-bearing simplification: per-socket subscription sets would need to
+survive hibernation (attachment space is budgeted for auth, §15.3) or be
+silently lost (dropped relays = divergence). Broadcasting makes wake a
+non-event with zero recovery machinery. Cost: idle tabs receive keystroke-size
+frames — trivial at the target workload (§14: ≤4 collaborators, low typing
+frequency). Revisit trigger: many concurrently-active fields × many clients.
+
+Binary frames are only accepted on `ready` sockets; caps: `MAX_FIELD_UPDATE_BYTES`
+(64KB per update), `MAX_FIELD_BYTES` (1MB materialized per field — a field is a
+note, not a document; breach returns an error frame and refuses the update).
+
+### 17.4 Server: append-and-relay hot path, docs only on demand
+
+Storage, two tables beside the engine's own:
+
+    yjs_fields(field_id TEXT PRIMARY KEY, snapshot BLOB, snapshot_seq INTEGER)
+    yjs_updates(field_id TEXT, seq INTEGER, bytes BLOB, PRIMARY KEY(field_id, seq))
+
+The typing path never materializes a document: an inbound `UPDATE` is appended
+to `yjs_updates` and relayed, synchronously — persist-then-broadcast, so no
+client ever sees state the server hasn't durably stored (the same ordering rule
+as poke-after-commit). Y.Docs are only built for `GET` (diff needs a doc) and
+compaction, loaded snapshot-plus-tail behind a small LRU (~8 docs). Corrupt
+update rows are skipped-and-logged on load (the client that produced them
+re-converges via its next `GET`); corrupt snapshots throw — fail loudly, never
+guess. Compaction rides the existing alarm: any field with more than ~200
+pending updates gets materialized, re-encoded as one snapshot at
+`snapshot_seq`, tail deleted. Fields are capped (17.3) so snapshots never
+approach SQLite's 2MB row limit — no chunking machinery.
+
+CRDT bytes never touch the rows table, the mutation log, or pokes (§1's
+non-goal stands). Writes are gated by the extension's `authorizeWrite`
+predicate over the §15 auth stamps — same coarse model as everything else:
+membership to read, one app-defined predicate to write.
+
+### 17.5 The extension seam in core
+
+Core (`@cf-sync/server`) gains one config slot and a types-only interface —
+no yjs import anywhere in core:
+
+```ts
+interface EngineExtension {
+  init(ctx: { sql: SqlStorage; broadcast(bytes): void; send(ws, bytes): void }): void
+  onBinaryMessage(ws, bytes, ctx: { clientId; principal?; auth?; ready }): void
+  onAlarm?(): void
+  onExport?(): unknown           // merged into admin export under "extension"
+  onImport?(data: unknown): void // called by admin import
+  onReset?(): void
+  onStats?(): Record<string, number>
+}
+```
+
+One slot (`extension`), not an array: multiple extensions would need a routing
+byte on every binary frame for a consumer that doesn't exist. Generalize when
+a second extension is real, not before. The client seam is equally small:
+`SyncClient` exposes `sendBinary(bytes)`, `onBinary(cb)`, and ready-transition
+notifications — enough for `createYjsFields` to be plain library code with no
+privileged access.
+
+### 17.6 Client: in-memory docs, re-sync on ready, no persistence
+
+`getDoc(fieldId)` is ref-counted: first call creates the Y.Doc and sends
+`GET`; `release()` drops local state at refcount zero. Local `update` events
+(non-remote origin) send immediately when connected, else buffer in memory.
+On every reconnect that reaches ready, the add-on re-sends `GET` with the
+current state vector for every held doc — edits typed during a disconnect
+merge server-side on resume, because that's what Yjs is for.
+
+**Decided: no local persistence of field docs in v1** (resolving the open
+question carried since the §14 revision). Field co-editing is an online
+activity; a reload re-fetches small documents in one round-trip. The engine's
+durable plane (rows, cursor, outbox in the `SyncStore`) is unaffected. The
+escape hatch is composability, not configuration: `handle.doc` is a standard
+Y.Doc, so an app that wants offline field durability attaches y-indexeddb to
+it itself — no library surface needed.
+
+In-text remote cursors (selection ranges inside a field) are a v1 non-goal:
+field-level presence ("X is editing this field") comes from §16 payloads;
+character-level cursors would need Yjs awareness plumbing and no target UI
+requires them.
+
+### 17.7 Admin surface
+
+The extension contributes to the existing ops via 17.5 hooks: export gains a
+`fields` map (fieldId → base64 snapshot, updates compacted at export time),
+import restores it, reset clears both tables, stats reports field count and
+byte totals. This is also the migration seam: seeding a workspace's Tier 2
+fields is just an admin import whose `fields` map was built by encoding fresh
+Y.Docs from source text. Orphaned fields (row deleted, field remains) are an
+explicit v1 punt: cheap to store, visible in stats, cleanable by a future
+admin op — not worth automatic GC coupled to app-side pointer conventions.
+
+### 17.8 Tests that lock this
+
+Persist-then-relay ordering (a relayed update is always readable back);
+`GET` with a stale state vector returns exactly the missing diff; compaction
+round-trips content byte-for-byte (encode → compact → load → same state);
+eviction mid-session (`state.abort`) followed by client `GET` converges,
+including updates typed while disconnected; corrupt update row skipped, doc
+still loads; oversized update and oversized field refused with error frames,
+socket stays open; binary frame before ready rejected; `authorizeWrite: false`
+socket can `GET` but not `UPDATE`; export → reset → import round-trips fields;
+two clients typing concurrently in one field converge to identical state
+(seeded interleaving, the §11 convergence-sim pattern applied to text).
