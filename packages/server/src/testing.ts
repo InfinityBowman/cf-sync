@@ -61,6 +61,14 @@ export interface TestEngineOptions {
   rows?: Record<string, Record<string, Record<string, unknown>>>
   /** The clientId `mutate` runs as (mutators see it via ctx). Default: "test". */
   clientId?: string
+  /** The principal mutators see as `ctx.principal` — what an authorize verdict would stamp. */
+  principal?: string
+  /**
+   * The auth context mutators see as `ctx.auth`. Validated against the app's
+   * `authContext` schema at construction when one is declared (the parsed
+   * output is what mutators read), mirroring the DO's connect-time check.
+   */
+  auth?: unknown
 }
 
 /** The outcome of one authoritative mutation: `error` is the permanent app error, if any. */
@@ -111,11 +119,26 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   readonly #store = new MemoryRowStore()
   readonly #lmids = new Map<string, number>()
   readonly #clientId: string
+  readonly #principal: string | undefined
+  readonly #auth: unknown
   #version = 0
 
   constructor(app: AppDefinition<S, M>, opts: TestEngineOptions = {}) {
     this.#app = app
     this.#clientId = opts.clientId ?? 'test'
+    this.#principal = opts.principal
+    this.#auth = opts.auth
+    if (opts.auth !== undefined && app.authContext) {
+      const result = app.authContext['~standard'].validate(opts.auth)
+      if (result instanceof Promise) {
+        void result.catch(() => {})
+        throw new Error('createTestEngine: async authContext validation is not supported')
+      }
+      if (result.issues) {
+        throw new Error(`createTestEngine: auth fails the app's authContext schema: ${formatIssues(result.issues)}`)
+      }
+      this.#auth = result.value
+    }
     const storedVersion = opts.storedVersion ?? app.version
 
     if (storedVersion === app.version) {
@@ -167,7 +190,12 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (!mutator) {
       appError = { code: 'UnknownMutator', message: `no mutator named "${name}"` }
     } else {
-      const ctx: MutatorContext = { clientId }
+      const ctx: MutatorContext = {
+        clientId,
+        principal: this.#principal,
+        auth: this.#auth,
+        authoritative: true, // the test engine is the server's seat
+      }
       const writes = new WriteSet(this.#store, this.#app.schema)
       try {
         let args: unknown = rest[0]

@@ -737,7 +737,7 @@ demonstrably falls short:
    route — and nothing in the workspace DO changes. Do not build it on
    speculation.
 
-## 15. Session control (designed 2026-07-23, not implemented)
+## 15. Session control (implemented 2026-07-23)
 
 Membership-gated apps keep identity, roles, and entitlements in an external
 authority (their app database), and under the one-authority-per-fact model that
@@ -887,6 +887,20 @@ socket is almost always a half-open zombie the client already abandoned
 frame from the zombie can arrive *after* the fresh socket's traffic and be
 attributed to the same client — the stale-overwrite race that awareness-style
 clocks exist to prevent (§16 leans on this rule instead of clocks).
+
+**Close beats push (implementation note).** A server-initiated close is not
+instantaneous: the runtime keeps delivering inbound frames already in flight
+until the peer acks the close frame. Every DO-initiated close (kick,
+supersede, expiry, version rejection) therefore marks the attachment
+`defunct` before closing, and `webSocketMessage` drops frames from defunct
+sockets. The mark lives in the attachment — one storage write on a rare
+path — so it survives hibernation, and it is deliberately scoped to
+DO-initiated closes only: a frame racing a *client's* own close is
+legitimate traffic and must still land. `readyState` cannot make that
+distinction — workerd flips it to CLOSING as soon as the peer's close frame
+*arrives*, before dispatching the data frames queued ahead of it, so a
+readyState guard silently drops valid mutations (caught by the §11
+convergence simulation).
 
 ### 15.4 MutatorContext grows three fields
 

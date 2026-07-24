@@ -1,5 +1,6 @@
 import type { AnySyncSchema } from './schema'
-import { crudMutators, type AnyMutators, type CrudMutators, type MutatorsFor, type MutatorTx } from './mutators'
+import type { StandardSchemaV1 } from './standard-schema'
+import { AUTH_CONTEXT, crudMutators, type AnyMutators, type CrudMutators, type MutatorsFor, type MutatorTx } from './mutators'
 
 /**
  * Rewrites rows stored under version `to - 1` into the shape expected at
@@ -40,6 +41,13 @@ export interface AppDefinition<
   readonly mutators: M
   /** Ascending by `to`; consecutive versions (each step's `to` is the previous step's `to` + 1). */
   readonly migrations: readonly SchemaMigration[]
+  /**
+   * The `authContext` schema declared with the mutator registry
+   * (`defineMutators`' third argument), lifted here so the server can
+   * validate each authorize verdict's context at connect and the client can
+   * fail-fast-validate its `auth` option (DESIGN.md §15.4).
+   */
+  readonly authContext?: StandardSchemaV1<any, any>
 }
 
 /**
@@ -150,7 +158,12 @@ export function defineApp<S extends AnySyncSchema>(def: {
         `null if the change is additive): migrations: { ..., ${version}: null }`,
     )
   }
-  return { version, schema, mutators, migrations }
+  // The registry carries its authContext schema under a symbol key (survives
+  // the spread above); lift it onto the definition for server and client.
+  const authContext = (mutators as Record<typeof AUTH_CONTEXT, StandardSchemaV1<any, any> | undefined>)[AUTH_CONTEXT]
+  return authContext !== undefined
+    ? { version, schema, mutators, migrations, authContext }
+    : { version, schema, mutators, migrations }
 }
 
 /**

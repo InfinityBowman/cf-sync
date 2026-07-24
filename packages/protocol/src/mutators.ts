@@ -18,9 +18,39 @@ export class AppError extends Error {
   }
 }
 
-export interface MutatorContext {
+export interface MutatorContext<A = unknown> {
   clientId: string
+  /**
+   * The authorize verdict's principal (DESIGN.md §15) — undefined when no
+   * authorize hook stamped one, and always undefined in optimistic client
+   * runs (the client has no server verdict).
+   */
+  principal?: string
+  /**
+   * The verdict's context, validated against the registry's `authContext`
+   * schema at connect. On the client this is the value the app passed as the
+   * SyncClient `auth` option, if any.
+   */
+  auth?: A
+  /**
+   * True on the server's authoritative run, false in optimistic client runs.
+   * Permission checks written as `if (ctx.authoritative && !allowed) throw`
+   * enforce on the server while letting the optimistic apply proceed — a
+   * server rejection rolls back through the normal permanent-error path.
+   */
+  authoritative: boolean
 }
+
+/**
+ * Symbol key under which a registry built by `defineMutators` carries its
+ * `authContext` schema. Lives on the registry object itself (enumerable, so
+ * object spread keeps it) because mutators are the schema's consumer;
+ * `defineApp` lifts it onto the app definition for the server and client.
+ */
+export const AUTH_CONTEXT: unique symbol = Symbol.for('cf-sync.authContext')
+
+/** Extracts the validated auth-context type a mutator registry declares, `unknown` when it declares none. */
+export type AuthContextOf<M> = M extends { [AUTH_CONTEXT]: StandardSchemaV1<any, infer AC> } ? AC : unknown
 
 /**
  * The authoritative view a mutator runs against. Reads see the mutation's own
@@ -87,7 +117,37 @@ export type MutationArgs<Def> = 'args' extends keyof Def
  * The intersection with `D` captures the literal definition types (so arg
  * schemas keep their exact input/output types for `mutate`), while the mapped
  * type contextually types each `apply` from its sibling `args` schema.
+ *
+ * The optional third argument declares the shape of `ctx.auth` — the
+ * connection-time context the app's `authorize` hook stamps (DESIGN.md §15).
+ * Mutators are its consumer, so it is declared with them; `defineApp` picks
+ * it up from the registry, the server validates each verdict's context
+ * against it at connect (drift between authorize and mutators fails the
+ * upgrade with 4401, not mid-mutation), and `ctx.auth` types from it:
+ *
+ * ```ts
+ * const mutators = defineMutators(schema, {
+ *   'study.delete': {
+ *     args: z.object({ id: z.string() }),
+ *     apply(tx, { id }, ctx) {
+ *       if (ctx.authoritative && !ctx.auth?.writeAllowed)
+ *         throw new AppError('ReadOnly', 'subscription lapsed')
+ *       tx.del('studies', id)
+ *     },
+ *   },
+ * }, { authContext: z.object({ role: z.enum(['owner', 'member']), writeAllowed: z.boolean() }) })
+ * ```
  */
+export function defineMutators<S extends AnySyncSchema, A extends Record<string, any>, D, AC>(
+  schema: S,
+  defs: {
+    [K in keyof A]: {
+      args?: StandardSchemaV1<any, A[K]>
+      apply: (tx: MutatorTx<S>, args: A[K], ctx: MutatorContext<AC>) => void
+    }
+  } & D,
+  opts: { authContext: StandardSchemaV1<any, AC> },
+): D & { [AUTH_CONTEXT]: StandardSchemaV1<any, AC> }
 export function defineMutators<S extends AnySyncSchema, A extends Record<string, any>, D>(
   schema: S,
   defs: {
@@ -96,6 +156,16 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
       apply: (tx: MutatorTx<S>, args: A[K], ctx: MutatorContext) => void
     }
   } & D,
+): D
+export function defineMutators<S extends AnySyncSchema, A extends Record<string, any>, D>(
+  schema: S,
+  defs: {
+    [K in keyof A]: {
+      args?: StandardSchemaV1<any, A[K]>
+      apply: (tx: MutatorTx<S>, args: A[K], ctx: MutatorContext<any>) => void
+    }
+  } & D,
+  opts?: { authContext?: StandardSchemaV1<any, any> },
 ): D {
   void schema // participates in inference only; table validation happens in defineSchema
   const names = new Set(Object.keys(defs as AnyMutators))
@@ -118,6 +188,14 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
     if (typeof def.apply !== 'function') {
       throw new Error(`defineMutators: mutator "${name}" has no apply function`)
     }
+  }
+  if (opts?.authContext) {
+    Object.defineProperty(defs, AUTH_CONTEXT, {
+      value: opts.authContext,
+      enumerable: true, // spread must carry it (defineApp spreads registries)
+      configurable: true,
+      writable: true,
+    })
   }
   return defs
 }

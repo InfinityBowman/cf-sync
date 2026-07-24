@@ -1,13 +1,16 @@
 import {
   AppError,
+  CLOSE_REFRESH,
   KEEPALIVE_PING,
   PROTOCOL_VERSION,
   cursorEquals,
   formatIssues,
+  isPermanentCloseCode,
   serverMsgSchema,
   type AnyMutators,
   type AnySyncSchema,
   type AppDefinition,
+  type AuthContextOf,
   type ClientMsg,
   type Cursor,
   type ErrorMsg,
@@ -93,6 +96,24 @@ export class MutationError extends Error {
   ) {
     super(message)
     this.name = 'MutationError'
+  }
+}
+
+/**
+ * What `onFatal` receives when the server permanently rejects this client
+ * (DESIGN.md §15.2). `code` is the WebSocket close code (4400–4499) when the
+ * rejection arrived as a close frame, or the server error code
+ * (`VersionNotSupported`, `Unauthorized`) when it arrived in-band. `reason`
+ * is the close frame's slug (`membership-revoked`, `project-deleted`) —
+ * stable strings apps can branch on.
+ */
+export class SyncFatalError extends Error {
+  constructor(
+    readonly code: number | string,
+    readonly reason: string,
+  ) {
+    super(`sync connection permanently rejected (${code}): ${reason}`)
+    this.name = 'SyncFatalError'
   }
 }
 
@@ -192,6 +213,17 @@ export interface SyncClientOptions<
    */
   app: AppDefinition<S, M>
   /**
+   * This client's own view of its auth context — the same shape the server's
+   * `authorize` hook stamps (typed by the registry's `authContext` schema).
+   * Optimistic mutator runs see it as `ctx.auth` with
+   * `ctx.authoritative: false`, so permission checks written without the
+   * `authoritative` guard fail fast locally instead of surfacing as a server
+   * round-trip rejection. Validated against the app's `authContext` schema at
+   * construction when one is declared. The server's stamps remain
+   * authoritative either way.
+   */
+  auth?: AuthContextOf<M>
+  /**
    * Durable storage for synced rows, the cursor, and the outbox. When set,
    * start() hydrates registered tables from the store (collections show
    * cached data before the socket connects), hello resumes from the
@@ -241,14 +273,27 @@ export interface SyncClientOptions<
   /** Constructor-time convenience; for dynamic subscribers use `subscribeStatus`. */
   onStatusChange?: (status: SyncStatus) => void
   /**
-   * Called when the server permanently rejects this client
-   * (VersionNotSupported, Unauthorized). Default in the browser: reload the
-   * page — the designed recovery for a version mismatch is loading the new
-   * bundle — throttled to once per minute per workspace so a bad deploy
-   * window (e.g. stale web assets) degrades to a slow retry instead of a
-   * reload loop. Pass a handler to customize, or a no-op to disable.
+   * Called when the server permanently rejects this client — an in-band
+   * VersionNotSupported/Unauthorized error, or a close code in the permanent
+   * band [4400, 4499] (an `authorize` rejection or an admin kick, DESIGN.md
+   * §15.2). The error carries the close `{code, reason}`, so apps can branch
+   * on the rejection slug:
+   *
+   * ```ts
+   * onFatal: (err) => {
+   *   if (err.reason === 'membership-revoked') return leaveProject()
+   *   if (err.reason === 'project-deleted') return cleanupAndRedirect()
+   *   location.reload()
+   * }
+   * ```
+   *
+   * Default in the browser: reload the page — the designed recovery for a
+   * version mismatch is loading the new bundle — throttled to once per
+   * minute per workspace so a bad deploy window (e.g. stale web assets)
+   * degrades to a slow retry instead of a reload loop. Pass a handler to
+   * customize, or a no-op to disable.
    */
-  onFatal?: (error: Error) => void
+  onFatal?: (error: SyncFatalError) => void
   /** Progress during large pokes (bootstrap): ops received so far vs. still to come. */
   onSyncProgress?: (progress: { receivedOps: number; remainingOps: number }) => void
 }
@@ -285,6 +330,14 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
 
   #socket: WebSocketLike | null = null
   #status: SyncStatus = 'idle'
+  #auth: unknown
+  /**
+   * Consecutive 4300 (refresh) closes with no intervening ready connection.
+   * Only the first reconnects immediately; a streak means something is
+   * refreshing on every connect (a bug, or a stuck webhook), and pacing the
+   * retries keeps that from becoming a zero-delay authorize storm (§15.2).
+   */
+  #refreshStreak = 0
   #cursor: Cursor | null = null
   #confirmedLmid = 0
   #outbox: OutboxEntry[] = []
@@ -341,6 +394,20 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
       throw new Error('SyncClient: pass either `store` or `persist`, not both')
     }
     this.#opts = opts
+    this.#auth = opts.auth
+    if (opts.auth !== undefined && opts.app.authContext) {
+      // Fail fast on drift between the app's authorize hook shape and what
+      // this client was handed — the same check the server runs at upgrade.
+      const result = opts.app.authContext['~standard'].validate(opts.auth)
+      if (result instanceof Promise) {
+        void result.catch(() => {})
+        throw new Error('SyncClient: async authContext validation is not supported')
+      }
+      if (result.issues) {
+        throw new Error(`SyncClient: auth fails the app's authContext schema: ${formatIssues(result.issues)}`)
+      }
+      this.#auth = result.value
+    }
     this.#clientId = opts.clientId ?? defaultClientId(opts.workspaceId)
     this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, this.#clientId)
     this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId) : undefined)
@@ -570,7 +637,9 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     // confirm poke will carry.
     const writes = new LocalWriteSet(this.schema, this.#appliers)
     try {
-      def.apply(writes.tx, applyArgs, { clientId: this.#clientId })
+      // No server verdict exists here: no principal, and `authoritative:
+      // false` is the honest signal permission checks key on (§15.4).
+      def.apply(writes.tx, applyArgs, { clientId: this.#clientId, auth: this.#auth, authoritative: false })
     } catch (err) {
       if (err instanceof MissingApplierError) {
         this.#warnNoApplier(name, err.tbl)
@@ -710,20 +779,39 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
       this.#lastFrameAt = Date.now()
       this.#onMessage(String(event.data))
     })
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event: { code?: number; reason?: string }) => {
       if (socket !== this.#socket) return
-      this.#onDisconnect()
+      this.#onDisconnect(event?.code, event?.reason)
     })
     socket.addEventListener('error', () => {
       // a close event always follows; nothing to do here
     })
   }
 
-  #onDisconnect(): void {
+  #onDisconnect(code?: number, reason?: string): void {
     this.#socket = null
     this.#poke = null
     this.#awaitingCatchUp = false
     this.#stopHeartbeat()
+    // Close codes are the rejection channel (DESIGN.md §15.2): a browser
+    // cannot see the HTTP status of a failed upgrade, so the server
+    // accept-then-closes with a policy code instead.
+    if (code !== undefined && isPermanentCloseCode(code)) {
+      this.#fatal(new SyncFatalError(code, reason || 'connection rejected'))
+      return
+    }
+    if (code === CLOSE_REFRESH) {
+      this.#refreshStreak++
+      if (this.#refreshStreak === 1) {
+        // Expected during normal operation (entitlement/role change, expired
+        // stamps): reconnect immediately so authorize re-runs and the new
+        // connection carries fresh stamps. Consecutive refreshes with no
+        // ready connection in between fall through to the paced backoff.
+        this.#setStatus('reconnecting')
+        this.#connect()
+        return
+      }
+    }
     this.#scheduleReconnect()
   }
 
@@ -940,6 +1028,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (!this.#syncedThisConnection) {
       this.#syncedThisConnection = true
       this.#attempt = 0
+      this.#refreshStreak = 0 // a ready connection breaks a 4300 streak
       this.#setStatus('synced')
       for (const hooks of this.#tables.values()) hooks.markReady()
       this.#assignPendingIds()
@@ -973,7 +1062,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     switch (msg.code) {
       case 'VersionNotSupported':
       case 'Unauthorized':
-        this.#fatal(new MutationError(msg.code, msg.message ?? msg.code))
+        this.#fatal(new SyncFatalError(msg.code, msg.message ?? msg.code))
         break
       case 'CursorInvalid':
         this.#requestFullResync()
@@ -1102,7 +1191,7 @@ export class SyncClient<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     for (const listener of this.#statusListeners) listener(status)
   }
 
-  #fatal(error: Error): void {
+  #fatal(error: SyncFatalError): void {
     this.#setStatus('fatal')
     this.#stopHeartbeat()
     // markReady so any pending collection.preload() settles instead of hanging.

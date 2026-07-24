@@ -1,6 +1,6 @@
 import type { Cursor, PatchOp } from '@cf-sync/protocol'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { MutationError, SyncClient, type TableWriteOp } from '../src/client'
+import { MutationError, SyncClient, SyncFatalError, type TableWriteOp } from '../src/client'
 import { testApp } from './test-schema'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
@@ -272,7 +272,7 @@ describe('SyncClient', () => {
     const confirmed = client.mutate('sync.put', { tbl: 'todos', id: 't1', data: {} })
     socket.receive({ type: 'error', code: 'VersionNotSupported' })
 
-    await expect(confirmed).rejects.toThrow(MutationError)
+    await expect(confirmed).rejects.toThrow(SyncFatalError)
     expect(client.status).toBe('fatal')
     expect(fatal).not.toBeNull()
     expect(recorder.ready).toBe(true) // markReady even on fatal so preload settles

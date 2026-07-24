@@ -29,20 +29,29 @@ export class TestClient {
   /** The app schema this client claims at hello (rollout tests override it). */
   schemaVersion = 1
   errors: Extract<ServerMsg, { type: 'error' }>[] = []
+  /** The close event, once one arrives (session-control assertions). */
+  closeEvent: { code: number; reason: string } | null = null
 
   #ws!: WebSocket
   #queue: ServerMsg[] = []
   #waiters: Array<(msg: ServerMsg) => void> = []
+  #closeWaiters: Array<(event: { code: number; reason: string }) => void> = []
   #partial: { pokeId: string; baseCursor: Cursor | null; parts: PokePartMsg[] } | null = null
 
   private constructor(
     readonly workspaceId: string,
     readonly clientId: string,
     readonly prefix: string,
+    readonly headers: Record<string, string>,
   ) {}
 
-  static async connect(workspaceId: string, clientId: string, prefix = '/sync'): Promise<TestClient> {
-    const client = new TestClient(workspaceId, clientId, prefix)
+  static async connect(
+    workspaceId: string,
+    clientId: string,
+    prefix = '/sync',
+    headers: Record<string, string> = {},
+  ): Promise<TestClient> {
+    const client = new TestClient(workspaceId, clientId, prefix, headers)
     await client.#open()
     return client
   }
@@ -50,12 +59,13 @@ export class TestClient {
   async #open(): Promise<void> {
     const response = await SELF.fetch(
       `https://test${this.prefix}/${this.workspaceId}?clientId=${encodeURIComponent(this.clientId)}`,
-      { headers: { Upgrade: 'websocket' } },
+      { headers: { Upgrade: 'websocket', ...this.headers } },
     )
     const ws = response.webSocket
     if (!ws) throw new Error(`upgrade failed: ${response.status}`)
     ws.accept()
     this.#ws = ws
+    this.closeEvent = null
     ws.addEventListener('message', (event: MessageEvent) => {
       if (this.#ws !== ws) return // stale socket after a reconnect
       const parsed = serverMsgSchema.safeParse(JSON.parse(String(event.data)))
@@ -65,6 +75,11 @@ export class TestClient {
       const waiter = this.#waiters.shift()
       if (waiter) waiter(msg)
       else this.#queue.push(msg)
+    })
+    ws.addEventListener('close', (event: CloseEvent) => {
+      if (this.#ws !== ws) return
+      this.closeEvent = { code: event.code, reason: event.reason }
+      for (const waiter of this.#closeWaiters.splice(0)) waiter(this.closeEvent)
     })
   }
 
@@ -91,6 +106,21 @@ export class TestClient {
     this.#queue = []
     this.#partial = null
     await this.#open()
+  }
+
+  /** Resolves with the close event (immediately if the socket already closed). */
+  waitClose(timeoutMs = 2_000): Promise<{ code: number; reason: string }> {
+    if (this.closeEvent) return Promise.resolve(this.closeEvent)
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`timed out waiting for close (client ${this.clientId})`)),
+        timeoutMs,
+      )
+      this.#closeWaiters.push((event) => {
+        clearTimeout(timer)
+        resolve(event)
+      })
+    })
   }
 
   next(timeoutMs = 2_000): Promise<ServerMsg> {

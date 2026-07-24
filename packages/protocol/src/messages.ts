@@ -23,6 +23,65 @@ export const MAX_ROW_BYTES = 700_000
 export const KEEPALIVE_PING = '{"type":"ping"}'
 export const KEEPALIVE_PONG = '{"type":"pong"}'
 
+// ---------------------------------------------------------------------------
+// close codes (DESIGN.md §15.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Permanent-rejection band `[4400, 4499]`: the client stops reconnecting and
+ * calls `onFatal` with the close `{code, reason}` attached. Reconnecting
+ * cannot help — the server told this client to go away.
+ */
+export const CLOSE_PERMANENT_MIN = 4400
+export const CLOSE_PERMANENT_MAX = 4499
+/** Protocol or schema version mismatch — the designed recovery is loading the new bundle. */
+export const CLOSE_VERSION_NOT_SUPPORTED = 4400
+/**
+ * The authorize verdict's context failed validation against the app's
+ * `authContext` schema — authorize and mutators shipped disagreeing shapes.
+ * An app configuration bug, surfaced at connect rather than mid-mutation.
+ */
+export const CLOSE_AUTH_CONTEXT_INVALID = 4401
+/** Default structured rejection (`{ok: false}`) and default admin kick. */
+export const CLOSE_UNAUTHORIZED = 4403
+/**
+ * A newer socket with the same clientId took over (DESIGN.md §15.3 supersede
+ * rule). The closed socket is almost always a half-open zombie its client
+ * already abandoned; a live client seeing this has two tabs sharing a
+ * clientId, which the clientId contract forbids.
+ */
+export const CLOSE_SUPERSEDED = 4409
+/**
+ * Refresh: reconnect immediately so the worker re-runs `authorize` and the
+ * connection carries fresh stamps. Not fatal, not backoff — expected during
+ * normal operation (entitlement/role changes, expired stamps).
+ */
+export const CLOSE_REFRESH = 4300
+
+export function isPermanentCloseCode(code: number): boolean {
+  return code >= CLOSE_PERMANENT_MIN && code <= CLOSE_PERMANENT_MAX
+}
+
+/**
+ * WebSocket close frames cap the reason at 123 bytes of UTF-8 (RFC 6455) and
+ * the runtime throws beyond it. Reasons are meant to be short stable slugs;
+ * this trims anything longer on a codepoint boundary so a verbose reason
+ * degrades to a truncated close instead of an exception.
+ */
+export function truncateCloseReason(reason: string): string {
+  const encoder = new TextEncoder()
+  if (encoder.encode(reason).byteLength <= 123) return reason
+  let out = ''
+  let bytes = 0
+  for (const ch of reason) {
+    const n = encoder.encode(ch).byteLength
+    if (bytes + n > 120) break
+    out += ch
+    bytes += n
+  }
+  return `${out}…` // the ellipsis is 3 bytes, keeping the total ≤ 123
+}
+
 export const cursorSchema = z.object({
   backendId: z.string().min(1),
   version: z.number().int().nonnegative(),

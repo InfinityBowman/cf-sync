@@ -1,5 +1,10 @@
 import {
   AppError,
+  CLOSE_AUTH_CONTEXT_INVALID,
+  CLOSE_REFRESH,
+  CLOSE_SUPERSEDED,
+  CLOSE_UNAUTHORIZED,
+  CLOSE_VERSION_NOT_SUPPORTED,
   KEEPALIVE_PING,
   KEEPALIVE_PONG,
   MAX_ID_LENGTH,
@@ -12,6 +17,7 @@ import {
   formatIssues,
   jsonByteSize,
   migrationPath,
+  truncateCloseReason,
   type AnySyncSchema,
   type AppDefinition,
   type Cursor,
@@ -34,6 +40,60 @@ import { loadOrInitMeta, migrate, type Meta } from './storage'
 
 /** Set by the worker routers so the DO can learn its own workspace id. */
 export const WORKSPACE_HEADER = 'x-cf-sync-workspace'
+
+/**
+ * Carries the authorize verdict's stamps from `createSyncFetch` to the DO
+ * (DESIGN.md §15.3). The router strips any inbound value before setting its
+ * own, so it cannot be spoofed from outside; the DO trusts whatever the
+ * router says, exactly like `WORKSPACE_HEADER`.
+ */
+export const AUTH_HEADER = 'x-cf-sync-auth'
+
+/** What the router serializes into `AUTH_HEADER` from an ok-verdict. */
+export interface AuthStamps {
+  principal?: string
+  context?: unknown
+  expiresAt?: number
+}
+
+// Header values must be byte strings; base64 the UTF-8 JSON so principals and
+// contexts with any characters survive the hop.
+export function encodeAuthStamps(stamps: AuthStamps): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(stamps))
+  let bin = ''
+  for (const byte of bytes) bin += String.fromCharCode(byte)
+  return btoa(bin)
+}
+
+export function decodeAuthStamps(value: string): AuthStamps {
+  const bin = atob(value)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes))
+  if (typeof parsed !== 'object' || parsed === null) throw new Error('auth stamps must be an object')
+  return parsed as AuthStamps
+}
+
+/**
+ * Socket attachments cap at 2KB serialized (platform limit). The DO measures
+ * the JSON size of the full attachment — clientId plus auth stamps — and
+ * fails the upgrade loudly when it does not fit, rather than truncating.
+ */
+export const MAX_ATTACHMENT_BYTES = 2048
+
+/**
+ * Accept-then-close (DESIGN.md §15.2): a browser WebSocket cannot observe the
+ * HTTP status of a failed upgrade — a 403 is indistinguishable from a network
+ * error — so rejections complete the upgrade with a local pair and close it
+ * with a policy code + reason the client can act on. The local pair initiates
+ * the close itself, so the DO's close-reciprocation rule does not apply.
+ */
+export function rejectUpgrade(code: number, reason: string): Response {
+  const pair = new WebSocketPair()
+  pair[1].accept()
+  pair[1].close(code, truncateCloseReason(reason))
+  return new Response(null, { status: 101, webSocket: pair[0] })
+}
 
 export interface CompactionConfig {
   /**
@@ -115,7 +175,36 @@ interface Attachment {
   clientId: string
   /** True once hello succeeded; only ready sockets receive broadcasts. */
   ready: boolean
+  /** The authorize verdict's principal (DESIGN.md §15.3). */
+  principal?: string
+  /** The verdict's context, validated against the app's authContext schema at upgrade. */
+  auth?: unknown
+  /**
+   * Epoch ms past which the stamps are no longer trusted (§15.2). Checked at
+   * the two synchronous points that matter: inbound frames (gates writes) and
+   * poke fan-out (gates reads); past-due sockets close with 4300 so the
+   * reconnect re-runs authorize.
+   */
+  expiresAt?: number
+  /**
+   * Set when the DO itself closes the socket (kick, supersede, expiry). A
+   * close is not instantaneous — inbound frames already in flight still fire
+   * webSocketMessage until the peer acks — and close must beat push (§15.6):
+   * frames from a defunct socket are dropped, never processed. Only
+   * DO-initiated closes set this; a frame racing a *client's* own close is
+   * legitimate and still lands.
+   */
+  defunct?: true
 }
+
+const disconnectBodySchema = z.object({
+  principal: z.string().optional(),
+  clientId: z.string().optional(),
+  mode: z.enum(['kick', 'refresh']).default('kick'),
+  /** Kick close code; must stay in the app close-code space. Refresh is always 4300. */
+  code: z.number().int().min(4000).max(4999).optional(),
+  reason: z.string().optional(),
+})
 
 const PING = KEEPALIVE_PING
 const PONG = KEEPALIVE_PONG
@@ -410,11 +499,58 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       if (!clientId || clientId.length > 128) {
         return new Response('missing or invalid clientId', { status: 400 })
       }
+
+      // Auth stamps from the router (DESIGN.md §15.3). Malformed stamps,
+      // context that fails the app's authContext schema, and an attachment
+      // over the 2KB budget all fail the upgrade with a permanent 4401: each
+      // is an app configuration bug (authorize and mutators disagree), so
+      // reconnecting cannot help and backoff would only hide it.
+      const rawAuth = request.headers.get(AUTH_HEADER)
+      let stamps: AuthStamps = {}
+      if (rawAuth !== null) {
+        try {
+          stamps = decodeAuthStamps(rawAuth)
+        } catch {
+          return rejectUpgrade(CLOSE_AUTH_CONTEXT_INVALID, 'malformed auth stamps')
+        }
+      }
+      let auth: unknown = stamps.context
+      if (rawAuth !== null && config.app.authContext) {
+        const result = config.app.authContext['~standard'].validate(stamps.context)
+        if (result instanceof Promise) {
+          void result.catch(() => {})
+          return rejectUpgrade(CLOSE_AUTH_CONTEXT_INVALID, 'async authContext validation is not supported')
+        }
+        if (result.issues) {
+          return rejectUpgrade(CLOSE_AUTH_CONTEXT_INVALID, `auth context: ${formatIssues(result.issues)}`)
+        }
+        auth = result.value
+      }
+      const attachment: Attachment = { clientId, ready: false }
+      if (stamps.principal !== undefined) attachment.principal = stamps.principal
+      if (auth !== undefined) attachment.auth = auth
+      if (stamps.expiresAt !== undefined) attachment.expiresAt = stamps.expiresAt
+      if (jsonByteSize(attachment) > MAX_ATTACHMENT_BYTES) {
+        return rejectUpgrade(
+          CLOSE_AUTH_CONTEXT_INVALID,
+          `auth context exceeds the ${MAX_ATTACHMENT_BYTES}-byte attachment budget`,
+        )
+      }
+
+      // Supersede rule (§15.3): a clientId's newest socket wins. The old one
+      // is almost always a half-open zombie the client already abandoned;
+      // closing it before accepting keeps a late edge-buffered frame from
+      // being attributed to the reconnected client.
+      for (const existing of this.ctx.getWebSockets()) {
+        if ((existing.deserializeAttachment() as Attachment | null)?.clientId === clientId) {
+          this.#closeSocket(existing, CLOSE_SUPERSEDED, 'superseded')
+        }
+      }
+
       const pair = new WebSocketPair()
       const client = pair[0]
       const server = pair[1]
       this.ctx.acceptWebSocket(server)
-      const attachment: Attachment = { clientId, ready: false }
       server.serializeAttachment(attachment)
       return new Response(null, { status: 101, webSocket: client })
     }
@@ -424,6 +560,17 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     // so per-socket frame order is FIFO relative to version advances.
     override async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
       const attachment = ws.deserializeAttachment() as Attachment
+      // Close beats push (§15.6): a DO-initiated close (kick, supersede,
+      // expiry) still delivers in-flight frames until the peer acks — drop
+      // them instead of processing.
+      if (attachment.defunct) return
+      // Expired stamps gate writes (§15.2): close with refresh so the
+      // reconnect re-runs authorize. Keepalive pings never reach here — the
+      // runtime auto-responds without waking the DO.
+      if (attachment.expiresAt !== undefined && Date.now() >= attachment.expiresAt) {
+        this.#closeSocket(ws, CLOSE_REFRESH, 'auth-expired')
+        return
+      }
       try {
         if (typeof raw !== 'string') {
           this.#sendError(ws, 'BadMessage', 'binary frames are not supported')
@@ -575,6 +722,36 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           return json({ backendId: this.#meta.backendId })
         }
 
+        case 'POST disconnect': {
+          // Revoke or refresh live sessions (DESIGN.md §15.5). No selector
+          // means all sockets; given selectors must all match. kick closes
+          // permanently (4403 or the given code), refresh closes with 4300 so
+          // clients reconnect through a fresh authorize run.
+          let parsed
+          try {
+            const text = await request.text()
+            parsed = disconnectBodySchema.safeParse(text.trim() === '' ? {} : JSON.parse(text))
+          } catch {
+            return json({ error: 'invalid JSON body' }, 400)
+          }
+          if (!parsed.success) return json({ error: 'invalid disconnect request', detail: parsed.error.message }, 400)
+          const { principal, clientId, mode, code, reason } = parsed.data
+          const closeCode = mode === 'refresh' ? CLOSE_REFRESH : (code ?? CLOSE_UNAUTHORIZED)
+          const closeReason = truncateCloseReason(reason ?? mode)
+          let disconnected = 0
+          // Synchronous walk (invariant §6.3): the awaits above finished
+          // before any socket state is read.
+          for (const socket of this.ctx.getWebSockets()) {
+            const attachment = socket.deserializeAttachment() as Attachment | null
+            if (!attachment) continue
+            if (principal !== undefined && attachment.principal !== principal) continue
+            if (clientId !== undefined && attachment.clientId !== clientId) continue
+            this.#closeSocket(socket, closeCode, closeReason)
+            disconnected++
+          }
+          return json({ disconnected })
+        }
+
         default:
           return json({ error: `unknown admin operation "${request.method} ${op}"` }, 404)
       }
@@ -617,7 +794,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           'VersionNotSupported',
           `server speaks protocol ${PROTOCOL_VERSION}, schema version ${config.app.version}`,
         )
-        ws.close(4400, 'VersionNotSupported')
+        this.#closeSocket(ws, CLOSE_VERSION_NOT_SUPPORTED, 'VersionNotSupported')
         return
       }
       const lmid = this.#touchClient(attachment.clientId)
@@ -664,7 +841,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           this.#sendError(ws, 'PushInvalid', `expected mutation ${expected}, got ${mutation.id}`)
           break
         }
-        const error = this.#applyMutation(clientId, mutation)
+        const error = this.#applyMutation(attachment, mutation)
         if (error) this.#counters.mutationErrors++
         else this.#counters.mutationsApplied++
         results.push(error ? { id: mutation.id, error } : { id: mutation.id })
@@ -701,9 +878,15 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      * SQLite transaction; permanent errors advance the LMID with no data
      * effects; transient errors throw and roll everything back.
      */
-    #applyMutation(clientId: string, mutation: Mutation): { code: string; message: string } | undefined {
+    #applyMutation(attachment: Attachment, mutation: Mutation): { code: string; message: string } | undefined {
+      const { clientId } = attachment
       const mutator = config.app.mutators[mutation.name]
-      const ctx: MutatorContext = { clientId }
+      const ctx: MutatorContext = {
+        clientId,
+        principal: attachment.principal,
+        auth: attachment.auth,
+        authoritative: true,
+      }
       let appError: { code: string; message: string } | undefined
       let committedVersion: number | null = null
 
@@ -818,9 +1001,10 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     }
 
     #readySockets(): WebSocket[] {
-      return this.ctx
-        .getWebSockets()
-        .filter((socket) => (socket.deserializeAttachment() as Attachment | null)?.ready === true)
+      return this.ctx.getWebSockets().filter((socket) => {
+        const attachment = socket.deserializeAttachment() as Attachment | null
+        return attachment?.ready === true && attachment.defunct !== true
+      })
     }
 
     #sendPoke(
@@ -855,21 +1039,49 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       frames.push(JSON.stringify(end))
 
       this.#counters.pokesSent++
-      this.#counters.framesSent += frames.length * sockets.length
       this.#counters.lastFanout = sockets.length
 
       for (const socket of sockets) {
+        const attachment = socket.deserializeAttachment() as Attachment | null
+        if (attachment?.defunct) continue // already closed by us; nothing to deliver
+        // Reads are gated at the fan-out (§15.2): a passive reader generates
+        // no inbound frames, so this is the one place its expiry can bite.
+        // Close instead of sending; the reconnect re-runs authorize.
+        if (attachment?.expiresAt !== undefined && Date.now() >= attachment.expiresAt) {
+          this.#closeSocket(socket, CLOSE_REFRESH, 'auth-expired')
+          continue
+        }
         try {
           for (const frame of frames) socket.send(frame)
+          this.#counters.framesSent += frames.length
         } catch {
           // Slow/broken socket: dropping it is always safe — the client
           // catches up by cursor on reconnect (DESIGN.md §8).
-          try {
-            socket.close(1011, 'send failed')
-          } catch {
-            // already closed
-          }
+          this.#closeSocket(socket, 1011, 'send failed')
         }
+      }
+    }
+
+    /**
+     * Every DO-initiated close funnels through here: the defunct mark commits
+     * before the close so any frame already in flight from this socket is
+     * dropped by webSocketMessage — close beats push (§15.6). One
+     * serializeAttachment write per close; closes are rare, so this never
+     * lands on a hot path.
+     */
+    #closeSocket(ws: WebSocket, code: number, reason: string): void {
+      try {
+        const attachment = ws.deserializeAttachment() as Attachment | null
+        if (attachment && attachment.defunct !== true) {
+          ws.serializeAttachment({ ...attachment, defunct: true } satisfies Attachment)
+        }
+      } catch {
+        // unreadable attachment — still close below
+      }
+      try {
+        ws.close(code, truncateCloseReason(reason))
+      } catch {
+        // already closed
       }
     }
 

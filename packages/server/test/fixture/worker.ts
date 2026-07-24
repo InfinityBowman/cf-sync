@@ -32,6 +32,18 @@ export const testSchema = defineSchema({
 
 export const testMutators = defineMutators(testSchema, {
   ...crudMutators(testSchema),
+  // Writes the mutator context into a row so tests can assert what the
+  // server stamped (§15.4).
+  'ctx.echo': {
+    args: z.object({ id: z.string() }),
+    apply: (tx, { id }, ctx) => {
+      tx.put('todos', id, {
+        principal: ctx.principal ?? null,
+        auth: ctx.auth ?? null,
+        authoritative: ctx.authoritative,
+      })
+    },
+  },
   // Intent-based mutator with validated args: server-side read-modify-write.
   'counter.increment': {
     args: z.object({ id: z.string(), by: z.number() }),
@@ -61,6 +73,10 @@ export const testMutators = defineMutators(testSchema, {
       throw new AppError('Nope', 'wrote then failed')
     },
   },
+}, {
+  // Verdicts arriving through the '/auth' route validate against this at
+  // upgrade (§15.4); '/sync' has no authorize hook, so it stamps nothing.
+  authContext: z.object({ role: z.string(), writeAllowed: z.boolean() }),
 })
 
 export const testApp = defineApp({
@@ -96,6 +112,29 @@ export const rolloutConfig: WorkspaceEngineConfig = { app: rolloutApp }
 export const RolloutDO = createWorkspaceDO(rolloutConfig)
 
 const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE })
+
+// Session-control drills (§15): the verdict is driven entirely by request
+// headers so each test scripts its own authorize outcome.
+const verdictHandler = createSyncFetch<Env>({
+  namespace: (env) => env.WORKSPACE,
+  pathPrefix: '/auth',
+  authorize: (request) => {
+    const reject = request.headers.get('x-test-reject')
+    if (reject !== null) {
+      const [code, reason] = reject.split(':', 2)
+      return { ok: false, code: code ? Number(code) : undefined, reason: reason || undefined }
+    }
+    if (request.headers.get('x-test-deny') !== null) return false
+    const context = request.headers.get('x-test-auth')
+    const expiresInMs = request.headers.get('x-test-expires-in')
+    return {
+      ok: true,
+      principal: request.headers.get('x-test-principal') ?? undefined,
+      context: context !== null ? (JSON.parse(context) as unknown) : undefined,
+      expiresAt: expiresInMs !== null ? Date.now() + Number(expiresInMs) : undefined,
+    }
+  },
+})
 const compactHandler = createSyncFetch<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact' })
 const rolloutHandler = createSyncFetch<Env>({ namespace: (env) => env.ROLLOUT, pathPrefix: '/rollout' })
 const adminHandler = createAdminFetch<Env>({
@@ -107,6 +146,7 @@ export default {
   fetch: (request: Request, env: Env) => {
     const { pathname } = new URL(request.url)
     if (pathname.startsWith('/admin/')) return adminHandler(request, env)
+    if (pathname.startsWith('/auth/')) return verdictHandler(request, env)
     if (pathname.startsWith('/compact/')) return compactHandler(request, env)
     if (pathname.startsWith('/rollout/')) return rolloutHandler(request, env)
     return mainHandler(request, env)
