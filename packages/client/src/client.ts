@@ -30,9 +30,14 @@ import type { PersistedOutboxEntry, PersistedRowOp, PersistedState, SyncStore } 
 
 export type SyncStatus = 'idle' | 'connecting' | 'syncing' | 'synced' | 'reconnecting' | 'fatal'
 
-/** Minimal socket surface so tests and non-browser runtimes can inject one. */
+/**
+ * Minimal socket surface so tests and non-browser runtimes can inject one.
+ * A custom `createSocket` that wraps a real browser WebSocket must set
+ * `binaryType = 'arraybuffer'` for the binary lane (DESIGN.md §17.3) — the
+ * default factory does.
+ */
 export interface WebSocketLike {
-  send(data: string): void
+  send(data: string | ArrayBufferLike | ArrayBufferView): void
   close(code?: number, reason?: string): void
   addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: any) => void): void
 }
@@ -394,6 +399,8 @@ export class SyncClient<
   readonly #warnedTables = new Set<string>()
   readonly #warnedNoApplier = new Set<string>()
   readonly #statusListeners = new Set<(status: SyncStatus) => void>()
+  readonly #binaryListeners = new Set<(bytes: Uint8Array) => void>()
+  #warnedBinaryType = false
   #intentRunner: IntentTransactionRunner | null = null
 
   #socket: WebSocketLike | null = null
@@ -598,6 +605,34 @@ export class SyncClient<
   registerApplier(tbl: string, applier: TableApplier, runner: IntentTransactionRunner): void {
     this.#appliers.set(tbl, applier)
     this.#intentRunner = runner
+  }
+
+  /**
+   * Sends one binary-lane frame (DESIGN.md §17.5) — the client half of the
+   * extension seam, used by add-ons like `createYjsFields`. Fire-and-forget
+   * like every frame on this socket: a broken socket surfaces through the
+   * close event, and binary-lane consumers re-sync on the next ready
+   * transition (`subscribeStatus` reaching 'synced'), so nothing is lost.
+   * The server only accepts binary frames once the connection is ready.
+   */
+  sendBinary(bytes: Uint8Array): void {
+    try {
+      this.#socket?.send(bytes)
+    } catch {
+      // socket is broken; the close event drives reconnection
+    }
+  }
+
+  /**
+   * Subscribes to inbound binary-lane frames; returns an unsubscribe
+   * function. Frames are delivered as-received — framing and dispatch belong
+   * to the add-on (see `@cf-sync/protocol`'s field-frame helpers).
+   */
+  onBinary(listener: (bytes: Uint8Array) => void): () => void {
+    this.#binaryListeners.add(listener)
+    return () => {
+      this.#binaryListeners.delete(listener)
+    }
   }
 
   /** Begins hydration and connection. Called from the constructor unless `autoStart: false`; idempotent. */
@@ -855,7 +890,14 @@ export class SyncClient<
 
   #connect(): void {
     if (this.#stopped) return
-    const createSocket = this.#opts.createSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike)
+    const createSocket =
+      this.#opts.createSocket ??
+      ((url: string) => {
+        const ws = new WebSocket(url)
+        // Binary lane frames (§17) must arrive as ArrayBuffer, not Blob.
+        ws.binaryType = 'arraybuffer'
+        return ws as unknown as WebSocketLike
+      })
     let socket: WebSocketLike
     try {
       socket = createSocket(this.#url)
@@ -880,10 +922,11 @@ export class SyncClient<
     })
     socket.addEventListener('message', (event: { data: unknown }) => {
       if (socket !== this.#socket) return
-      // Any frame counts as liveness — including pongs and frames the
-      // message schema does not recognize.
+      // Any frame counts as liveness — including pongs, binary frames, and
+      // frames the message schema does not recognize.
       this.#lastFrameAt = Date.now()
-      this.#onMessage(String(event.data))
+      if (typeof event.data === 'string') this.#onMessage(event.data)
+      else this.#onBinaryFrame(event.data)
     })
     socket.addEventListener('close', (event: { code?: number; reason?: string }) => {
       if (socket !== this.#socket) return
@@ -1011,6 +1054,27 @@ export class SyncClient<
   // -------------------------------------------------------------------------
   // inbound
   // -------------------------------------------------------------------------
+
+  /** Fans a binary-lane frame out to `onBinary` subscribers (DESIGN.md §17.5). */
+  #onBinaryFrame(data: unknown): void {
+    let bytes: Uint8Array
+    if (data instanceof ArrayBuffer) {
+      bytes = new Uint8Array(data)
+    } else if (ArrayBuffer.isView(data)) {
+      bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+    } else {
+      // A Blob means a custom createSocket without binaryType='arraybuffer';
+      // async Blob reads would break frame ordering, so surface the fix.
+      if (!this.#warnedBinaryType) {
+        this.#warnedBinaryType = true
+        console.warn(
+          "[cf-sync] dropped a binary frame that was not an ArrayBuffer — set binaryType = 'arraybuffer' on the socket your createSocket returns",
+        )
+      }
+      return
+    }
+    for (const listener of this.#binaryListeners) listener(bytes)
+  }
 
   #onMessage(raw: string): void {
     let json: unknown

@@ -76,6 +76,9 @@ importers:
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
+      '@cf-sync/yjs':
+        specifier: workspace:*
+        version: link:../yjs
       '@tanstack/db':
         specifier: ^0.6.16
         version: 0.6.16(typescript@5.9.3)
@@ -100,6 +103,9 @@ importers:
       vitest:
         specifier: ^4.1.10
         version: 4.1.10(vite@7.3.6)
+      yjs:
+        specifier: ^13.6.31
+        version: 13.6.31
       zod:
         specifier: ^4.0.0
         version: 4.4.3
@@ -137,6 +143,37 @@ importers:
       wrangler:
         specifier: ^4.0.0
         version: 4.112.0(@cloudflare/workers-types@5.20260718.1)
+      zod:
+        specifier: ^4.0.0
+        version: 4.4.3
+
+  packages/yjs:
+    dependencies:
+      '@cf-sync/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      '@cf-sync/server':
+        specifier: workspace:*
+        version: link:../server
+      '@cloudflare/vitest-pool-workers':
+        specifier: ^0.18.6
+        version: 0.18.6(@cloudflare/workers-types@5.20260718.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10(vite@7.3.6))
+      '@cloudflare/workers-types':
+        specifier: ^5.20260718.1
+        version: 5.20260718.1
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(vite@7.3.6)
+      wrangler:
+        specifier: ^4.0.0
+        version: 4.112.0(@cloudflare/workers-types@5.20260718.1)
+      yjs:
+        specifier: ^13.6.0
+        version: 13.6.31
       zod:
         specifier: ^4.0.0
         version: 4.4.3
@@ -1349,6 +1386,9 @@ packages:
     resolution: {integrity: sha512-zymm5+u+sCsSWyD9qNaejV3DFvhCKclKdizYaJUuHA83RLjb7nSuGnddCHGv0hk+KY7BMAlsWeK4Ueg6EV6XQg==}
     engines: {node: '>=8'}
 
+  isomorphic.js@0.2.5:
+    resolution: {integrity: sha512-PIeMbHqMt4DnUP3MA/Flc0HElYjMXArsw1qwJZcm9sqR8mq3l8NYizFMty0pWwE/tzIGH3EKK5+jes5mAr85yw==}
+
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
 
@@ -1368,6 +1408,11 @@ packages:
 
   layerr@3.0.0:
     resolution: {integrity: sha512-tv754Ki2dXpPVApOrjTyRo4/QegVb9eVFq4mjqp4+NM5NaX7syQvN5BBNfV/ZpAHCEHV24XdUVrBAoka4jt3pA==}
+
+  lib0@0.2.117:
+    resolution: {integrity: sha512-DeXj9X5xDCjgKLU/7RR+/HQEVzuuEUiwldwOGsHK/sfAfELGWEyTcf0x+uOvCvK3O2zPmZePXWL85vtia6GyZw==}
+    engines: {node: '>=16'}
+    hasBin: true
 
   lru-cache@11.5.2:
     resolution: {integrity: sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g==}
@@ -1813,6 +1858,10 @@ packages:
   yargs@16.2.2:
     resolution: {integrity: sha512-Nt9ZJjXTv5R8MHbqby/wXQ6Gi0Bb3TcYZkR1bzuL4yB2OxWPkXknz513gEF0GoA6tn00UpbPvERW8rzCuWCA6w==}
     engines: {node: '>=10'}
+
+  yjs@13.6.31:
+    resolution: {integrity: sha512-Eq+5BRfbeGyqGVrTJL3bEcr8gKkxPuyuoHmAwpk52fDb8kOVMrfVSTRPd6yiGgX5Fskb96qCRjzjbRjrL4YEnw==}
+    engines: {node: '>=16.0.0', npm: '>=8.0.0'}
 
   youch-core@0.3.3:
     resolution: {integrity: sha512-ho7XuGjLaJ2hWHoK8yFnsUGy2Y5uDpqSTq1FkHLK4/oqKtyUU1AFbOOxY4IpC9f0fTLjwYbslUz0Po5BpD1wrA==}
@@ -2765,6 +2814,8 @@ snapshots:
 
   is-fullwidth-code-point@3.0.0: {}
 
+  isomorphic.js@0.2.5: {}
+
   js-tokens@4.0.0: {}
 
   jsesc@3.1.0: {}
@@ -2774,6 +2825,10 @@ snapshots:
   kleur@4.1.5: {}
 
   layerr@3.0.0: {}
+
+  lib0@0.2.117:
+    dependencies:
+      isomorphic.js: 0.2.5
 
   lru-cache@11.5.2: {}
 
@@ -3198,6 +3253,10 @@ snapshots:
       string-width: 4.2.3
       y18n: 5.0.8
       yargs-parser: 20.2.9
+
+  yjs@13.6.31:
+    dependencies:
+      lib0: 0.2.117
 
   youch-core@0.3.3:
     dependencies:

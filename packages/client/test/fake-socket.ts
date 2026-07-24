@@ -6,6 +6,7 @@ type Listener = (event: any) => void
 /** In-memory socket for driving the SyncClient from a scripted "server". */
 export class FakeSocket implements WebSocketLike {
   sent: ClientMsg[] = []
+  sentBinary: Uint8Array[] = []
   closed = false
   #listeners = new Map<string, Listener[]>()
 
@@ -15,9 +16,15 @@ export class FakeSocket implements WebSocketLike {
     this.#listeners.set(type, list)
   }
 
-  send(data: string): void {
+  send(data: string | ArrayBufferLike | ArrayBufferView): void {
     if (this.closed) throw new Error('socket closed')
-    this.sent.push(JSON.parse(data) as ClientMsg)
+    if (typeof data === 'string') {
+      this.sent.push(JSON.parse(data) as ClientMsg)
+    } else if (ArrayBuffer.isView(data)) {
+      this.sentBinary.push(new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)))
+    } else {
+      this.sentBinary.push(new Uint8Array(data.slice(0)))
+    }
   }
 
   close(): void {
@@ -33,6 +40,16 @@ export class FakeSocket implements WebSocketLike {
 
   receive(msg: ServerMsg): void {
     this.#emit('message', { data: JSON.stringify(msg) })
+  }
+
+  /** Delivers a binary-lane frame the way a real socket would (ArrayBuffer). */
+  receiveBinary(bytes: Uint8Array): void {
+    this.#emit('message', { data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) })
+  }
+
+  /** Delivers an arbitrary message payload (malformed-data drills). */
+  receiveRaw(data: unknown): void {
+    this.#emit('message', { data })
   }
 
   dropConnection(): void {

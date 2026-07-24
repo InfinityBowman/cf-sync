@@ -1,5 +1,6 @@
 export * from './messages'
 export * from './chunk'
+export * from './field-frames'
 export * from './standard-schema'
 export * from './schema'
 export * from './mutators'

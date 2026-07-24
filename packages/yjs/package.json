@@ -1,11 +1,11 @@
 {
-  "name": "@cf-sync/client",
+  "name": "@cf-sync/yjs",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./react": "./src/react.ts",
+    "./server": "./src/server.ts",
+    "./client": "./src/client.ts",
     "./package.json": "./package.json"
   },
   "files": [
@@ -13,13 +13,13 @@
   ],
   "publishConfig": {
     "exports": {
-      ".": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
+      "./server": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
       },
-      "./react": {
-        "types": "./dist/react.d.ts",
-        "default": "./dist/react.js"
+      "./client": {
+        "types": "./dist/client.d.ts",
+        "default": "./dist/client.js"
       },
       "./package.json": "./package.json"
     }
@@ -33,25 +33,22 @@
     "@cf-sync/protocol": "workspace:*"
   },
   "peerDependencies": {
-    "@tanstack/db": "^0.6.16",
-    "react": ">=18"
+    "@cf-sync/server": "workspace:*",
+    "yjs": "^13.6.0"
   },
   "peerDependenciesMeta": {
-    "react": {
+    "@cf-sync/server": {
       "optional": true
     }
   },
   "devDependencies": {
-    "@cf-sync/yjs": "workspace:*",
-    "@tanstack/db": "^0.6.16",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.2.3",
-    "fake-indexeddb": "^6.2.5",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "@cf-sync/server": "workspace:*",
+    "@cloudflare/vitest-pool-workers": "^0.18.6",
+    "@cloudflare/workers-types": "^5.20260718.1",
     "typescript": "^5.6.0",
     "vitest": "^4.1.10",
-    "yjs": "^13.6.31",
+    "wrangler": "^4.0.0",
+    "yjs": "^13.6.0",
     "zod": "^4.0.0"
   }
 }

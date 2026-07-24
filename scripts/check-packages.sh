@@ -11,7 +11,7 @@ rm -rf "$out"
 mkdir -p "$out"
 trap 'rm -rf "$out"' EXIT
 
-for pkg in protocol client server; do
+for pkg in protocol client server yjs; do
   dir="$root/packages/$pkg"
   echo "── @cf-sync/$pkg ─────────────────────────────────────"
   (cd "$dir" && pnpm pack --out "$out/$pkg.tgz" > /dev/null)

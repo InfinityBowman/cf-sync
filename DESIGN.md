@@ -1170,7 +1170,7 @@ Both shapes are locked: eviction → constructor poll → one-round-trip
 convergence, and crash → sockets die → convergence purely from
 re-announcement on reconnect.
 
-## 17. Tier 2 Yjs fields (designed 2026-07-23, not implemented)
+## 17. Tier 2 Yjs fields (implemented 2026-07-24)
 
 The §14 Tier 2 design made concrete: individual text fields that need real
 merging (two people typing in the same prose box at once) get per-field Yjs
@@ -1194,9 +1194,10 @@ export const Workspace = createWorkspaceDO({
 import { createYjsFields } from '@cf-sync/yjs/client'
 const yfields = createYjsFields(client)
 
-const handle = yfields.getDoc('recon-notes:q3')  // { doc, text, whenSynced, release }
+const handle = yfields.getDoc('recon-notes:q3')  // { doc, text, canWrite, whenSynced, subscribe, release }
 await handle.whenSynced                          // server state applied
 editorBinding(handle.text, textarea)             // handle.text is doc.getText('t')
+handle.subscribe(() => setReadOnly(!handle.canWrite)) // reader, or field went read-only (17.6)
 // on unmount:
 handle.release()
 ```
@@ -1237,14 +1238,18 @@ protocol and no base64 inflation. Layout (helpers in `@cf-sync/protocol`):
 
     [u8 msgType][u16 fieldIdLen][fieldId utf8][payload bytes]
 
-Three message types:
+Four message types:
 
 - `GET` (client → server): payload = Yjs state vector (empty for a fresh
   client). Server replies with `STATE`.
-- `STATE` (server → client): payload = `[u16 svLen][server state vector][diff]`
-  — the update diff the client is missing
+- `STATE` (server → client): payload = `[u8 flags][u16 svLen][server state
+  vector][diff]` — the update diff the client is missing
   (`Y.encodeStateAsUpdate(doc, clientSV)`) plus the server's own state vector.
-  On receipt the client applies the diff, then computes
+  `flags` bit 0 is **writable**: a false bit (a reader per `authorizeWrite`, or
+  a frozen field, 17.4) renders the binding read-only from the first paint, so a
+  client that cannot write never optimistically diverges — the apply-then-reject
+  path is designed out, not handled. On receipt the client applies the diff,
+  then computes
   `Y.encodeStateAsUpdate(doc, serverSV)` and, when non-empty, sends it back as
   an ordinary `UPDATE`. Sync is **bidirectional** (y-protocols' step-1/step-2
   in both directions) — pull-only would leave permanent gaps: an `UPDATE` lost
@@ -1255,6 +1260,24 @@ Three message types:
   push-back leg is what makes both recovery stories true.
 - `UPDATE` (both directions): one incremental Yjs update. Client → server:
   persist, then relay. Server → client: apply.
+- `REJECT` (server → client): payload = `[u8 reasonCode]`, fieldId in the frame
+  header. Sent when a specific `UPDATE` is refused — `NotWritable` (sender is a
+  reader), `Frozen` (field hit its ceiling, 17.4), or `TooLarge` (update
+  exceeded the transport frame guard). The client marks the field read-only and
+  **stops sending and pushing back its updates for that field** (17.6) — the one
+  rule that keeps a refusal from re-uploading forever through the bidirectional
+  leg. The server applies the same collapse on its side: after any `REJECT` for
+  a (socket, field), that socket's later `UPDATE`s for the field are refused
+  without touching storage. `NotWritable` and `Frozen` are persistent conditions
+  that re-refuse for free; the rule only adds state for `TooLarge`, and it is
+  load-bearing there — updates already in flight when the `REJECT` lands (one
+  RTT of keystrokes) depend on the refused op's client clocks, and appending
+  them would plant a permanent gap in the log: every future reader parks them
+  in the pending queue and the field silently truncates, the exact poison the
+  push-back leg exists to prevent (and cannot heal — re-uploading includes the
+  too-large op, refused again forever). An in-memory per-socket set is enough:
+  hibernation dropping it is safe because the client went read-only one RTT
+  after the refusal, long before any wake.
 
 This is y-protocols' symmetric sync folded into fewer frames: `GET` is the
 client's syncStep1, `STATE` is the server's syncStep2 *and* its syncStep1 (the
@@ -1280,15 +1303,38 @@ migration or seed pushing hundreds of fields through the socket path would
 broadcast the whole corpus to every tab — seeding goes through admin import
 (17.7), which bypasses the relay entirely.
 
-Binary frames are only accepted on `ready` sockets; caps: `MAX_FIELD_UPDATE_BYTES`
-(64KB per update), `MAX_FIELD_BYTES` (1MB materialized per field — a field is a
-note, not a document; breach returns an error frame and refuses the update).
+Binary frames are only accepted on `ready` sockets. Two independent limits:
+
+- `MAX_FIELD_UPDATE_BYTES` (64KB) is a **transport frame guard** — the
+  binary-lane analogue of the 900KB poke chunk (D9), not a field-semantics
+  limit. A single update that large is a paste or a bug, never typing; the
+  server refuses it with a `TooLarge` `REJECT`. The paved place to keep edits
+  under it is the editor binding's own paste/length guard — where the undo is
+  native and the user sees the limit before anything happens — so the library
+  exposes the constant for exactly that.
+- `MAX_FIELD_BYTES` (700KB) is the **field ceiling**. A field is a note, not a
+  document. The number is the binary-lane mirror of `MAX_ROW_BYTES`'s rule — a
+  single field must fit inside a frame with room to spare: a fresh client's
+  `STATE` carries the whole doc diff in one binary frame, and pure-insert text
+  encodes at roughly its content size, so a ceiling near 1MB would let that
+  frame cross the 900KB hibernated-socket budget (D9). Capping the *field*
+  keeps `STATE` unchunked — the machinery this section refuses — instead of
+  guarding the frame after the fact. Rather than reject the crossing update —
+  which would leave the
+  client's doc permanently ahead of the server, a silent and sticky divergence —
+  the server **accepts the update that crosses the line, then freezes the
+  field**: every later `UPDATE` gets a `Frozen` `REJECT` and the client goes
+  read-only. Peers converge on intact content and the freeze is loud (17.4
+  persists it, 17.6 renders it). "Un-freezing" is not an engine gesture: what a
+  full note becomes — split it, replace it — is the app's data model a layer up,
+  and an admin import with a smaller field resets the ceiling.
 
 ### 17.4 Server: append-and-relay hot path, docs only on demand
 
 Storage, two tables beside the engine's own:
 
-    yjs_fields(field_id TEXT PRIMARY KEY, snapshot BLOB, snapshot_seq INTEGER)
+    yjs_fields(field_id TEXT PRIMARY KEY, snapshot BLOB, snapshot_seq INTEGER,
+               byte_total INTEGER, frozen INTEGER)
     yjs_updates(field_id TEXT, seq INTEGER, bytes BLOB, PRIMARY KEY(field_id, seq))
 
 The typing path never materializes a document: an inbound `UPDATE` is appended
@@ -1298,7 +1344,7 @@ rule as poke-after-commit; strictly stronger than the debounce-savers in this
 space — y-partyserver's 2s-debounced `onSave` and y-sweet's background S3
 flush can both lose the last seconds of typing on a crash). Y.Docs are only
 built for `GET` (diff needs a doc) and compaction, loaded snapshot-plus-tail
-behind a small LRU (~8 docs; fields cap at 1MB so worst case ~8MB). One
+behind a small LRU (~8 docs; fields cap at 700KB so worst case ~6MB). One
 coherence rule on the append path: if the field's doc is already in the LRU,
 the inbound update is also applied to it (or the entry evicted) — a cached
 doc must never fall behind the log, or the next `GET` it serves returns an
@@ -1313,10 +1359,26 @@ pending updates gets materialized, re-encoded as one snapshot at
 `snapshot_seq`, tail deleted. Fields are capped (17.3) so snapshots never
 approach SQLite's 2MB row limit — no chunking machinery.
 
+The field ceiling (17.3) is enforced on this same append path without ever
+materializing: `byte_total` is a running sum of appended update bytes,
+incremented in the append transaction. When an append crosses `MAX_FIELD_BYTES`
+the update still commits (peers converge on it) and `frozen` is set in the same
+transaction; every later `UPDATE` for the field is refused with `Frozen` before
+it touches storage. The running sum is a deliberate over-estimate — Yjs deletes
+and duplicate structs make the materialized doc smaller than the byte log — so
+compaction, which materializes anyway, reconciles `byte_total` to the true
+encoded size. The freeze is sticky: un-freezing on shrink would need per-update
+net-size classification, which means materializing on the hot path — the one
+thing this section refuses. Because `frozen` is a persisted column it survives
+hibernation with no in-memory state to rebuild, so a `GET` after wake reports
+the field read-only in `STATE` directly from storage.
+
 CRDT bytes never touch the rows table, the mutation log, or pokes (§1's
 non-goal stands). Writes are gated by the extension's `authorizeWrite`
 predicate over the §15 auth stamps — same coarse model as everything else:
-membership to read, one app-defined predicate to write.
+membership to read, one app-defined predicate to write. A `false` verdict is
+not an error path: it sets the `writable` bit false in the `GET` reply (17.3),
+and an `UPDATE` that arrives anyway earns a `NotWritable` `REJECT`.
 
 ### 17.5 The extension seam in core
 
@@ -1325,7 +1387,12 @@ no yjs import anywhere in core:
 
 ```ts
 interface EngineExtension {
-  init(ctx: { sql: SqlStorage; broadcast(bytes): void; send(ws, bytes): void }): void
+  init(ctx: {
+    sql: SqlStorage
+    transactionSync<T>(fn: () => T): T   // atomic multi-statement writes (17.4's append+freeze)
+    broadcast(bytes, opts?: { except? }): void
+    send(ws, bytes): void
+  }): void
   onBinaryMessage(ws, bytes, ctx: { clientId; principal?; auth?; ready }): void
   onAlarm?(): void
   onExport?(): unknown           // merged into admin export under "extension"
@@ -1334,6 +1401,13 @@ interface EngineExtension {
   onStats?(): Record<string, number>
 }
 ```
+
+`broadcast(bytes)` and `send(ws, bytes)` route through core's existing
+per-socket delivery gate (`#deliver`, generalized from text to bytes), so the
+§15 defunct/expiry checks that guard every poke also guard the binary lane — the
+extension cannot send to a socket core is already tearing down, and
+`onBinaryMessage` stays synchronous end-to-end like every other handler
+(invariant 3): it appends and relays in one turn with no `await` between.
 
 One slot (`extension`), not an array: multiple extensions would need a routing
 byte on every binary frame for a consumer that doesn't exist. Generalize when
@@ -1357,7 +1431,24 @@ resolved — it answers "can I render this field", not "am I currently live";
 liveness is the client's sync status. (y-websocket's `synced` flag re-arms on
 disconnect; apps that need that granularity can combine the two signals.)
 
-**Decided: no local persistence of field docs in v1** (resolving the open
+A held doc carries a **writability** signal on its handle: `handle.canWrite`
+(reactive) and `handle.subscribe(cb)`. It starts from the `writable` flag in the
+`GET` reply (`STATE`, 17.3) and flips to false on a `REJECT` for the field. The
+load-bearing rule hangs off it: **when a field is not writable the add-on
+neither sends nor pushes back its local updates.** A read-only binding means the
+common case produces no outbound update at all; the rule is the backstop for a
+field that freezes mid-session, and it is what turns a server refusal into a
+one-time, loud event instead of an op that re-uploads forever through the
+bidirectional leg (17.3). The three refusal reasons — `authorizeWrite` false,
+`Frozen`, `TooLarge` — collapse to this one client concept: writable or not,
+always told, never guessed. A `REJECT`-flipped false is **sticky for the
+handle's lifetime**: a reconnect's `STATE` honestly reports `writable: true`
+in the `TooLarge` case (the server refused one update, not the field), but
+only the client knows its local doc now holds an op the server will never
+accept — flipping back would resume the poisoned push-back. A fresh handle
+after reload rebuilds from server state and starts clean.
+
+**Decided: no local persistence of field docs** (resolving the open
 question carried since the §14 revision). Field co-editing is an online
 activity; a reload re-fetches small documents in one round-trip. The engine's
 durable plane (rows, cursor, outbox in the `SyncStore`) is unaffected. The
@@ -1365,7 +1456,7 @@ escape hatch is composability, not configuration: `handle.doc` is a standard
 Y.Doc, so an app that wants offline field durability attaches y-indexeddb to
 it itself — no library surface needed.
 
-In-text remote cursors (selection ranges inside a field) are a v1 non-goal:
+In-text remote cursors (selection ranges inside a field) are a non-goal:
 field-level presence ("X is editing this field") comes from §16 payloads;
 character-level cursors would need Yjs awareness plumbing and no target UI
 requires them.
@@ -1397,9 +1488,13 @@ reconnect that never comes. The row-only path is unchanged when no fields are
 present. A rollback that must *discard* client-held ops is
 the other admin gesture: `disconnect` kick before importing, so apps reload
 and rebuild every doc from the restored server state (no client persistence
-makes this clean). Orphaned fields (row deleted, field remains) are an
-explicit v1 punt: cheap to store, visible in stats, cleanable by a future
-admin op — not worth automatic GC coupled to app-side pointer conventions.
+makes this clean). Orphaned fields (row deleted, field remains) are scoped out by layer, not
+deferred: the row→field link is an app pointer convention the engine never
+sees, so the engine cannot know a field is orphaned in order to GC it. They are
+cheap to store and visible in stats; an app that wants them collected deletes
+the field through the same admin/extension surface it created it with. Coupling
+automatic GC to a convention core can't observe would be the engine guessing —
+the thing this design refuses everywhere.
 
 ### 17.8 Tests that lock this
 
@@ -1409,10 +1504,21 @@ round-trips content byte-for-byte (encode → compact → load → same state);
 eviction mid-session (`state.abort`) followed by client `GET` converges,
 including updates typed while disconnected; reconnect after a send the server
 never persisted converges (the `STATE` push-back leg re-uploads the missing
-ops); corrupt update row skipped, doc
-still loads; oversized update and oversized field refused with error frames,
-socket stays open; binary frame before ready rejected; `authorizeWrite: false`
-socket can `GET` but not `UPDATE`; export → reset → import round-trips fields;
+ops); corrupt update row skipped, doc still loads; an update over the transport
+frame guard is refused with a `TooLarge` `REJECT` and the socket stays open;
+crossing `MAX_FIELD_BYTES` accepts-and-relays the crossing update then freezes —
+later `UPDATE`s get `Frozen`, `byte_total` reconciles to the true encoded size
+at compaction, and the freeze survives a hibernation wake (a post-wake `GET`
+reports the field read-only in `STATE`); a refused update, for any reason, is
+**not** re-uploaded on the next reconnect — the push-back leg stays suppressed
+for a non-writable field (the regression that locks the no-silent-wedge fix);
+after a `TooLarge` `REJECT`, in-flight `UPDATE`s from the same socket for the
+same field are refused, never appended (the server-side collapse: no gap ever
+lands in the log), while the same client's `UPDATE`s for *other* fields still
+apply;
+binary frame before ready rejected; `authorizeWrite: false` socket gets
+`writable: false` in `STATE`, can `GET`, and its `UPDATE`s are refused with
+`NotWritable`; export → reset → import round-trips fields;
 an `UPDATE` arriving while the field's doc sits in the LRU keeps the cached
 doc log-coherent (a `GET` served right after returns the complete diff);
 import under live sockets cycles them and both directions converge (restored

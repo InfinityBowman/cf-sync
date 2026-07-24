@@ -1,0 +1,297 @@
+import {
+  FIELD_MSG_GET,
+  FIELD_MSG_REJECT,
+  FIELD_MSG_STATE,
+  FIELD_MSG_UPDATE,
+  MAX_FIELD_UPDATE_BYTES,
+  decodeFieldFrame,
+  encodeFieldFrame,
+  encodeFieldReject,
+  encodeFieldState,
+  type FieldFrame,
+  type FieldRejectReason,
+} from '@cf-sync/protocol'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as Y from 'yjs'
+import { createYjsFields, type YjsFieldsClient } from '../../src/client'
+
+/** Scripted stand-in for the SyncClient seam (§17.5). */
+class FakeSeam implements YjsFieldsClient {
+  status = 'connecting'
+  sent: FieldFrame[] = []
+  #binary = new Set<(bytes: Uint8Array) => void>()
+  #status = new Set<(status: string) => void>()
+
+  sendBinary(bytes: Uint8Array): void {
+    const frame = decodeFieldFrame(bytes)
+    if (!frame) throw new Error('add-on sent an undecodable frame')
+    this.sent.push(frame)
+  }
+
+  onBinary(listener: (bytes: Uint8Array) => void): () => void {
+    this.#binary.add(listener)
+    return () => {
+      this.#binary.delete(listener)
+    }
+  }
+
+  subscribeStatus(listener: (status: string) => void): () => void {
+    this.#status.add(listener)
+    return () => {
+      this.#status.delete(listener)
+    }
+  }
+
+  setStatus(status: string): void {
+    this.status = status
+    for (const listener of this.#status) listener(status)
+  }
+
+  deliver(msgType: number, fieldId: string, payload: Uint8Array): void {
+    const frame = encodeFieldFrame(msgType as 1 | 2 | 3 | 4, fieldId, payload)
+    for (const listener of this.#binary) listener(frame)
+  }
+
+  /** Answers the client like the server would: STATE from a server-side doc. */
+  state(fieldId: string, serverDoc: Y.Doc, clientSV: Uint8Array, writable = true): void {
+    this.deliver(
+      FIELD_MSG_STATE,
+      fieldId,
+      encodeFieldState({
+        writable,
+        stateVector: Y.encodeStateVector(serverDoc),
+        diff: clientSV.byteLength === 0 ? Y.encodeStateAsUpdate(serverDoc) : Y.encodeStateAsUpdate(serverDoc, clientSV),
+      }),
+    )
+  }
+
+  reject(fieldId: string, reason: FieldRejectReason): void {
+    this.deliver(FIELD_MSG_REJECT, fieldId, encodeFieldReject(reason))
+  }
+
+  takeSent(): FieldFrame[] {
+    const out = this.sent
+    this.sent = []
+    return out
+  }
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('createYjsFields (§17.6)', () => {
+  it('getDoc sends GET when synced, and defers it to the ready transition otherwise', () => {
+    const seam = new FakeSeam()
+    const yf = createYjsFields(seam)
+    yf.getDoc('f1') // not synced yet: nothing goes out
+    expect(seam.sent).toEqual([])
+
+    seam.setStatus('synced')
+    const [get] = seam.takeSent()
+    expect(get!.msgType).toBe(FIELD_MSG_GET)
+    expect(get!.fieldId).toBe('f1')
+
+    // Already synced: a new field GETs immediately.
+    yf.getDoc('f2')
+    expect(seam.takeSent()[0]!.fieldId).toBe('f2')
+    yf.destroy()
+  })
+
+  it('STATE applies the diff, resolves whenSynced once, and sets canWrite from the flag', async () => {
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    const handle = yf.getDoc('f1')
+    expect(handle.canWrite).toBe(false) // never guessed before STATE
+    const [get] = seam.takeSent()
+
+    const serverDoc = new Y.Doc()
+    serverDoc.getText('t').insert(0, 'from server')
+    seam.state('f1', serverDoc, get!.payload)
+
+    await handle.whenSynced
+    expect(handle.text.toString()).toBe('from server')
+    expect(handle.canWrite).toBe(true)
+    // The client had nothing the server missed: no push-back frame.
+    expect(seam.takeSent()).toEqual([])
+    yf.destroy()
+  })
+
+  it('pushes back what the server is missing — edits typed before sync upload on the first STATE', async () => {
+    const seam = new FakeSeam()
+    const yf = createYjsFields(seam)
+    const handle = yf.getDoc('f1')
+    handle.doc.getText('t').insert(0, 'typed offline') // buffered in the doc itself
+    expect(seam.sent).toEqual([])
+
+    seam.setStatus('synced')
+    const [get] = seam.takeSent()
+    const serverDoc = new Y.Doc()
+    seam.state('f1', serverDoc, get!.payload)
+    await handle.whenSynced
+
+    const [pushBack] = seam.takeSent()
+    expect(pushBack!.msgType).toBe(FIELD_MSG_UPDATE)
+    Y.applyUpdate(serverDoc, pushBack!.payload)
+    expect(serverDoc.getText('t').toString()).toBe('typed offline')
+    yf.destroy()
+  })
+
+  it('suppresses the push-back and local sends for a read-only field', async () => {
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    const handle = yf.getDoc('f1')
+    handle.doc.getText('t').insert(0, 'local')
+    const [get] = seam.takeSent()
+
+    const serverDoc = new Y.Doc()
+    seam.state('f1', serverDoc, get!.payload, false) // writable: false
+    await handle.whenSynced
+    expect(handle.canWrite).toBe(false)
+    expect(seam.takeSent()).toEqual([]) // no push-back
+
+    handle.doc.getText('t').insert(0, 'more ')
+    expect(seam.takeSent()).toEqual([]) // no sends either
+    yf.destroy()
+  })
+
+  it('sends local edits while writable, and applies relayed updates without echoing them', async () => {
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    const handle = yf.getDoc('f1')
+    const [get] = seam.takeSent()
+    const serverDoc = new Y.Doc()
+    seam.state('f1', serverDoc, get!.payload)
+    await handle.whenSynced
+
+    handle.text.insert(0, 'mine')
+    const [update] = seam.takeSent()
+    expect(update!.msgType).toBe(FIELD_MSG_UPDATE)
+
+    // A peer's relayed update applies but never goes back out.
+    const peer = new Y.Doc()
+    peer.getText('t').insert(0, 'peer ')
+    seam.deliver(FIELD_MSG_UPDATE, 'f1', Y.encodeStateAsUpdate(peer))
+    expect(handle.text.toString()).toContain('peer ')
+    expect(seam.takeSent()).toEqual([])
+
+    // Frames for fields nobody holds are ignored.
+    seam.deliver(FIELD_MSG_UPDATE, 'not-open', Y.encodeStateAsUpdate(peer))
+    yf.destroy()
+  })
+
+  it('REJECT flips canWrite, notifies subscribers, and stays sticky across a reconnect STATE', async () => {
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    const handle = yf.getDoc('f1')
+    const [get] = seam.takeSent()
+    const serverDoc = new Y.Doc()
+    seam.state('f1', serverDoc, get!.payload)
+    await handle.whenSynced
+    expect(handle.canWrite).toBe(true)
+
+    const changes: boolean[] = []
+    handle.subscribe(() => changes.push(handle.canWrite))
+
+    handle.text.insert(0, 'refused op')
+    seam.takeSent() // the UPDATE the server is about to refuse
+    seam.reject('f1', 'TooLarge')
+    expect(handle.canWrite).toBe(false)
+    expect(changes).toEqual([false])
+
+    // Reconnect: the server honestly reports writable (it refused one
+    // update, not the field) — but this doc holds an op the server will
+    // never accept, so the handle must not resume the push-back.
+    seam.setStatus('reconnecting')
+    seam.setStatus('synced')
+    const [reGet] = seam.takeSent()
+    expect(reGet!.msgType).toBe(FIELD_MSG_GET)
+    seam.state('f1', serverDoc, reGet!.payload, true)
+    expect(handle.canWrite).toBe(false) // sticky
+    expect(seam.takeSent()).toEqual([]) // push-back stays suppressed
+    yf.destroy()
+  })
+
+  it('re-GETs every held field on each ready transition with its current state vector', async () => {
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    const h1 = yf.getDoc('f1')
+    const h2 = yf.getDoc('f2')
+    const gets = seam.takeSent()
+    const serverDoc = new Y.Doc()
+    seam.state('f1', serverDoc, gets[0]!.payload)
+    seam.state('f2', serverDoc, gets[1]!.payload)
+    await h1.whenSynced
+    await h2.whenSynced
+
+    h1.text.insert(0, 'held state')
+    seam.takeSent()
+
+    seam.setStatus('reconnecting')
+    seam.setStatus('synced')
+    const reGets = seam.takeSent()
+    expect(reGets.map((f) => f.fieldId).sort()).toEqual(['f1', 'f2'])
+    // The re-GET carries the doc's current state vector, not a fresh one:
+    // applying it against the server yields only what the server is missing.
+    const sv = reGets.find((f) => f.fieldId === 'f1')!.payload
+    expect(Y.encodeStateAsUpdate(h1.doc, sv).byteLength).toBeLessThanOrEqual(2)
+    yf.destroy()
+  })
+
+  it('ref-counts handles: one doc shared, dropped at zero, rebuilt fresh after', async () => {
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    const h1 = yf.getDoc('f1')
+    const h2 = yf.getDoc('f1')
+    expect(seam.takeSent().length).toBe(1) // one GET, shared entry
+    expect(h1.doc).toBe(h2.doc)
+
+    h1.doc.getText('t').insert(0, 'shared')
+    h1.release()
+    h1.release() // double-release is a no-op
+    expect(h2.doc.getText('t').toString()).toBe('shared') // still held
+
+    h2.release()
+    const h3 = yf.getDoc('f1')
+    expect(h3.doc.getText('t').toString()).toBe('') // local state dropped at zero
+    expect(seam.takeSent().length).toBe(1) // fresh GET
+    yf.destroy()
+  })
+
+  it('trips the local frame guard on an oversized update: read-only, warned, nothing sent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    const handle = yf.getDoc('f1')
+    const [get] = seam.takeSent()
+    seam.state('f1', new Y.Doc(), get!.payload)
+    await handle.whenSynced
+
+    handle.text.insert(0, 'x'.repeat(MAX_FIELD_UPDATE_BYTES + 100))
+    expect(seam.takeSent()).toEqual([])
+    expect(handle.canWrite).toBe(false)
+    expect(warn).toHaveBeenCalledOnce()
+    yf.destroy()
+  })
+
+  it('destroy detaches from the seam and later frames are ignored', async () => {
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    const handle = yf.getDoc('f1')
+    const [get] = seam.takeSent()
+    seam.state('f1', new Y.Doc(), get!.payload)
+    await handle.whenSynced
+
+    yf.destroy()
+    expect(() => seam.deliver(FIELD_MSG_UPDATE, 'f1', new Uint8Array([0, 0]))).not.toThrow()
+    expect(() => yf.getDoc('f2')).toThrow(/destroyed/)
+  })
+})

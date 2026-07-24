@@ -1,0 +1,13 @@
+{
+  "name": "cf-sync-yjs-test-fixture",
+  "main": "./worker.ts",
+  "compatibility_date": "2025-08-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "WORKSPACE", "class_name": "WorkspaceDO" },
+      { "name": "AUTHW", "class_name": "AuthWriteDO" },
+      { "name": "COMPACT", "class_name": "CompactDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceDO", "AuthWriteDO", "CompactDO"] }]
+}

@@ -126,6 +126,54 @@ export interface ExportConfig<Env = unknown> {
   prefix?: string
 }
 
+/**
+ * What an extension's `init` receives (DESIGN.md §17.5). `broadcast` and
+ * `send` route through core's per-socket delivery gate, so the §15
+ * defunct/expiry checks that guard every poke also guard the binary lane —
+ * an extension cannot send to a socket core is already tearing down.
+ */
+export interface EngineExtensionContext {
+  sql: SqlStorage
+  /** Atomic multi-statement writes (e.g. §17.4's append + freeze commit together, or roll back together). */
+  transactionSync<T>(fn: () => T): T
+  /** Sends to every ready socket (optionally excluding one, e.g. the sender of a relayed update). */
+  broadcast(bytes: Uint8Array, opts?: { except?: WebSocket }): void
+  send(ws: WebSocket, bytes: Uint8Array): void
+}
+
+/** Per-frame connection context for `onBinaryMessage` — the §15.3 auth stamps plus readiness. */
+export interface EngineExtensionMessageContext {
+  clientId: string
+  principal?: string
+  auth?: unknown
+  ready: boolean
+}
+
+/**
+ * The extension seam (DESIGN.md §17.5): one config slot, types only — core
+ * imports nothing from any extension. `init` runs on every wake inside
+ * initialization (create tables idempotently; a throw quarantines the
+ * workspace like any other init failure). `onBinaryMessage` receives every
+ * binary frame from a non-defunct, non-expired socket and must stay
+ * synchronous end-to-end (invariant §6.3). `onExport`'s value lands in the
+ * admin export under `extension`; an import that carries extension data is
+ * applied via `onImport` (same transaction as the row swap) and then cycles
+ * every socket with 4300 instead of hot-swapping over live sockets (§17.7).
+ * `onReset` runs after reset wipes storage — recreate tables and drop any
+ * in-memory state there. One slot, not an array: multiple extensions would
+ * need a routing byte on every binary frame for a consumer that doesn't
+ * exist yet.
+ */
+export interface EngineExtension {
+  init(ctx: EngineExtensionContext): void
+  onBinaryMessage(ws: WebSocket, bytes: Uint8Array, ctx: EngineExtensionMessageContext): void
+  onAlarm?(): void
+  onExport?(): unknown
+  onImport?(data: unknown): void
+  onReset?(): void
+  onStats?(): Record<string, number>
+}
+
 export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, Env = unknown> {
   /**
    * The shared app definition (`defineApp`): version, table schemas, mutator
@@ -155,6 +203,8 @@ export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, 
   compaction?: CompactionConfig
   /** Stream the mutation log to R2 for archive/analytics (DESIGN.md D3). */
   export?: ExportConfig<Env>
+  /** Binary-lane extension (e.g. `yjsFields` from `@cf-sync/yjs/server`) — see {@link EngineExtension}. */
+  extension?: EngineExtension
 }
 
 const DEFAULT_TOMBSTONE_RETENTION = 10_000
@@ -173,6 +223,8 @@ const importSnapshotSchema = z.object({
       data: z.record(z.string(), z.unknown()),
     }),
   ),
+  /** Extension-contributed state (DESIGN.md §17.7); shape is the extension's own. */
+  extension: z.unknown().optional(),
 })
 
 /** Per-connection state; lives in the socket attachment so it survives hibernation. */
@@ -394,6 +446,9 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         this.#sql.exec(`UPDATE meta SET schema_hash = ? WHERE id = 1`, fingerprint)
         this.#meta.schemaHash = fingerprint
       }
+      // Extension init runs on every wake (idempotent DDL, in-memory state
+      // rebuild); a throw quarantines the workspace like any init failure.
+      this.#initExtension()
       if (this.#maintenanceEnabled() && (await this.ctx.storage.getAlarm()) === null) {
         await this.ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
       }
@@ -455,6 +510,26 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       }
     }
 
+    /**
+     * (Re)binds the extension to this instance's storage and delivery gate.
+     * Called on every wake and again after admin reset (which wipes the
+     * extension's tables along with everything else) — extensions treat
+     * `init` as "wake": idempotent DDL, all in-memory state rebuilt fresh.
+     */
+    #initExtension(): void {
+      config.extension?.init({
+        sql: this.#sql,
+        transactionSync: (fn) => this.ctx.storage.transactionSync(fn),
+        broadcast: (bytes, opts) => {
+          for (const socket of this.#readySockets()) {
+            if (socket === opts?.except) continue
+            this.#deliver(socket, [bytes])
+          }
+        },
+        send: (ws, bytes) => this.#deliver(ws, [bytes]),
+      })
+    }
+
     #maintenanceEnabled(): boolean {
       return !config.compaction?.disabled || config.export !== undefined
     }
@@ -463,6 +538,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       if (this.#initError) return // nothing to maintain; a successful reset re-arms the alarm
       try {
         if (!config.compaction?.disabled) this.#compact()
+        config.extension?.onAlarm?.()
         if (config.export) await this.#exportLog()
       } finally {
         if (this.#maintenanceEnabled()) {
@@ -666,7 +742,20 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       }
       try {
         if (typeof raw !== 'string') {
-          this.#sendError(ws, 'BadMessage', 'binary frames are not supported')
+          // The binary lane (DESIGN.md §17.3) — same defunct/expiry gates as
+          // text frames (checked above), routed to the extension, which stays
+          // synchronous end-to-end like every other handler (invariant §6.3).
+          if (!config.extension) {
+            this.#sendError(ws, 'BadMessage', 'binary frames are not supported')
+            return
+          }
+          const msgCtx: EngineExtensionMessageContext = {
+            clientId: attachment.clientId,
+            ready: attachment.ready === true,
+          }
+          if (attachment.principal !== undefined) msgCtx.principal = attachment.principal
+          if (attachment.auth !== undefined) msgCtx.auth = attachment.auth
+          config.extension.onBinaryMessage(ws, new Uint8Array(raw), msgCtx)
           return
         }
         let json: unknown
@@ -739,6 +828,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
             exportedAt: new Date().toISOString(),
             version: this.#meta.currentVersion,
             rows,
+            ...(config.extension?.onExport ? { extension: config.extension.onExport() } : {}),
           })
         }
 
@@ -776,29 +866,54 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
             }
             importRows.push({ tbl: row.tbl, id: row.id, data })
           }
+          // Extension state (e.g. §17 fields) restores through the same
+          // import. Carrying it without an extension configured would drop
+          // data silently — refuse instead.
+          const hasExtensionData = snapshot.extension !== undefined
+          if (hasExtensionData && !config.extension?.onImport) {
+            return json({ error: 'snapshot carries extension state but no extension with onImport is configured' }, 400)
+          }
           // Full state replace at a single new version. Every existing cursor
           // is invalidated (min_cursor_version = new version): live clients
           // get the reset poke below; reconnecting ones reset at hello.
           const version = this.#meta.currentVersion + 1
-          this.ctx.storage.transactionSync(() => {
-            this.#sql.exec(`DELETE FROM rows`)
-            for (const row of importRows) {
-              this.#sql.exec(
-                `INSERT INTO rows (tbl, id, data, version, deleted) VALUES (?, ?, ?, ?, 0)`,
-                row.tbl,
-                row.id,
-                JSON.stringify(row.data),
-                version,
-              )
-            }
-            this.#sql.exec(`UPDATE meta SET current_version = ?, min_cursor_version = ? WHERE id = 1`, version, version)
-          })
+          try {
+            this.ctx.storage.transactionSync(() => {
+              this.#sql.exec(`DELETE FROM rows`)
+              for (const row of importRows) {
+                this.#sql.exec(
+                  `INSERT INTO rows (tbl, id, data, version, deleted) VALUES (?, ?, ?, ?, 0)`,
+                  row.tbl,
+                  row.id,
+                  JSON.stringify(row.data),
+                  version,
+                )
+              }
+              // Same transaction as the row swap: a bad extension payload
+              // rolls back the whole import.
+              if (hasExtensionData) config.extension!.onImport!(snapshot.extension)
+              this.#sql.exec(`UPDATE meta SET current_version = ?, min_cursor_version = ? WHERE id = 1`, version, version)
+            })
+          } catch (err) {
+            return json({ error: `import failed: ${err instanceof Error ? err.message : String(err)}` }, 400)
+          }
           this.#meta.currentVersion = version
           this.#meta.minCursorVersion = version
-          this.#sendPoke(this.#readySockets(), {
-            baseCursor: null,
-            patch: [{ op: 'clear' }, ...this.#snapshotPatch()],
-          })
+          if (hasExtensionData) {
+            // §17.7: clients only re-GET fields on ready *transitions*, so an
+            // import carrying extension state cycles every socket with a
+            // refresh instead of hot-swapping rows over live sockets — one
+            // close keeps both planes consistent. The reconnect re-bootstraps
+            // rows at hello (min_cursor_version advanced) and re-GETs fields.
+            for (const socket of this.ctx.getWebSockets()) {
+              this.#closeSocket(socket, CLOSE_REFRESH, 'import')
+            }
+          } else {
+            this.#sendPoke(this.#readySockets(), {
+              baseCursor: null,
+              patch: [{ op: 'clear' }, ...this.#snapshotPatch()],
+            })
+          }
           return json({ imported: snapshot.rows.length, version })
         }
 
@@ -826,6 +941,10 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
             this.#sql.exec(`UPDATE meta SET workspace_id = ? WHERE id = 1`, workspaceId)
             this.#meta.workspaceId = workspaceId
           }
+          // deleteAll took the extension's tables with it: re-init (fresh
+          // DDL + in-memory state), then let the extension observe the reset.
+          this.#initExtension()
+          config.extension?.onReset?.()
           if (this.#maintenanceEnabled()) {
             await this.ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
           }
@@ -896,6 +1015,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           presence: this.#presence.size,
         },
         counters: { ...this.#counters },
+        ...(config.extension?.onStats ? { extension: config.extension.onStats() } : {}),
       }
     }
 
@@ -1253,7 +1373,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      * reads are gated at the fan-out (§15.2) because a passive reader
      * generates no inbound frames, so this is the one place expiry can bite.
      */
-    #deliver(socket: WebSocket, frames: readonly string[]): void {
+    #deliver(socket: WebSocket, frames: readonly (string | Uint8Array)[]): void {
       const attachment = socket.deserializeAttachment() as Attachment | null
       if (attachment?.defunct) return
       if (attachment?.expiresAt !== undefined && Date.now() >= attachment.expiresAt) {
