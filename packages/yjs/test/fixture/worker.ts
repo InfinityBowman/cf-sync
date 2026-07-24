@@ -4,6 +4,7 @@ import {
   createWorkspaceDO,
   crudMutators,
   defineApp,
+  defineMutators,
   defineSchema,
 } from '@cf-sync/server'
 import { z } from 'zod'
@@ -19,13 +20,25 @@ interface Env {
 const schema = defineSchema({ notes: z.record(z.string(), z.unknown()) })
 const app = defineApp({ version: 1, schema, mutators: crudMutators(schema) })
 
+/**
+ * App with a declared authContext: `yjsFields({ app: authApp, … })` below
+ * derives authorizeWrite's `auth` type from it — this fixture compiling is
+ * the inference test (property access on an untyped `auth` would not).
+ */
+const authApp = defineApp({
+  version: 1,
+  schema,
+  mutators: defineMutators(schema, {}, { authContext: z.object({ writeAllowed: z.boolean().optional() }) }),
+})
+
 /** Default: any member writes any field. */
 export const WorkspaceDO = createWorkspaceDO({ app, extension: yjsFields() })
 
 /** Write-gated on the §15 stamps (the '/auth' route below supplies them). */
 export const AuthWriteDO = createWorkspaceDO({
-  app,
-  extension: yjsFields<{ writeAllowed?: boolean }>({
+  app: authApp,
+  extension: yjsFields({
+    app: authApp,
     authorizeWrite: ({ auth }) => auth?.writeAllowed === true,
   }),
 })

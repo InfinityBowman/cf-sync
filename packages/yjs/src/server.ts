@@ -12,6 +12,9 @@ import {
   type FieldRejectReason,
 } from '@cf-sync/protocol/internal'
 import type {
+  AnyMutators,
+  AppDefinition,
+  AuthContextOf,
   EngineExtension,
   EngineExtensionContext,
   EngineExtensionMessageContext,
@@ -43,8 +46,11 @@ export interface YjsFieldsOptions<AC = unknown> {
    * reply so the binding is read-only from the first paint, and an `UPDATE`
    * that arrives anyway earns a `NotWritable` `REJECT`.
    *
-   * Type `auth` by passing the app's authContext shape as the generic:
-   * `yjsFields<MyAuthContext>({ authorizeWrite: ({ auth }) => ... })`.
+   * `auth` is typed from the app's `authContext` when the app definition is
+   * passed alongside (`yjsFields({ app, authorizeWrite })` — declared once,
+   * in `defineMutators`); the explicit generic
+   * (`yjsFields<MyAuthContext>({ authorizeWrite })`) remains as the escape
+   * hatch for setups without an app value in scope.
    */
   authorizeWrite?: (ctx: YjsFieldWriteContext<AC>) => boolean
   /**
@@ -92,6 +98,17 @@ function fromBase64(value: string): Uint8Array {
 }
 
 /**
+ * `yjsFields` options plus the shared app definition. `app` exists to close
+ * the type loop: `authorizeWrite`'s `auth` derives from the `authContext`
+ * schema the app already declared in `defineMutators` — one declaration,
+ * flowing everywhere — instead of being restated by hand as a generic.
+ */
+export interface YjsFieldsAppOptions<M extends AnyMutators> extends YjsFieldsOptions<AuthContextOf<M>> {
+  /** The app this extension is mounted beside (the same value `createWorkspaceDO` takes). Typing only. */
+  app: AppDefinition<any, M, any>
+}
+
+/**
  * Tier 2 Yjs fields hosted inside the workspace DO (DESIGN.md §17): per-field
  * Y.Docs on the existing socket, appended-and-relayed without materializing on
  * the typing path. Register on the DO:
@@ -99,7 +116,10 @@ function fromBase64(value: string): Uint8Array {
  * ```ts
  * export const Workspace = createWorkspaceDO({
  *   app,
- *   extension: yjsFields<{ writeAllowed: boolean }>({
+ *   // Passing `app` types authorizeWrite's `auth` from the app's
+ *   // authContext schema — the shape is declared once, in defineMutators.
+ *   extension: yjsFields({
+ *     app,
  *     authorizeWrite: ({ auth }) => auth?.writeAllowed === true,
  *   }),
  * })
@@ -110,7 +130,9 @@ function fromBase64(value: string): Uint8Array {
  * are per-workspace by construction — Cloudflare colocates instances of one
  * class in a shared isolate, and extension state must never cross workspaces.
  */
-export function yjsFields<AC = unknown>(options: YjsFieldsOptions<AC> = {}): () => EngineExtension {
+export function yjsFields<M extends AnyMutators>(options: YjsFieldsAppOptions<M>): () => EngineExtension
+export function yjsFields<AC = unknown>(options?: YjsFieldsOptions<AC>): () => EngineExtension
+export function yjsFields(options: YjsFieldsOptions<unknown> = {}): () => EngineExtension {
   return () => createExtension(options)
 }
 

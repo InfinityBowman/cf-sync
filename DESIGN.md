@@ -1193,7 +1193,8 @@ else stays rows. Designed top-down from what the app writes.
 import { yjsFields } from '@cf-sync/yjs/server'
 export const Workspace = createWorkspaceDO({
   app,
-  extension: yjsFields<{ writeAllowed: boolean }>({
+  extension: yjsFields({
+    app, // types authorizeWrite's `auth` from the app's authContext schema
     // optional: gate writes on the write context — the target fieldId plus the
     // §15 auth stamps (default: any member writes). fieldId makes per-field
     // policies expressible: encode the owning entity into field ids.

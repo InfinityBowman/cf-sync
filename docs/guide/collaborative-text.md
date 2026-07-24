@@ -61,13 +61,16 @@ The engine never interprets field ids. `todo-notes:<todoId>` is an app conventio
 
 ## Write access
 
-Write access defaults to "any workspace member". To gate per field, stamp what you need in the sync router's [`authorize` hook](/guide/auth) and give the extension an `authorizeWrite` predicate over `{ fieldId, auth, principal, clientId }`:
+Write access defaults to "any workspace member". To gate per field, stamp what you need in the sync router's [`authorize` hook](/guide/auth) and give the extension an `authorizeWrite` predicate over `{ fieldId, auth, principal, clientId }`. Pass `app` alongside and `auth` is typed from the `authContext` schema the app already declared in `defineMutators` — no hand-written generic to keep in sync:
 
 ```ts
-yjsFields<MyAuthContext>({
+yjsFields({
+  app,
   authorizeWrite: ({ fieldId, auth }) => auth?.role !== 'viewer',
 })
 ```
+
+(Without an app value in scope, the explicit generic still works: `yjsFields<MyAuthContext>({ … })`.)
 
 Readers aren't second-class: the sync state carries the writable flag, so `handle.canWrite` is correct from first paint — no flash of editable UI before a rejection.
 

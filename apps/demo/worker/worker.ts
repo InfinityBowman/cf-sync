@@ -21,9 +21,11 @@ export const WorkspaceDO = createWorkspaceDO({
   // binary Yjs frames — CRDT bytes never touch rows, pokes, or the mutation
   // log. No wrangler migration needed; the extension owns its own tables.
   // This demo's auth policy is "any member writes" (the default). With a
-  // real authorize hook stamping context, writes gate per field:
+  // real authorize hook stamping context, writes gate per field — passing
+  // `app` types `auth` from the authContext declared in defineMutators:
   //
-  //   extension: yjsFields<{ userId: string }>({
+  //   extension: yjsFields({
+  //     app,
   //     authorizeWrite: ({ fieldId, auth }) =>
   //       fieldId.startsWith(`todo-notes:`) && auth !== undefined,
   //   }),
