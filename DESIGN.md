@@ -1194,9 +1194,9 @@ export const Workspace = createWorkspaceDO({
 import { createYjsFields } from '@cf-sync/yjs/client'
 const yfields = createYjsFields(client)
 
-const handle = yfields.getDoc('recon-notes:q3')  // { doc: Y.Doc, whenSynced, release }
+const handle = yfields.getDoc('recon-notes:q3')  // { doc, text, whenSynced, release }
 await handle.whenSynced                          // server state applied
-editorBinding(handle.doc.getText('t'), textarea) // any standard Yjs editor binding
+editorBinding(handle.text, textarea)             // handle.text is doc.getText('t')
 // on unmount:
 handle.release()
 ```
@@ -1206,6 +1206,16 @@ string (`recon-notes:q3`), the UI calls `getDoc` with it. Fields are created
 implicitly on first use — no registration, no schema entry; to the engine a
 fieldId is an opaque key. Which fields are Tier 2 is a UI decision, invisible
 to the sync schema.
+
+Within a field, `handle.text` is the paved path — a `Y.Text` at a fixed
+library-owned key (`'t'`) — so every reader and writer of a field agrees on
+type and key with nothing to coordinate. A mismatched key is the same
+silent-divergence footgun as two copies of yjs in a bundle (§17.2): two code
+paths edit different named types in the same doc and never see each other's
+text. `handle.text` closes it for the common single-text-field case by not
+exposing the choice. Rich text (a `Y.XmlFragment` for y-prosemirror and the
+like) drops to `handle.doc` and the app owns the key — exactly as it already
+owns the fieldId convention; one field is one shape, chosen once.
 
 ### 17.2 Packaging: an add-on, core stays yjs-free
 
@@ -1375,7 +1385,16 @@ unnoticed — clients holding docs would neither pull the restored state nor
 push back ops the restore lost. Import therefore closes every socket with a
 refresh (4300); reconnecting clients re-`GET` and the bidirectional exchange
 merges any ops they still hold — restore is **convergence-preserving**
-(crash-recovery semantics). A rollback that must *discard* client-held ops is
+(crash-recovery semantics). This overrides the row plane's own live-socket
+behavior for any import that carries fields: a row-only import hot-swaps state
+with a `clear` poke and leaves sockets open (the import path in §5's admin
+surface), but an import whose snapshot includes a `fields` map cycles every
+socket with 4300 instead and drops that poke — a refreshed reconnect
+re-bootstraps rows at hello (`clear` + snapshot, since `min_cursor_version`
+advanced) *and* re-`GET`s fields, so one close keeps both planes consistent
+rather than hot-swapping rows over the socket while fields silently wait for a
+reconnect that never comes. The row-only path is unchanged when no fields are
+present. A rollback that must *discard* client-held ops is
 the other admin gesture: `disconnect` kick before importing, so apps reload
 and rebuild every doc from the restored server state (no client persistence
 makes this clean). Orphaned fields (row deleted, field remains) are an
