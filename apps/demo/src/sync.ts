@@ -46,6 +46,12 @@ export const syncClient = new SyncClient({
   // Identity once, at construction: every later presence call is a bare
   // update({...}) with no mount-order concerns about who announces first.
   initialPresence: { name: displayName },
+  // One place to surface rejections — including ones with no awaiting caller
+  // (collection writes, offline mutations replayed after a reload). With this
+  // set, fire-and-forget mutate calls need no per-call .catch().
+  onMutationRejected: (error, { name }) => {
+    console.warn(`[demo] mutation "${name}" rejected: ${error.code} — ${error.message}`)
+  },
 })
 
 // One typed collection per schema table (syncing starts immediately);

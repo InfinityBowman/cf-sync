@@ -68,6 +68,23 @@ The vocabulary, in three groups:
 
 The built-in set is exported as `MutationErrorCode`, so branching on codes autocompletes.
 
+## One handler instead of a catch per call site
+
+Per-call `try`/`catch` is right when the caller can *do* something specific. For everything else — toasting, logging, telemetry — set `onMutationRejected` once at construction:
+
+```ts
+const client = new SyncClient({
+  // …
+  onMutationRejected: (error, { name }) => {
+    toast.error(`"${name}" was rejected: ${error.message}`)
+  },
+})
+```
+
+It fires for **every** rejection, including the ones that have no awaiting caller and would otherwise roll back invisibly: collection `insert`/`update`/`delete` writes, and offline mutations replayed from the persisted outbox after a reload. (Filter on `error.code` if you only want server verdicts — the lifecycle codes `Stopped`/`Timeout`/`Fatal` arrive here too.)
+
+With the handler set, fire-and-forget calls are safe: `void client.mutate.todos.clearCompleted()` needs no `.catch()` — the rejection is considered handled by the hook, while awaiting callers still see it normally.
+
 ## Permanent vs transient, precisely
 
 An `AppError` (or invalid args) is **permanent**: the server records the mutation as processed — its data effects are refused, but the client's `lastMutationId` still advances, in the same SQLite transaction. This is what makes rejection final and the queue unblockable: a poison mutation can't wedge everything behind it.

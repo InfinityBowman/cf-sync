@@ -365,6 +365,28 @@ export interface SyncClientOptions<
   /** Constructor-time convenience; for dynamic subscribers use `subscribeStatus`. */
   onStatusChange?: (status: SyncStatus) => void
   /**
+   * One place to learn that a mutation was rejected — its optimistic overlay
+   * rolled back and this session will not apply it. Fires for every
+   * rejection `mutate` (or a collection write) would deliver: server app
+   * errors, local fail-fast (`InvalidArgs`, `UnknownMutator`,
+   * `LocalApplyFailed`), and the lifecycle codes (`Timeout`, `Stopped`,
+   * `Fatal` — filter on `error.code` if you only want server verdicts).
+   * Crucially it also fires for rejections that have **no awaiting caller**:
+   * collection `insert`/`update`/`delete` handlers, and mutations restored
+   * from the persisted outbox after a reload — without this hook, those
+   * roll back silently.
+   *
+   * ```ts
+   * onMutationRejected: (error, { name }) =>
+   *   toast.error(`"${name}" was rejected: ${error.message}`)
+   * ```
+   *
+   * With the hook set, fire-and-forget calls (`void client.mutate.todos.clear()`)
+   * no longer surface unhandled-rejection noise — the rejection is considered
+   * handled here. Awaiting callers still see the rejection too.
+   */
+  onMutationRejected?: (error: MutationError, mutation: { name: string; args: unknown }) => void
+  /**
    * Called when the server permanently rejects this client — an in-band
    * VersionNotSupported/Unauthorized error, or a close code in the permanent
    * band [4400, 4499] (an `authorize` rejection or an admin kick, DESIGN.md
@@ -527,7 +549,9 @@ export class SyncClient<
     this.#clientId = opts.clientId ?? defaultClientId(opts.workspaceId)
     this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, this.#clientId)
     this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId) : undefined)
-    this.mutate = buildMutate(Object.keys(opts.app.mutators), (name, args) => this.#mutateByName(name, args))
+    this.mutate = buildMutate(Object.keys(opts.app.mutators), (name, args) =>
+      this.#guardMutation(name, args, this.#mutateByName(name, args)),
+    )
     const self = this
     this.presence = {
       set: (state) => this.#presenceSet(state),
@@ -793,7 +817,9 @@ export class SyncClient<
       name: e.name,
       args: e.args,
       resolve: noop,
-      reject: noop,
+      // No awaiting caller survives a reload — onMutationRejected is the one
+      // surface that can still report a replayed mutation the server refuses.
+      reject: (err) => this.#notifyRejected(err, e.name, e.args),
       timer: null,
       settled: false,
     }))
@@ -817,6 +843,29 @@ export class SyncClient<
       byTable.delete(tbl)
     }
     for (const tbl of byTable.keys()) this.#warnUnregistered(tbl)
+  }
+
+  /**
+   * Routes a mutation promise's rejection into `onMutationRejected` (and
+   * thereby marks it handled, so fire-and-forget call sites don't trip
+   * unhandled-rejection reporting). Returns the original promise: awaiting
+   * callers observe the identical rejection.
+   */
+  #guardMutation(name: string, args: unknown, promise: Promise<void>): Promise<void> {
+    if (this.#opts.onMutationRejected) {
+      promise.catch((err: unknown) => this.#notifyRejected(err, name, args))
+    }
+    return promise
+  }
+
+  #notifyRejected(err: unknown, name: string, args: unknown): void {
+    const hook = this.#opts.onMutationRejected
+    if (!hook || !(err instanceof MutationError)) return
+    try {
+      hook(err, { name, args })
+    } catch (hookErr) {
+      console.error('[cf-sync] onMutationRejected threw', hookErr)
+    }
   }
 
   /** The runtime behind both forms of `mutate` (see the property's docs). */
@@ -891,6 +940,10 @@ export class SyncClient<
    * optimistic effect.
    */
   [RAW_MUTATE](name: string, args: unknown): Promise<void> {
+    return this.#guardMutation(name, args, this.#rawMutate(name, args))
+  }
+
+  #rawMutate(name: string, args: unknown): Promise<void> {
     if (this.#status === 'fatal') {
       return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
     }

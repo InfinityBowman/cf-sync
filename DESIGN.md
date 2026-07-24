@@ -378,6 +378,15 @@ guard in `applyPoke`).
   schema-version mismatch at hydration discards cache *and* queued mutations
   (they target the old schema); a `backendId` change flows through naturally as
   a clear poke.
+- `onMutationRejected` (added 2026-07-24) is the central rejection surface:
+  every `MutationError` a `mutate` or collection-write promise would carry is
+  also delivered to this constructor hook, including rejections with **no
+  awaiting caller** — collection handler writes, and outbox entries restored
+  after a reload (whose promises died with the previous session; without the
+  hook, a replayed mutation the server refuses rolls back invisibly — the
+  silent-revert trap). With the hook set, returned promises are pre-marked
+  handled, so fire-and-forget call sites raise no unhandled-rejection noise
+  while awaiting callers still observe the same rejection.
 
 ### 7.2 Optimistic intent mutators (decided, implemented)
 

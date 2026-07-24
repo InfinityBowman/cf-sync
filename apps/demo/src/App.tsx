@@ -73,8 +73,9 @@ export function App() {
     // name is a compile error, and names autocomplete). The same mutator the
     // server runs applies locally first: the completed rows vanish instantly
     // as one atomic overlay — one wire mutation, rolled back together if
-    // it's rejected.
-    void syncClient.mutate.todos.clearCompleted().catch(() => {})
+    // it's rejected. Fire-and-forget is safe: rejections surface through
+    // the client's onMutationRejected (sync.ts), not per call site.
+    void syncClient.mutate.todos.clearCompleted()
   }
 
   return (
