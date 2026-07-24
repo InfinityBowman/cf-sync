@@ -34,10 +34,26 @@ await handle.whenSynced          // resolves once the server state has landed
 handle.text                      // a Y.Text — bind it to your editor
 handle.doc                       // the underlying Y.Doc, for richer bindings
 handle.canWrite                  // reactive — readers render read-only from first paint
-fields.release(handle)           // handles are ref-counted; release on unmount
+handle.release()                 // handles are ref-counted; release on unmount
 ```
 
 `handle.text` plugs directly into the Yjs editor ecosystem — y-codemirror, y-prosemirror, or a minimal textarea binding like the demo's [`NotesField.tsx`](https://github.com/InfinityBowman/cf-sync-engine/blob/main/apps/demo/src/NotesField.tsx). Offline edits merge on resume instead of overwriting — that's the CRDT earning its keep.
+
+## React: `useYjsField`
+
+In React, skip the manual lifecycle entirely — `@cf-sync/yjs/react` owns acquire, release, re-acquire on field change, the sync gate, and reactive `canWrite`:
+
+```tsx
+import { useYjsField } from '@cf-sync/yjs/react'
+
+function Notes({ todoId }: { todoId: string }) {
+  const field = useYjsField(fields, `todo-notes:${todoId}`)
+  if (!field.synced) return <Spinner />
+  return <Editor text={field.text} readOnly={!field.canWrite} />
+}
+```
+
+The result is discriminated on `synced`, so TypeScript makes the loading state impossible to forget: `doc`, `text`, and `handle` are only non-null once the field is renderable. The hook re-renders on sync and permission changes — **not** per keystroke; content binding belongs to the editor attached to `field.text`, exactly as everywhere else in the Yjs ecosystem. StrictMode's double mount and SSR (renders as not-yet-synced, matching the client's first paint) are both handled.
 
 ## Field ids are your convention
 

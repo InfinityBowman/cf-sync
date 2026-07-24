@@ -25,7 +25,17 @@ const handle = fields.getDoc(`todo-notes:${todoId}`)
 await handle.whenSynced
 handle.text            // Y.Text — bind it to a textarea, y-codemirror, y-prosemirror…
 handle.canWrite        // reactive: readers render read-only from first paint
-fields.release(handle) // ref-counted
+handle.release()       // ref-counted
+```
+
+```tsx
+// React — the hook owns the whole lifecycle (acquire/release, sync gate,
+// reactive canWrite); the result is discriminated on `synced`
+import { useYjsField } from '@cf-sync/yjs/react'
+
+const field = useYjsField(fields, `todo-notes:${todoId}`)
+if (!field.synced) return <Spinner />
+return <Editor text={field.text} readOnly={!field.canWrite} />
 ```
 
 Field ids are an app convention; the engine never interprets them. Updates travel on a binary lane over the existing sync socket, and offline edits merge on resume instead of overwriting.

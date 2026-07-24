@@ -1,5 +1,5 @@
 import { usePresence } from '@cf-sync/client/react'
-import type { YjsFieldHandle } from '@cf-sync/yjs/client'
+import { useYjsField } from '@cf-sync/yjs/react'
 import { useEffect, useState } from 'react'
 import { syncClient, yfields } from './sync'
 
@@ -9,67 +9,41 @@ export const notesFieldId = (todoId: string) => `todo-notes:${todoId}`
 /**
  * Collaborative notes for one todo — the reference Tier 2 field integration:
  *
- * - `yfields.getDoc(fieldId)` acquires a ref-counted handle; `release()` on
- *   unmount drops local state at refcount zero. StrictMode's double mount is
- *   fine: the second acquire shares the entry the first created.
- * - `whenSynced` gates first paint ("can I render this field"), `canWrite`
- *   + `subscribe` drive read-only state reactively, and `handle.text` is the
- *   paved-path Y.Text every client agrees on.
+ * - `useYjsField` owns the whole handle lifecycle: acquire on mount, release
+ *   on unmount, re-acquire on field change, StrictMode-safe. `synced` gates
+ *   first paint and `canWrite` is reactive (the server's writable flag, or a
+ *   REJECT flipping it off) — no manual `getDoc`/`subscribe`/`release` glue.
  * - Reconnects re-sync the doc by themselves; there is no reconnect glue
  *   here, and edits typed while offline merge on resume.
  *
  * The textarea binding below is a minimal prefix/suffix diff — right for a
  * demo, and honest about its limits (a remote edit can move your caret). A
- * production editor drops `handle.text` (or `handle.doc`) into y-codemirror,
+ * production editor drops `field.text` (or `field.doc`) into y-codemirror,
  * y-prosemirror, etc., which own caret math properly.
  */
 export function NotesField({ todoId }: { todoId: string }) {
   const fieldId = notesFieldId(todoId)
-  const [handle, setHandle] = useState<YjsFieldHandle | null>(null)
-  const [synced, setSynced] = useState(false)
-  const [canWrite, setCanWrite] = useState(false)
+  const field = useYjsField(yfields, fieldId)
   const [value, setValue] = useState('')
 
   const peers = usePresence(syncClient)
   const editingPeers = peers.filter((peer) => peer.state.editing === fieldId)
 
+  // Y.Text -> React: one observer covers local echoes and remote updates
+  // alike (both commit through the doc). The hook deliberately does not
+  // re-render per keystroke — content binding belongs to the editor.
   useEffect(() => {
-    const h = yfields.getDoc(fieldId)
-    let alive = true
-    setHandle(h)
-    setSynced(false)
-    setCanWrite(h.canWrite)
-    setValue(h.text.toString())
-
-    // Y.Text -> React: one observer covers local echoes and remote updates
-    // alike (both commit through the doc).
-    const render = () => {
-      if (alive) setValue(h.text.toString())
-    }
-    h.text.observe(render)
-    // canWrite flips on the server's STATE flag or any REJECT — read-only is
-    // told, never guessed.
-    const unsubscribe = h.subscribe(() => {
-      if (alive) setCanWrite(h.canWrite)
-    })
-    void h.whenSynced.then(() => {
-      if (alive) {
-        setSynced(true)
-        setCanWrite(h.canWrite)
-        render()
-      }
-    })
-    return () => {
-      alive = false
-      unsubscribe()
-      h.text.unobserve(render)
-      h.release()
-    }
-  }, [fieldId])
+    if (!field.synced) return
+    const text = field.text
+    const render = () => setValue(text.toString())
+    render()
+    text.observe(render)
+    return () => text.unobserve(render)
+  }, [field.synced, field.text])
 
   const onChange = (next: string) => {
-    if (!handle || !canWrite) return
-    const prev = handle.text.toString()
+    if (!field.synced || !field.canWrite) return
+    const prev = field.text.toString()
     // Minimal diff (common prefix/suffix), applied as one transaction so
     // peers receive a single update per keystroke/paste.
     let start = 0
@@ -80,13 +54,13 @@ export function NotesField({ todoId }: { todoId: string }) {
       prevEnd--
       nextEnd--
     }
-    handle.doc.transact(() => {
-      if (prevEnd > start) handle.text.delete(start, prevEnd - start)
-      if (nextEnd > start) handle.text.insert(start, next.slice(start, nextEnd))
+    field.doc.transact(() => {
+      if (prevEnd > start) field.text.delete(start, prevEnd - start)
+      if (nextEnd > start) field.text.insert(start, next.slice(start, nextEnd))
     })
   }
 
-  if (!synced) {
+  if (!field.synced) {
     return <p style={{ margin: '4px 0 8px 28px', color: '#888', fontSize: '0.8rem' }}>loading notes…</p>
   }
 
@@ -94,7 +68,7 @@ export function NotesField({ todoId }: { todoId: string }) {
     <div style={{ margin: '4px 0 8px 28px' }}>
       <textarea
         value={value}
-        readOnly={!canWrite}
+        readOnly={!field.canWrite}
         onChange={(e) => onChange(e.target.value)}
         // Field-level presence (§16) beside field-level text (§17): focus
         // announces which field this tab is in; blur retracts just that key.
@@ -113,14 +87,14 @@ export function NotesField({ todoId }: { todoId: string }) {
           padding: 8,
           fontFamily: 'inherit',
           fontSize: '0.9rem',
-          background: canWrite ? 'white' : '#f3f3f3',
+          background: field.canWrite ? 'white' : '#f3f3f3',
           border: '1px solid #ccc',
           borderRadius: 4,
           resize: 'vertical',
         }}
       />
       <p style={{ margin: '2px 0 0', fontSize: '0.75rem', color: '#888' }}>
-        {!canWrite && <span style={{ color: '#c40' }}>read-only · </span>}
+        {!field.canWrite && <span style={{ color: '#c40' }}>read-only · </span>}
         {editingPeers.length > 0
           ? `${editingPeers.map((peer) => peer.state.name).join(', ')} ${editingPeers.length === 1 ? 'is' : 'are'} typing here`
           : 'merges character-by-character (Yjs), synced on the same socket as the rows'}

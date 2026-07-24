@@ -23,6 +23,7 @@
   "exports": {
     "./server": "./src/server.ts",
     "./client": "./src/client.ts",
+    "./react": "./src/react.ts",
     "./package.json": "./package.json"
   },
   "files": [
@@ -38,6 +39,10 @@
         "types": "./dist/client.d.ts",
         "default": "./dist/client.js"
       },
+      "./react": {
+        "types": "./dist/react.d.ts",
+        "default": "./dist/react.js"
+      },
       "./package.json": "./package.json"
     }
   },
@@ -51,10 +56,14 @@
   },
   "peerDependencies": {
     "@cf-sync/server": "workspace:*",
+    "react": ">=18",
     "yjs": "^13.6.0"
   },
   "peerDependenciesMeta": {
     "@cf-sync/server": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },
@@ -62,6 +71,11 @@
     "@cf-sync/server": "workspace:*",
     "@cloudflare/vitest-pool-workers": "^0.18.6",
     "@cloudflare/workers-types": "^5.20260718.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.2.3",
+    "happy-dom": "^20.11.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "typescript": "^5.6.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.0.0",

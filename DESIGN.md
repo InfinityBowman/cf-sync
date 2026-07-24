@@ -1232,6 +1232,13 @@ yjs module instance with the sync layer — two copies of yjs in a bundle is a
 known footgun. The alternative (yjs in core) was rejected for exactly the
 standalone-library reason; the seam it plugs into is 17.5.
 
+A `/react` entry (react as an optional peer, mirroring `@cf-sync/client`)
+ships `useYjsField`: the 17.6 handle lifecycle (acquire/release/re-acquire),
+the whenSynced gate, and reactive `canWrite` as one hook, its result
+discriminated on `synced`. It re-renders on sync and permission changes only
+— content binding stays with the editor attached to `text`/`doc`, matching
+the Yjs ecosystem's binding model.
+
 ### 17.3 Wire: a binary lane beside the JSON protocol
 
 All existing protocol messages are JSON text frames. Field traffic is **binary

@@ -39,7 +39,7 @@ await client.mutate.issue.move({ id, column })   // one intent, one wire op, ato
 | [`@cf-sync/protocol`](./packages/protocol) | The shared definition kit: `defineApp`, `defineSchema`, `defineMutators`, `crudMutators`, `AppError` — importable from both worker and browser. Wire internals (hello / push / poke schemas, frame chunking, field frames) live behind `@cf-sync/protocol/internal` |
 | [`@cf-sync/server`](./packages/server) | `createWorkspaceDO`, worker routers with an `authorize` hook, admin surface, and the in-memory test engine |
 | [`@cf-sync/client`](./packages/client) | `SyncClient` (socket, outbox, poke application, reconnect), the TanStack DB collection adapter, React hooks |
-| [`@cf-sync/yjs`](./packages/yjs) | Collaborative-text add-on: Yjs fields in the workspace DO |
+| [`@cf-sync/yjs`](./packages/yjs) | Collaborative-text add-on: Yjs fields in the workspace DO, with a `useYjsField` React hook |
 
 React apps read collections with `useLiveQuery` from **`@tanstack/react-db`** — install it alongside `@cf-sync/client` (it is declared as an optional peer, so your package manager will flag a version pair whose pinned `@tanstack/db` disagrees with ours).
 

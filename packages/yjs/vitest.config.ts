@@ -18,6 +18,11 @@ export default defineConfig({
         // its tests drive a scripted fake seam in node.
         test: { name: 'client', include: ['test/client/**/*.test.ts'] },
       },
+      {
+        // The React hook needs real mount/unmount effects, so it renders
+        // into a DOM (happy-dom) against the same scripted seam.
+        test: { name: 'react', include: ['test/react/**/*.test.ts'], environment: 'happy-dom' },
+      },
     ],
   },
 })

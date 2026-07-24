@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsdown'
 
 export default defineConfig({
-  entry: ['src/server.ts', 'src/client.ts'],
+  entry: ['src/server.ts', 'src/client.ts', 'src/react.ts'],
   format: 'esm',
   platform: 'neutral', // /client runs in browsers, /server in workerd
   dts: true,
