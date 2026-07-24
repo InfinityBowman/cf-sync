@@ -5,13 +5,20 @@ Every workspace exposes an admin surface: stats, export/import, reset, and sessi
 ## Setup
 
 ```ts
-import { createAdminFetch, bearerTokenAuth } from '@cf-sync/server'
+import { createAdminRoute, bearerTokenAuth } from '@cf-sync/server'
 
-const adminHandler = createAdminFetch<Env>({
+const adminRoute = createAdminRoute<Env>({
   namespace: (env) => env.WORKSPACE,
   authorize: bearerTokenAuth((env) => env.ADMIN_TOKEN), // wrangler secret put ADMIN_TOKEN
 })
+
+export default {
+  fetch: async (request: Request, env: Env) =>
+    (await adminRoute(request, env)) ?? syncHandler(request, env),
+}
 ```
+
+Routes resolve to `null` for traffic that isn't theirs, so they chain with `??` — no hand-routing on `pathname`. (`createAdminFetch` is the same route with a built-in 404, for mounting standalone.)
 
 `bearerTokenAuth` compares in constant time and **fails closed** when the secret is unset. Your `authorize` receives the op name (`'stats'`, `'export'`, `'import'`, `'reset'`, `'disconnect'`), so per-op policies are one `switch` away.
 

@@ -71,6 +71,8 @@ export default {
 }
 ```
 
+When the worker grows more routes (the [admin surface](/guide/operations), your own endpoints), switch to the composable form: `createSyncRoute`/`createAdminRoute` resolve to `null` for traffic that isn't theirs and chain with `??` — no hand-routing on `pathname`.
+
 ```jsonc
 // wrangler.jsonc
 {

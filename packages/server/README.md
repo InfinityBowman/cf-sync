@@ -37,7 +37,8 @@ export default {
 Also here:
 
 - `createAdminFetch` + `bearerTokenAuth` + `workspaceAdmin` — per-workspace stats, export/import, reset, and session revocation
-- `@cf-sync/server/testing` — `createTestEngine`, an in-memory engine with the same validation and error semantics as the DO (shared code, not a reimplementation), so mutators and migrations unit-test in plain node with no workerd
+- `createSyncRoute` / `createAdminRoute` — the composable forms: they resolve to `null` for traffic that isn't theirs, so a worker entry chains routes with `??` instead of hand-routing on `pathname`
+- `@cf-sync/server/testing` — `createTestEngine`, an in-memory engine with the same validation and error semantics as the DO (shared code, not a reimplementation), so mutators and migrations unit-test in plain node with no workerd; plus `checkSchemaEvolution`, a one-line CI tripwire that fails the build on a schema change without a version bump
 
 The main entry imports `cloudflare:workers` — import only `@cf-sync/server/testing` from node.
 

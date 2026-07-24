@@ -1,8 +1,9 @@
 import { z } from 'zod'
 import {
   AppError,
-  createAdminFetch,
+  createAdminRoute,
   createSyncFetch,
+  createSyncRoute,
   createWorkspaceDO,
   crudMutators,
   defineApp,
@@ -122,7 +123,7 @@ const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE })
 
 // Session-control drills (§15): the verdict is driven entirely by request
 // headers so each test scripts its own authorize outcome.
-const verdictHandler = createSyncFetch<Env>({
+const verdictRoute = createSyncRoute<Env>({
   namespace: (env) => env.WORKSPACE,
   pathPrefix: '/auth',
   authorize: (request) => {
@@ -142,20 +143,20 @@ const verdictHandler = createSyncFetch<Env>({
     }
   },
 })
-const compactHandler = createSyncFetch<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact' })
-const rolloutHandler = createSyncFetch<Env>({ namespace: (env) => env.ROLLOUT, pathPrefix: '/rollout' })
-const adminHandler = createAdminFetch<Env>({
+const compactRoute = createSyncRoute<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact' })
+const rolloutRoute = createSyncRoute<Env>({ namespace: (env) => env.ROLLOUT, pathPrefix: '/rollout' })
+const adminRoute = createAdminRoute<Env>({
   namespace: (env) => env.WORKSPACE,
   authorize: (request) => request.headers.get('x-test-admin') === 'yes',
 })
 
+// Routes compose with ?? (null = "not mine"); the sync fetch is the terminal
+// handler with its own 404 fallback.
 export default {
-  fetch: (request: Request, env: Env) => {
-    const { pathname } = new URL(request.url)
-    if (pathname.startsWith('/admin/')) return adminHandler(request, env)
-    if (pathname.startsWith('/auth/')) return verdictHandler(request, env)
-    if (pathname.startsWith('/compact/')) return compactHandler(request, env)
-    if (pathname.startsWith('/rollout/')) return rolloutHandler(request, env)
-    return mainHandler(request, env)
-  },
+  fetch: async (request: Request, env: Env) =>
+    (await adminRoute(request, env)) ??
+    (await verdictRoute(request, env)) ??
+    (await compactRoute(request, env)) ??
+    (await rolloutRoute(request, env)) ??
+    mainHandler(request, env),
 }

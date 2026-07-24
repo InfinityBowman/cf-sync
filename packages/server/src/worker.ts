@@ -80,13 +80,34 @@ export interface SyncFetchOptions<Env> {
   pathPrefix?: string
 }
 
-export function createSyncFetch<Env>(opts: SyncFetchOptions<Env>) {
+/**
+ * The composable form of {@link createSyncFetch}: resolves to `null` when the
+ * request is not this route's traffic (path outside `${prefix}/<workspaceId>`),
+ * so a worker entry chains routes and owns its own fallback — the
+ * partyserver/Agents convention for Durable-Object routers:
+ *
+ * ```ts
+ * const sync = createSyncRoute<Env>({ namespace: (env) => env.WORKSPACE, authorize })
+ * const admin = createAdminRoute<Env>({ namespace: (env) => env.WORKSPACE, authorize: bearerTokenAuth(...) })
+ * export default {
+ *   fetch: async (request: Request, env: Env) =>
+ *     (await sync(request, env)) ??
+ *     (await admin(request, env)) ??
+ *     new Response('not found', { status: 404 }),
+ * }
+ * ```
+ *
+ * Requests that *are* this route's traffic but malformed (missing websocket
+ * upgrade, missing clientId, failed authorize) return real Responses, never
+ * null — null strictly means "not mine, keep routing".
+ */
+export function createSyncRoute<Env>(opts: SyncFetchOptions<Env>) {
   const prefix = opts.pathPrefix ?? '/sync'
-  return async (request: Request, env: Env): Promise<Response> => {
+  return async (request: Request, env: Env): Promise<Response | null> => {
     const url = new URL(request.url)
-    if (!url.pathname.startsWith(`${prefix}/`)) return new Response('not found', { status: 404 })
+    if (!url.pathname.startsWith(`${prefix}/`)) return null
     const workspaceId = decodeURIComponent(url.pathname.slice(prefix.length + 1))
-    if (!workspaceId || workspaceId.includes('/')) return new Response('not found', { status: 404 })
+    if (!workspaceId || workspaceId.includes('/')) return null
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('expected websocket upgrade', { status: 426 })
     }
@@ -129,6 +150,17 @@ export function createSyncFetch<Env>(opts: SyncFetchOptions<Env>) {
   }
 }
 
+/**
+ * {@link createSyncRoute} with a built-in 404 fallback — the right shape when
+ * the sync route is the worker's only (or last) route:
+ * `export default { fetch: createSyncFetch({ ... }) }`.
+ */
+export function createSyncFetch<Env>(opts: SyncFetchOptions<Env>) {
+  const route = createSyncRoute(opts)
+  return async (request: Request, env: Env): Promise<Response> =>
+    (await route(request, env)) ?? new Response('not found', { status: 404 })
+}
+
 export type AdminOp = 'stats' | 'export' | 'import' | 'reset' | 'disconnect'
 
 const ADMIN_METHODS: Record<AdminOp, string> = {
@@ -157,17 +189,22 @@ export interface AdminFetchOptions<Env> {
  * Routes `${prefix}/<workspaceId>/<op>` to the workspace DO's admin surface:
  * GET stats, GET export, POST import (snapshot body), POST reset,
  * POST disconnect (kick/refresh live sockets, DESIGN.md §15.5).
+ *
+ * The composable form (see {@link createSyncRoute} for the pattern): resolves
+ * to `null` when the request is not admin traffic, so it chains with other
+ * routes via `??`. {@link createAdminFetch} is the same route with a built-in
+ * 404 fallback.
  */
-export function createAdminFetch<Env>(opts: AdminFetchOptions<Env>) {
+export function createAdminRoute<Env>(opts: AdminFetchOptions<Env>) {
   const prefix = opts.pathPrefix ?? '/admin'
-  return async (request: Request, env: Env): Promise<Response> => {
+  return async (request: Request, env: Env): Promise<Response | null> => {
     const url = new URL(request.url)
-    if (!url.pathname.startsWith(`${prefix}/`)) return new Response('not found', { status: 404 })
+    if (!url.pathname.startsWith(`${prefix}/`)) return null
     const parts = url.pathname.slice(prefix.length + 1).split('/')
-    if (parts.length !== 2) return new Response('not found', { status: 404 })
+    if (parts.length !== 2) return null
     const workspaceId = decodeURIComponent(parts[0]!)
     const op = parts[1] as AdminOp
-    if (!workspaceId || !(op in ADMIN_METHODS)) return new Response('not found', { status: 404 })
+    if (!workspaceId || !(op in ADMIN_METHODS)) return null
     if (request.method !== ADMIN_METHODS[op]) {
       return new Response('method not allowed', { status: 405 })
     }
@@ -186,6 +223,13 @@ export function createAdminFetch<Env>(opts: AdminFetchOptions<Env>) {
       body: request.method === 'POST' ? request.body : null,
     })
   }
+}
+
+/** {@link createAdminRoute} with a built-in 404 fallback for standalone mounting. */
+export function createAdminFetch<Env>(opts: AdminFetchOptions<Env>) {
+  const route = createAdminRoute(opts)
+  return async (request: Request, env: Env): Promise<Response> =>
+    (await route(request, env)) ?? new Response('not found', { status: 404 })
 }
 
 /** Selects which live sockets to close and how (DESIGN.md §15.5). */

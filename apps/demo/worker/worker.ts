@@ -1,4 +1,4 @@
-import { bearerTokenAuth, createAdminFetch, createSyncFetch, createWorkspaceDO } from '@cf-sync/server'
+import { bearerTokenAuth, createAdminRoute, createSyncFetch, createWorkspaceDO } from '@cf-sync/server'
 import { yjsFields } from '@cf-sync/yjs/server'
 import { app } from '../src/schema'
 
@@ -42,15 +42,13 @@ const syncHandler = createSyncFetch<Env>({
 // Admin operations read and destroy whole workspaces: locked behind a bearer
 // token (`curl -H "Authorization: Bearer $TOKEN" .../admin/<ws>/stats`),
 // compared in constant time; an unset secret denies everything.
-const adminHandler = createAdminFetch<Env>({
+const adminRoute = createAdminRoute<Env>({
   namespace: (env) => env.WORKSPACE,
   authorize: bearerTokenAuth((env) => env.ADMIN_TOKEN),
 })
 
+// Routes compose with ?? (null = "not mine"); the sync fetch is the terminal
+// handler and carries the 404 fallback.
 export default {
-  fetch: (request: Request, env: Env) => {
-    const { pathname } = new URL(request.url)
-    if (pathname.startsWith('/admin/')) return adminHandler(request, env)
-    return syncHandler(request, env)
-  },
+  fetch: async (request: Request, env: Env) => (await adminRoute(request, env)) ?? syncHandler(request, env),
 }

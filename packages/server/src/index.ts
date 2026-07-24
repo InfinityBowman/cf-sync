@@ -16,7 +16,9 @@ export {
 export {
   bearerTokenAuth,
   createAdminFetch,
+  createAdminRoute,
   createSyncFetch,
+  createSyncRoute,
   workspaceAdmin,
   type AdminFetchOptions,
   type AdminOp,
