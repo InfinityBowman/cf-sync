@@ -618,8 +618,14 @@ settled:
   changes) just restamps and leaves cursors valid. A throwing step — or a stored
   version outside the declared chain, e.g. a rollback deploy — aborts DO
   initialization: old-shaped data is never served under the new version, and the
-  next wake retries. The log records one `$schema.migrate` entry under client
-  `$system` spanning the whole jump. Deploy order: worker before (or atomically
+  next construction retries. An init-failed workspace is **quarantined, not
+  bricked** (learned 2026-07-24 from a live workspace predating numeric schema
+  versions): upgrades fail as HTTP 503 (clients keep their paced reconnect and
+  recover unaided), admin ops answer 500 with the failure message — except
+  `POST reset`, which stays reachable and heals, because the failure message
+  names it as the remedy and a remedy must not sit behind the failure
+  (`init-failure.test.ts`). The log records one `$schema.migrate` entry under
+  client `$system` spanning the whole jump. Deploy order: worker before (or atomically
   with) web assets, so no client ever speaks a schema the server hasn't reached.
   The full chain is enforced by `schema-rollout.test.ts` and was exercised live
   (demo v1 → v2, 2026-07).

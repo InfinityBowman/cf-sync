@@ -289,6 +289,18 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     #rows: SqlRowStore
     #meta!: Meta
     /**
+     * Set when initialization failed (unloadable meta — e.g. a pre-numeric
+     * stored schema version — a stored version outside the migration chain,
+     * or a throwing migration step). A failed workspace must not brick its
+     * own remedy: it serves nothing except `POST /admin/<id>/reset`, which
+     * wipes storage and clears this. Everything else answers with the error
+     * so operators see *why*; upgrades fail as HTTP 503, which clients treat
+     * as "server offline" and keep retrying with backoff — they recover on
+     * their own once the workspace is reset (or a fixed bundle deploys and
+     * the next construction retries).
+     */
+    #initError: Error | null = null
+    /**
      * Presence, keyed by clientId — in DO memory only, never persisted
      * (DESIGN.md §16.3): a storage write per cursor move would defeat
      * hibernation. Hibernation drops the map while sockets survive; the
@@ -326,35 +338,44 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         for (const socket of this.#readySockets()) this.#deliver(socket, [poll])
       }
       ctx.blockConcurrencyWhile(async () => {
-        migrate(this.#sql)
-        const fingerprint = schemaFingerprint(config.app.schema, config.app.presence)
-        this.#meta = loadOrInitMeta(this.#sql, config.app.version, fingerprint)
-        if (this.#meta.schemaVersion !== config.app.version) {
-          this.#migrateAppSchema(fingerprint)
-        } else if (this.#meta.schemaHash !== fingerprint) {
-          // Same version, different table schemas: a forgotten version bump
-          // (DESIGN.md §9 — every schema change requires one). Warn once per
-          // change and restamp; a hard error here would brick workspaces on a
-          // false positive (the fingerprint can shift with a zod upgrade).
-          // '' predates the fingerprint column; backfill quietly.
-          if (this.#meta.schemaHash !== '') {
-            console.warn(
-              `[cf-sync] table schemas changed under schema version ${config.app.version} ` +
-                `(fingerprint ${this.#meta.schemaHash} -> ${fingerprint}). Every schema change ` +
-                `requires a version bump: set version: ${config.app.version + 1} in defineApp and add ` +
-                `migrations: { ${config.app.version + 1}: ... } (a migrate function if existing rows ` +
-                `need backfilling, null if the change is additive). Without one, old bundles and ` +
-                `cached rows keep being accepted as version ${config.app.version} and rows written ` +
-                `before the change are never migrated.`,
-            )
-          }
-          this.#sql.exec(`UPDATE meta SET schema_hash = ? WHERE id = 1`, fingerprint)
-          this.#meta.schemaHash = fingerprint
-        }
-        if (this.#maintenanceEnabled() && (await ctx.storage.getAlarm()) === null) {
-          await ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
+        try {
+          await this.#initialize()
+        } catch (err) {
+          this.#initError = err instanceof Error ? err : new Error(String(err))
+          console.error('[cf-sync] workspace initialization failed; only admin reset is served', err)
         }
       })
+    }
+
+    async #initialize(): Promise<void> {
+      migrate(this.#sql)
+      const fingerprint = schemaFingerprint(config.app.schema, config.app.presence)
+      this.#meta = loadOrInitMeta(this.#sql, config.app.version, fingerprint)
+      if (this.#meta.schemaVersion !== config.app.version) {
+        this.#migrateAppSchema(fingerprint)
+      } else if (this.#meta.schemaHash !== fingerprint) {
+        // Same version, different table schemas: a forgotten version bump
+        // (DESIGN.md §9 — every schema change requires one). Warn once per
+        // change and restamp; a hard error here would brick workspaces on a
+        // false positive (the fingerprint can shift with a zod upgrade).
+        // '' predates the fingerprint column; backfill quietly.
+        if (this.#meta.schemaHash !== '') {
+          console.warn(
+            `[cf-sync] table schemas changed under schema version ${config.app.version} ` +
+              `(fingerprint ${this.#meta.schemaHash} -> ${fingerprint}). Every schema change ` +
+              `requires a version bump: set version: ${config.app.version + 1} in defineApp and add ` +
+              `migrations: { ${config.app.version + 1}: ... } (a migrate function if existing rows ` +
+              `need backfilling, null if the change is additive). Without one, old bundles and ` +
+              `cached rows keep being accepted as version ${config.app.version} and rows written ` +
+              `before the change are never migrated.`,
+          )
+        }
+        this.#sql.exec(`UPDATE meta SET schema_hash = ? WHERE id = 1`, fingerprint)
+        this.#meta.schemaHash = fingerprint
+      }
+      if (this.#maintenanceEnabled() && (await this.ctx.storage.getAlarm()) === null) {
+        await this.ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
+      }
     }
 
     /**
@@ -412,6 +433,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     }
 
     override async alarm(): Promise<void> {
+      if (this.#initError) return // nothing to maintain; a successful reset re-arms the alarm
       try {
         if (!config.compaction?.disabled) this.#compact()
         if (config.export) await this.#exportLog()
@@ -506,6 +528,23 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     }
 
     override async fetch(request: Request): Promise<Response> {
+      // A workspace whose initialization failed serves exactly one thing:
+      // the admin reset that heals it. The failure message names the remedy,
+      // so the remedy must not sit behind the failure.
+      if (this.#initError) {
+        const url = new URL(request.url)
+        if (url.pathname.startsWith('/admin/')) {
+          const op = url.pathname.slice('/admin/'.length)
+          if (request.method === 'POST' && op === 'reset') return this.#handleAdmin('reset', request)
+          return new Response(JSON.stringify({ error: `workspace unavailable: ${this.#initError.message}` }, null, 2), {
+            status: 500,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        // Upgrades fail as plain HTTP: clients see a failed connection and
+        // keep their paced reconnect, recovering by themselves after a reset.
+        return new Response(`workspace unavailable: ${this.#initError.message}`, { status: 503 })
+      }
       this.#rememberWorkspaceId(request)
       const url = new URL(request.url)
       if (url.pathname.startsWith('/admin/')) {
@@ -580,6 +619,12 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     // invariant 3): no await between reading engine state and sending frames,
     // so per-socket frame order is FIFO relative to version advances.
     override async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+      // Sockets can outlive a wake whose initialization failed (hibernation
+      // preserves them); nothing behind this handler is safe without #meta.
+      if (this.#initError) {
+        this.#closeSocket(ws, 1011, 'workspace unavailable')
+        return
+      }
       const attachment = ws.deserializeAttachment() as Attachment
       // Close beats push (§15.6): a DO-initiated close (kick, supersede,
       // expiry) still delivers in-flight frames until the peer acks — drop
@@ -733,11 +778,18 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         case 'POST reset': {
           // Wipe the workspace and start a new history: fresh backendId, so
           // every surviving cursor is rejected. Connected clients converge via
-          // the clear poke (a clear poke applies from any base).
-          const workspaceId = this.#meta.workspaceId
+          // the clear poke (a clear poke applies from any base). Also the one
+          // op that heals an init-failed workspace, where #meta was never
+          // assigned — recover the name from the routing header instead.
+          const workspaceId =
+            (this.#meta as Meta | undefined)?.workspaceId ||
+            request.headers.get(WORKSPACE_HEADER) ||
+            this.ctx.id.name ||
+            ''
           await this.ctx.storage.deleteAll()
           migrate(this.#sql)
           this.#meta = loadOrInitMeta(this.#sql, config.app.version, schemaFingerprint(config.app.schema, config.app.presence))
+          this.#initError = null
           if (workspaceId) {
             this.#sql.exec(`UPDATE meta SET workspace_id = ? WHERE id = 1`, workspaceId)
             this.#meta.workspaceId = workspaceId
