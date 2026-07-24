@@ -49,6 +49,7 @@ React apps read collections with `useLiveQuery` from **`@tanstack/react-db`** �
 - [Getting started](./docs/guide/getting-started.md) — zero to two converging tabs
 - Core concepts: [Defining your app](./docs/guide/defining-your-app.md) · [Mutations](./docs/guide/mutations.md) · [Schema evolution](./docs/guide/schema-evolution.md) · [Auth & sessions](./docs/guide/auth.md)
 - Collaboration: [Presence](./docs/guide/presence.md) · [Collaborative text](./docs/guide/collaborative-text.md)
+- Client: [Reading data](./docs/guide/reading-data.md) · [Offline & persistence](./docs/guide/offline-persistence.md)
 - Production: [Offline & persistence](./docs/guide/offline-persistence.md) · [Testing](./docs/guide/testing.md) · [Operations](./docs/guide/operations.md) · [Troubleshooting](./docs/guide/troubleshooting.md)
 - [API reference](./docs/reference/index.md) — [SyncClient](./docs/reference/sync-client.md) · [Collections](./docs/reference/collections.md) · [Definition kit](./docs/reference/define-kit.md) · [Server](./docs/reference/server.md) · [Test engine](./docs/reference/testing.md) · [Yjs fields](./docs/reference/yjs.md)
 - [DESIGN.md](./DESIGN.md) — the architecture, locked decisions, and invariants, with prior-art citations

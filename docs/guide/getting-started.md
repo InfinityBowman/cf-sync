@@ -137,6 +137,7 @@ Each `workspaceId` is its own Durable Object with its own storage and sockets. S
 ## Where next
 
 - [Defining your app](/guide/defining-your-app) — schemas, mutators, and the two rules that keep optimistic and authoritative runs in agreement
+- [Reading data](/guide/reading-data) — live queries, joins, and derived collections over synced rows
 - [Mutations & optimistic writes](/guide/mutations) — what confirm, reject, and offline actually mean
 - [Auth & sessions](/guide/auth) — a real `authorize` hook, typed auth context in mutators, kick and refresh
 - [Testing your app](/guide/testing) — unit-test mutators and migrations in plain node, no workerd

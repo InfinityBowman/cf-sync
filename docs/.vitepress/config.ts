@@ -39,6 +39,7 @@ export default defineConfig({
         {
           text: 'Client',
           items: [
+            { text: 'Reading data', link: '/guide/reading-data' },
             { text: 'Offline & persistence', link: '/guide/offline-persistence' },
           ],
         },

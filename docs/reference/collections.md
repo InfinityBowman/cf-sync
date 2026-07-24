@@ -68,7 +68,7 @@ Each write is optimistic — visible immediately, resolved only when the server 
 
 ## Reading
 
-Collections are plain TanStack DB collections — read them with `useLiveQuery` from `@tanstack/react-db`:
+Collections are plain TanStack DB collections — read them with `useLiveQuery` from `@tanstack/react-db`. The full read story — filtering, joins, derived collections, vanilla usage — is in [Reading data](/guide/reading-data).
 
 ```tsx
 import { eq, useLiveQuery } from '@tanstack/react-db'
