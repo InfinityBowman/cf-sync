@@ -8,6 +8,7 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/guide/getting-started', activeMatch: '/guide/' },
+      { text: 'API', link: '/reference/', activeMatch: '/reference/' },
       { text: 'Why cf-sync', link: '/guide/why' },
     ],
     sidebar: {
@@ -56,6 +57,20 @@ export default defineConfig({
               text: 'Design document',
               link: 'https://github.com/InfinityBowman/cf-sync-engine/blob/main/DESIGN.md',
             },
+          ],
+        },
+      ],
+      '/reference/': [
+        {
+          text: 'API reference',
+          items: [
+            { text: 'Overview', link: '/reference/' },
+            { text: 'SyncClient', link: '/reference/sync-client' },
+            { text: 'Collections', link: '/reference/collections' },
+            { text: 'defineApp & the definition kit', link: '/reference/define-kit' },
+            { text: 'Server', link: '/reference/server' },
+            { text: 'Test engine', link: '/reference/testing' },
+            { text: 'Yjs fields', link: '/reference/yjs' },
           ],
         },
       ],

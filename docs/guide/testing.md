@@ -15,7 +15,7 @@ it('clearCompleted deletes only completed todos', () => {
 
   expect(result.error).toBeUndefined()
   expect(engine.get('todos', 't1')).toBeDefined()
-  expect(engine.get('todos', 't2')).toBeUndefined()
+  expect(engine.get('todos', 't2')).toBeNull()
 })
 ```
 
