@@ -14,9 +14,30 @@ function hueOf(key: string): number {
 }
 
 const PRIORITY_ORDER = ['low', 'normal', 'high'] as const
-const PRIORITY_COLOR: Record<Todo['priority'], string> = { low: '#8ac', normal: '#bbb', high: '#d43' }
+const PRIORITY_COLOR: Record<Todo['priority'], string> = {
+  low: 'text-[#5e93cf]',
+  normal: 'text-ink-faint',
+  high: 'text-[#d64545]',
+}
 const nextPriority = (p: Todo['priority']) =>
   PRIORITY_ORDER[(PRIORITY_ORDER.indexOf(p) + 1) % PRIORITY_ORDER.length]!
+
+function PeerChip({ hue, name, self }: { hue: number; name: string; self?: boolean }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full border bg-white py-0.5 pr-2.5 pl-2 text-xs font-medium"
+      style={{
+        borderColor: `hsl(${hue} 45% 78%)`,
+        color: `hsl(${hue} 45% 32%)`,
+        boxShadow: self ? `0 0 0 2px hsl(${hue} 70% 88%)` : undefined,
+      }}
+    >
+      <span className="size-1.5 rounded-full" style={{ background: `hsl(${hue} 70% 48%)` }} />
+      {name}
+      {self && <span className="text-ink-faint font-normal">· you</span>}
+    </span>
+  )
+}
 
 export function App() {
   const [title, setTitle] = useState('')
@@ -26,9 +47,10 @@ export function App() {
   const status = useSyncStatus(syncClient)
   const peers = usePresence(syncClient)
   // The latest rejection (sync.ts feeds onMutationRejected into this store),
-  // rendered as a dismissible banner below the status line.
+  // rendered as a dismissible banner below the header.
   const rejection = useSyncExternalStore(rejections.subscribe, rejections.get, rejections.get)
   const mainRef = useRef<HTMLElement>(null)
+  const selfHue = hueOf(syncClient.clientId)
 
   const { data: items } = useLiveQuery((q) =>
     q.from({ todo: todos }).orderBy(({ todo }) => todo.createdAt, 'asc'),
@@ -90,86 +112,87 @@ export function App() {
   return (
     <main
       ref={mainRef}
-      style={{ maxWidth: 480, margin: '3rem auto', fontFamily: 'system-ui, sans-serif', position: 'relative' }}
+      // Each tab's accent is its own peer hue (see index.css) — the presence
+      // identity threaded through the chrome itself.
+      style={{ '--self-hue': selfHue } as React.CSSProperties}
+      className="font-sans text-ink relative mx-auto max-w-[34rem] px-5 py-12"
     >
-      <h1 style={{ fontSize: '1.4rem' }}>
-        cf-sync demo <small style={{ color: '#888' }}>#{workspaceId}</small>
-      </h1>
-      <p style={{ color: status === 'synced' ? '#2a2' : '#c80' }}>status: {status}</p>
+      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h1 className="font-mono text-lg font-medium tracking-tight">cf-sync</h1>
+        <span className="border-line text-ink-soft rounded-full border bg-white px-2.5 py-0.5 font-mono text-xs">
+          #{workspaceId}
+        </span>
+        <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-xs">
+          <span
+            className={
+              status === 'synced'
+                ? 'size-2 rounded-full bg-[#3a9e5f]'
+                : 'motion-safe:animate-pulse size-2 rounded-full bg-[#d9930d]'
+            }
+          />
+          <span className={status === 'synced' ? 'text-[#2e7d4c]' : 'text-[#a06c07]'}>{status}</span>
+        </span>
+      </header>
+
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <PeerChip hue={selfHue} name={displayName} self />
+        {peers.map((peer) => (
+          <PeerChip key={peer.clientId} hue={hueOf(peer.clientId)} name={peer.state.name ?? '?'} />
+        ))}
+      </div>
+
       {rejection && (
-        <p
-          style={{
-            display: 'flex',
-            gap: 8,
-            alignItems: 'baseline',
-            padding: '6px 10px',
-            borderRadius: 4,
-            background: '#fee',
-            border: '1px solid #e99',
-            color: '#922',
-            fontSize: '0.85rem',
-          }}
-        >
-          <span style={{ flex: 1 }}>
-            <strong>{rejection.name}</strong> rejected ({rejection.code}): {rejection.message} — the
+        <div className="border-reject/30 bg-reject-soft text-reject motion-safe:animate-[rise_150ms_ease-out] mt-4 flex items-baseline gap-2 rounded-lg border px-3.5 py-2.5 text-sm">
+          <p className="flex-1">
+            <strong className="font-semibold">{rejection.name}</strong> rejected{' '}
+            <span className="font-mono text-xs">({rejection.code})</span>: {rejection.message}. The
             optimistic change was rolled back.
-          </span>
+          </p>
           <button
             onClick={rejections.dismiss}
-            style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'inherit', padding: 0 }}
+            aria-label="Dismiss"
+            className="cursor-pointer self-center rounded p-1 leading-none hover:bg-white/60"
           >
             ×
           </button>
-        </p>
+        </div>
       )}
-      <p style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: '0.85rem' }}>
-        <span
-          style={{
-            padding: '2px 8px',
-            borderRadius: 999,
-            background: `hsl(${hueOf(syncClient.clientId)} 70% 90%)`,
-            border: `1px solid hsl(${hueOf(syncClient.clientId)} 60% 60%)`,
-          }}
-        >
-          {displayName} (you)
-        </span>
-        {peers.map((peer) => (
-          <span
-            key={peer.clientId}
-            style={{
-              padding: '2px 8px',
-              borderRadius: 999,
-              background: `hsl(${hueOf(peer.clientId)} 70% 90%)`,
-              border: `1px solid hsl(${hueOf(peer.clientId)} 60% 60%)`,
-            }}
-          >
-            {peer.state.name}
-          </span>
-        ))}
-      </p>
-      <div style={{ display: 'flex', gap: 8 }}>
+
+      <div className="mt-5 flex gap-2">
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && addTodo()}
           placeholder="Add a todo and press Enter"
-          style={{ flex: 1, padding: 8 }}
+          className="border-line placeholder:text-ink-faint min-w-0 flex-1 rounded-lg border bg-white px-3.5 py-2 text-sm outline-none focus:border-[hsl(var(--self-hue)_55%_60%)] focus:ring-2 focus:ring-[hsl(var(--self-hue)_70%_86%)]"
         />
-        <button onClick={addTodo}>Add</button>
+        <button
+          onClick={addTodo}
+          className="bg-ink cursor-pointer rounded-lg px-4 py-2 text-sm font-medium text-white hover:bg-[#33333a] focus-visible:ring-2 focus-visible:ring-[hsl(var(--self-hue)_60%_60%)] focus-visible:outline-none"
+        >
+          Add
+        </button>
       </div>
-      <ul style={{ listStyle: 'none', padding: 0 }}>
+
+      <ul className="border-line divide-line mt-4 divide-y rounded-xl border bg-white shadow-[0_1px_3px_rgb(0_0_0/0.04)]">
+        {items.length === 0 && (
+          <li className="text-ink-soft px-4 py-8 text-center text-sm">
+            Nothing here yet. Add the first todo, then open this page in a second tab.
+          </li>
+        )}
         {items.map((todo) => {
           const notesOpen = openNotes.has(todo.id)
           // Presence-driven invitation: a badge when someone is typing in
           // this todo's notes, visible even while the panel is closed.
           const typingHere = peers.some((peer) => peer.state.editing === notesFieldId(todo.id))
           return (
-            <li key={todo.id} style={{ padding: '6px 0' }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <li key={todo.id} className="group px-4 py-2.5">
+              <div className="flex items-center gap-3">
                 <input
                   type="checkbox"
                   checked={todo.completed}
                   onChange={() => todos.update(todo.id, (draft) => (draft.completed = !draft.completed))}
+                  className="size-4 shrink-0 cursor-pointer [accent-color:hsl(var(--self-hue)_60%_42%)]"
                 />
                 {/* The v1→v2 migration made visible: rows written before v2
                     were backfilled to 'normal' (schema.ts), new rows get the
@@ -181,62 +204,71 @@ export function App() {
                   onClick={() =>
                     void syncClient.mutate.todos.setPriority({ id: todo.id, priority: nextPriority(todo.priority) })
                   }
-                  title={`priority: ${todo.priority} — click to cycle (the server rejects this on completed todos)`}
-                  style={{
-                    border: 'none',
-                    background: 'none',
-                    cursor: 'pointer',
-                    padding: 0,
-                    lineHeight: 1,
-                    color: PRIORITY_COLOR[todo.priority],
-                  }}
+                  title={`priority: ${todo.priority}. Click to cycle (the server rejects this on completed todos)`}
+                  className={`-m-1.5 shrink-0 cursor-pointer p-1.5 text-[0.6rem] leading-none ${PRIORITY_COLOR[todo.priority]}`}
                 >
                   ●
                 </button>
-                <span style={{ flex: 1, textDecoration: todo.completed ? 'line-through' : 'none' }}>
+                <span
+                  className={`flex-1 text-sm ${todo.completed ? 'text-ink-faint line-through' : ''}`}
+                >
                   {todo.title}
                 </span>
                 <button
                   onClick={() => toggleNotes(todo.id)}
-                  style={{ fontSize: '0.8rem' }}
                   title="Collaborative notes (Yjs field)"
+                  className="text-ink-soft hover:border-line cursor-pointer rounded-md border border-transparent px-1.5 py-0.5 font-mono text-xs hover:bg-paper"
                 >
-                  {notesOpen ? 'notes ▾' : 'notes ▸'}
-                  {typingHere && <span style={{ color: '#2a2' }}> ●</span>}
+                  notes {notesOpen ? '▾' : '▸'}
+                  {typingHere && <span className="ml-1 text-[#3a9e5f]">●</span>}
                 </button>
-                <button onClick={() => todos.delete(todo.id)}>×</button>
+                <button
+                  onClick={() => todos.delete(todo.id)}
+                  aria-label={`Delete "${todo.title}"`}
+                  className="text-ink-faint hover:text-reject cursor-pointer rounded-md px-1 py-0.5 leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                >
+                  ×
+                </button>
               </div>
               {notesOpen && <NotesField todoId={todo.id} />}
             </li>
           )
         })}
       </ul>
-      <button onClick={clearCompleted} disabled={!items.some((t) => t.completed)}>
-        Clear completed (server intent)
-      </button>
-      <p style={{ color: '#888', fontSize: '0.85rem' }}>
+
+      <div className="mt-4 flex items-baseline justify-between gap-3">
+        <button
+          onClick={clearCompleted}
+          disabled={!items.some((t) => t.completed)}
+          className="border-line text-ink-soft enabled:hover:text-ink cursor-pointer rounded-lg border bg-white px-3 py-1.5 text-xs font-medium enabled:hover:border-[#c9c9cf] disabled:cursor-default disabled:opacity-45"
+        >
+          Clear completed
+        </button>
+        <span className="text-ink-faint font-mono text-[0.65rem]">server intent · one wire mutation</span>
+      </div>
+
+      <p className="text-ink-soft mt-6 text-xs leading-relaxed">
         Open this page in a second tab: mutations sync, peer cursors move live, and a todo's notes
         merge character-by-character while both tabs type. Complete a todo, then click its priority
-        dot — the server rejects the change and the optimistic update rolls back. Use a URL hash
-        (e.g. #team-a) to switch workspaces.
+        dot: the server rejects the change and the optimistic update rolls back. Use a URL hash
+        (e.g. <span className="font-mono">#team-a</span>) to switch workspaces.
       </p>
+
       {peers.map(
         (peer) =>
           peer.state.cursor && (
             <div
               key={peer.clientId}
+              className="pointer-events-none absolute z-10"
               style={{
-                position: 'absolute',
                 left: peer.state.cursor.x,
                 top: peer.state.cursor.y,
-                pointerEvents: 'none',
-                zIndex: 10,
                 // Presence frames arrive at the 100ms throttle cadence;
                 // easing between them keeps the motion smooth.
                 transition: 'left 90ms linear, top 90ms linear',
               }}
             >
-              <svg width="14" height="18" viewBox="0 0 14 18" style={{ display: 'block' }}>
+              <svg width="14" height="18" viewBox="0 0 14 18" className="block drop-shadow-sm">
                 <path
                   d="M1 1 L13 10 L7.5 10.8 L4.5 16 Z"
                   fill={`hsl(${hueOf(peer.clientId)} 70% 55%)`}
@@ -245,15 +277,8 @@ export function App() {
                 />
               </svg>
               <span
-                style={{
-                  marginLeft: 10,
-                  padding: '1px 6px',
-                  borderRadius: 4,
-                  fontSize: '0.7rem',
-                  color: 'white',
-                  background: `hsl(${hueOf(peer.clientId)} 70% 45%)`,
-                  whiteSpace: 'nowrap',
-                }}
+                className="ml-2.5 rounded px-1.5 py-px text-[0.7rem] whitespace-nowrap text-white shadow-sm"
+                style={{ background: `hsl(${hueOf(peer.clientId)} 70% 45%)` }}
               >
                 {peer.state.name}
               </span>

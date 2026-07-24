@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+
+  --color-paper: #f7f7f8;
+  --color-ink: #1b1b1f;
+  --color-ink-soft: #6f7076;
+  --color-ink-faint: #a2a3aa;
+  --color-line: #e3e3e7;
+  --color-reject: #b3352e;
+  --color-reject-soft: #fbf0ef;
+}
+
+/* Each tab derives its accent from its own peer hue (set on <main> by App.tsx),
+   so two tabs side by side are subtly, personally different — the presence
+   system made visible in the chrome itself. */
+:root {
+  --self-hue: 220;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+body {
+  background-color: var(--color-paper);
+  /* The dot grid is the coordinate space peer cursors fly across. */
+  background-image: radial-gradient(circle, #d9d9de 1px, transparent 1px);
+  background-size: 22px 22px;
+  color: var(--color-ink);
+}

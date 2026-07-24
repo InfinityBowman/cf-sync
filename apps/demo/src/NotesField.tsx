@@ -61,11 +61,11 @@ export function NotesField({ todoId }: { todoId: string }) {
   }
 
   if (!field.synced) {
-    return <p style={{ margin: '4px 0 8px 28px', color: '#888', fontSize: '0.8rem' }}>loading notes…</p>
+    return <p className="text-ink-faint mt-1.5 mb-1 ml-7 font-mono text-xs">loading notes…</p>
   }
 
   return (
-    <div style={{ margin: '4px 0 8px 28px' }}>
+    <div className="border-line mt-2 mb-1 ml-7 border-l-2 pl-3">
       <textarea
         value={value}
         readOnly={!field.canWrite}
@@ -74,30 +74,29 @@ export function NotesField({ todoId }: { todoId: string }) {
         // announces which field this tab is in; blur retracts just that key.
         onFocus={() => syncClient.presence.update({ editing: fieldId })}
         onBlur={() => syncClient.presence.update({ editing: undefined })}
-        placeholder="Notes — open this todo in another tab and type in both at once"
+        placeholder="Notes: open this todo in another tab and type in both at once"
         rows={3}
         // The editor-side length guard is the paved path (§17.3): the user
         // sees the limit here, with native undo, long before the transport
         // frame guard (MAX_FIELD_UPDATE_BYTES) or the 700KB field ceiling
         // could ever refuse anything.
         maxLength={4000}
-        style={{
-          width: '100%',
-          boxSizing: 'border-box',
-          padding: 8,
-          fontFamily: 'inherit',
-          fontSize: '0.9rem',
-          background: field.canWrite ? 'white' : '#f3f3f3',
-          border: '1px solid #ccc',
-          borderRadius: 4,
-          resize: 'vertical',
-        }}
+        className={`border-line placeholder:text-ink-faint box-border w-full resize-y rounded-lg border px-3 py-2 font-sans text-sm outline-none ${
+          field.canWrite
+            ? 'bg-paper focus:border-[hsl(var(--self-hue)_55%_60%)] focus:bg-white focus:ring-2 focus:ring-[hsl(var(--self-hue)_70%_86%)]'
+            : 'text-ink-soft bg-[#efeff1]'
+        }`}
       />
-      <p style={{ margin: '2px 0 0', fontSize: '0.75rem', color: '#888' }}>
-        {!field.canWrite && <span style={{ color: '#c40' }}>read-only · </span>}
-        {editingPeers.length > 0
-          ? `${editingPeers.map((peer) => peer.state.name).join(', ')} ${editingPeers.length === 1 ? 'is' : 'are'} typing here`
-          : 'merges character-by-character (Yjs), synced on the same socket as the rows'}
+      <p className="text-ink-faint mt-0.5 font-mono text-[0.7rem]">
+        {!field.canWrite && <span className="text-reject">read-only · </span>}
+        {editingPeers.length > 0 ? (
+          <span className="text-[#2e7d4c]">
+            {editingPeers.map((peer) => peer.state.name).join(', ')}{' '}
+            {editingPeers.length === 1 ? 'is' : 'are'} typing here
+          </span>
+        ) : (
+          'merges character-by-character (Yjs), synced on the same socket as the rows'
+        )}
       </p>
     </div>
   )
