@@ -14,10 +14,10 @@ Use a Yjs field when concurrent *in-field* editing is an expected workflow (note
 import { createWorkspaceDO } from '@cf-sync/server'
 import { yjsFields } from '@cf-sync/yjs/server'
 
-export const WorkspaceDO = createWorkspaceDO({
+export class WorkspaceDO extends createWorkspaceDO({
   app,
   extension: yjsFields(),
-})
+}) {}
 ```
 
 Field updates travel on a binary lane over the existing sync socket and persist in the DO's SQLite alongside your rows.

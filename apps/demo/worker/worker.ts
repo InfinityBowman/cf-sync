@@ -3,7 +3,8 @@ import { yjsFields } from '@cf-sync/yjs/server'
 import { app } from '../src/schema'
 
 interface Env {
-  WORKSPACE: DurableObjectNamespace
+  // Typed with the DO class, matching what `wrangler types` generates.
+  WORKSPACE: DurableObjectNamespace<WorkspaceDO>
   EXPORT_BUCKET: R2Bucket
   /** Set via `wrangler secret put ADMIN_TOKEN`. Unset = admin surface disabled. */
   ADMIN_TOKEN?: string
@@ -11,7 +12,10 @@ interface Env {
 
 // Version, schema, mutators, and migrations all travel inside `app` — the
 // same object the browser passes to SyncClient, so the two can't disagree.
-export const WorkspaceDO = createWorkspaceDO({
+// A class declaration (not `export const`) so the name is also a type —
+// `wrangler types` needs one to emit the typed WORKSPACE binding above. The
+// body stays empty: the engine's handlers are not extension points.
+export class WorkspaceDO extends createWorkspaceDO({
   app,
   export: {
     // Annotating the param types the whole DO's env — no cast.
@@ -30,7 +34,7 @@ export const WorkspaceDO = createWorkspaceDO({
   //       fieldId.startsWith(`todo-notes:`) && auth !== undefined,
   //   }),
   extension: yjsFields(),
-})
+}) {}
 
 const syncHandler = createSyncFetch<Env>({
   namespace: (env) => env.WORKSPACE,

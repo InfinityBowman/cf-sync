@@ -11,8 +11,8 @@ Optimistic mutations, real-time propagation, offline with exactly-once replay, t
 const app = defineApp({ version: 1, schema, mutators })
 
 // Worker — the Durable Object is the backend:
-export const WorkspaceDO = createWorkspaceDO({ app })
-export default { fetch: createSyncFetch({ namespace: (env) => env.WORKSPACE, authorize }) }
+export class WorkspaceDO extends createWorkspaceDO({ app }) {}
+export default { fetch: createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE, authorize }) }
 
 // Browser — typed collections and optimistic intent mutations:
 const client = new SyncClient({ url, workspaceId, app, persist: true })

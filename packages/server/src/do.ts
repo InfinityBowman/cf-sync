@@ -383,6 +383,19 @@ class SqlRowStore implements EngineRowStore {
  * worker entry (named per the wrangler binding). Deliberately opaque — the
  * engine's surface is the sync protocol and the admin routes, not methods on
  * the instance.
+ *
+ * Export it through an empty subclass so the name is a TypeScript type as
+ * well as a value (`wrangler types` needs one to emit a typed binding):
+ *
+ * ```ts
+ * export class WorkspaceDO extends createWorkspaceDO({ app }) {}
+ * ```
+ *
+ * That subclass exists to *name* the class — keep its body empty. The
+ * engine's handlers (`fetch`, `webSocketMessage`, `webSocketClose`, `alarm`)
+ * are not extension points: overriding them breaks the engine's invariants
+ * (DESIGN.md §6). Server-side behavior is added through the `extension`
+ * config seam instead.
  */
 export type WorkspaceDOClass<Env = unknown> = new (
   ctx: DurableObjectState,
@@ -392,13 +405,17 @@ export type WorkspaceDOClass<Env = unknown> = new (
 /**
  * Builds the Workspace Durable Object class from the shared app definition —
  * the server half of the engine. Export the returned class from the worker
- * entry and bind it in wrangler with `new_sqlite_classes` (the engine
+ * entry through an empty subclass (a `class` declaration is a type as well as
+ * a value, which lets `wrangler types` emit a typed binding — a bare
+ * `export const` leaves the generated Env referencing a type that doesn't
+ * exist) and bind it in wrangler with `new_sqlite_classes` (the engine
  * requires SQLite-backed storage; a class declared with `new_classes`
  * deploys fine and then fails at runtime on its first SQL access). Each
  * workspace id resolves to one instance holding that workspace's rows,
  * mutation log, and live sockets; traffic reaches it through
  * `createSyncFetch` and `createAdminFetch`/`workspaceAdmin`, never through
- * methods on the instance.
+ * methods on the instance — see {@link WorkspaceDOClass} for what the
+ * subclass may and may not do.
  *
  * @example
  * ```ts
@@ -406,10 +423,10 @@ export type WorkspaceDOClass<Env = unknown> = new (
  * import { createWorkspaceDO, createSyncFetch } from '@cf-sync/server'
  * import { app } from '../src/schema' // the same defineApp value the client uses
  *
- * export const WorkspaceDO = createWorkspaceDO({ app })
+ * export class WorkspaceDO extends createWorkspaceDO({ app }) {}
  *
  * export default {
- *   fetch: createSyncFetch({
+ *   fetch: createSyncFetch<Env>({
  *     namespace: (env) => env.WORKSPACE,
  *     authorize: async (request, { workspaceId }) => {
  *       // Validate the session, check workspace membership.

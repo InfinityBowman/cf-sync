@@ -60,10 +60,10 @@ A workspace whose stored state can no longer be loaded (e.g. written by a much o
 Add an `export` bucket to the DO config and a periodic alarm streams the mutation log to R2 as ndjson — archive and analytics without touching the hot path:
 
 ```ts
-export const WorkspaceDO = createWorkspaceDO({
+export class WorkspaceDO extends createWorkspaceDO({
   app,
   export: { bucket: (env: Env) => env.EXPORT_BUCKET }, // the annotation types the whole DO's env
-})
+}) {}
 ```
 
 Objects land at `cf-sync/<workspaceId>/mutation-log/<from>-<to>.ndjson`. DO SQLite remains the system of record (it has point-in-time recovery of its own); R2 covers everything beyond it.

@@ -65,8 +65,13 @@ export type AuthVerdict =
 
 /** Options for {@link createSyncRoute} / {@link createSyncFetch}, the worker router for sync WebSocket upgrades. */
 export interface SyncFetchOptions<Env> {
-  /** Resolves the workspace Durable Object namespace from the worker env — typically `(env) => env.WORKSPACE`. */
-  namespace: (env: Env) => DurableObjectNamespace
+  /**
+   * Resolves the workspace Durable Object namespace from the worker env —
+   * typically `(env) => env.WORKSPACE`. Typed `DurableObjectNamespace<any>`
+   * so both a bare binding and the `DurableObjectNamespace<WorkspaceDO>`
+   * that `wrangler types` generates are accepted without a cast.
+   */
+  namespace: (env: Env) => DurableObjectNamespace<any>
   /**
    * Connection-time authorization, run in the worker before the DO is
    * reached. Return false or a Response to reject with
@@ -147,7 +152,9 @@ export function createSyncRoute<Env>(opts: SyncFetchOptions<Env>) {
       }
     }
 
-    const namespace = opts.namespace(env)
+    // Widen to the bare namespace: instantiating DurableObjectStub<any>
+    // (Rpc.Provider over `any`) exceeds TS's instantiation depth.
+    const namespace = opts.namespace(env) as DurableObjectNamespace
     const stub = namespace.get(namespace.idFromName(workspaceId))
     return stub.fetch(request.url, { headers })
   }
@@ -181,8 +188,8 @@ const ADMIN_METHODS: Record<AdminOp, string> = {
 
 /** Options for {@link createAdminRoute} / {@link createAdminFetch}, the worker router for the workspace admin surface. */
 export interface AdminFetchOptions<Env> {
-  /** Resolves the workspace Durable Object namespace from the worker env — typically `(env) => env.WORKSPACE`. */
-  namespace: (env: Env) => DurableObjectNamespace
+  /** Resolves the workspace Durable Object namespace from the worker env — typically `(env) => env.WORKSPACE`. Accepts typed (`wrangler types`) and bare bindings alike. */
+  namespace: (env: Env) => DurableObjectNamespace<any>
   /**
    * Required — admin operations read and destroy whole workspaces. Return
    * false or a Response to reject.
@@ -223,7 +230,7 @@ export function createAdminRoute<Env>(opts: AdminFetchOptions<Env>) {
     if (verdict instanceof Response) return verdict
     if (!verdict) return new Response('unauthorized', { status: 403 })
 
-    const namespace = opts.namespace(env)
+    const namespace = opts.namespace(env) as DurableObjectNamespace
     const stub = namespace.get(namespace.idFromName(workspaceId))
     const headers = new Headers(request.headers)
     headers.set(WORKSPACE_HEADER, workspaceId)
@@ -310,8 +317,9 @@ export interface WorkspaceAdmin {
  * carries the caller's authority — external callers go through
  * `createAdminFetch` and its authorize hook instead.
  */
-export function workspaceAdmin(namespace: DurableObjectNamespace, workspaceId: string): WorkspaceAdmin {
-  const stub = namespace.get(namespace.idFromName(workspaceId))
+export function workspaceAdmin(namespace: DurableObjectNamespace<any>, workspaceId: string): WorkspaceAdmin {
+  const ns = namespace as DurableObjectNamespace
+  const stub = ns.get(ns.idFromName(workspaceId))
   const call = async <T>(op: AdminOp, body?: unknown): Promise<T> => {
     const response = await stub.fetch(`https://do/admin/${op}`, {
       method: ADMIN_METHODS[op],

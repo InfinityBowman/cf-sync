@@ -13,7 +13,7 @@ npm install @cf-sync/yjs yjs
 import { createWorkspaceDO } from '@cf-sync/server'
 import { yjsFields } from '@cf-sync/yjs/server'
 
-export const WorkspaceDO = createWorkspaceDO({ app, extension: yjsFields() })
+export class WorkspaceDO extends createWorkspaceDO({ app, extension: yjsFields() }) {}
 ```
 
 ```ts

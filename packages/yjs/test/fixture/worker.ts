@@ -31,8 +31,8 @@ const authApp = defineApp({
   mutators: defineMutators(schema, {}, { authContext: z.object({ writeAllowed: z.boolean().optional() }) }),
 })
 
-/** Default: any member writes any field. */
-export const WorkspaceDO = createWorkspaceDO({ app, extension: yjsFields() })
+/** Default: any member writes any field. Exported in the documented shape (empty subclass — see server fixture). */
+export class WorkspaceDO extends createWorkspaceDO({ app, extension: yjsFields() }) {}
 
 /** Write-gated on the §15 stamps (the '/auth' route below supplies them). */
 export const AuthWriteDO = createWorkspaceDO({

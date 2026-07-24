@@ -57,10 +57,13 @@ export const app = defineApp({ version: 1, schema, mutators })
 import { createWorkspaceDO, createSyncFetch } from '@cf-sync/server'
 import { app } from '../src/schema'
 
-export const WorkspaceDO = createWorkspaceDO({ app })
+// A class declaration, not `const`: the name doubles as a TypeScript type,
+// which `wrangler types` needs to generate a typed Env. Keep the body empty —
+// the engine's handlers are not extension points.
+export class WorkspaceDO extends createWorkspaceDO({ app }) {}
 
 export default {
-  fetch: createSyncFetch({
+  fetch: createSyncFetch<Env>({
     namespace: (env) => env.WORKSPACE,
     authorize: async (request, { workspaceId }) => {
       // Validate the session, check workspace membership.
@@ -70,6 +73,8 @@ export default {
   }),
 }
 ```
+
+The `Env` type comes from `npx wrangler types` — run it after saving the wrangler config below and it generates `WORKSPACE: DurableObjectNamespace<WorkspaceDO>` from your bindings (naming that type is why the DO is exported as a class). Prefer hand-writing? `interface Env { WORKSPACE: DurableObjectNamespace<WorkspaceDO> }` works the same.
 
 When the worker grows more routes (the [admin surface](/guide/operations), your own endpoints), switch to the composable form: `createSyncRoute`/`createAdminRoute` resolve to `null` for traffic that isn't theirs and chain with `??` — no hand-routing on `pathname`.
 

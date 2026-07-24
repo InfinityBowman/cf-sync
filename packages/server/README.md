@@ -11,10 +11,11 @@ npm install @cf-sync/server @cf-sync/protocol zod
 import { createWorkspaceDO, createSyncFetch } from '@cf-sync/server'
 import { app } from '../src/schema' // your defineApp definition
 
-export const WorkspaceDO = createWorkspaceDO({ app })
+// A class declaration (not `const`) so `wrangler types` can name the type.
+export class WorkspaceDO extends createWorkspaceDO({ app }) {}
 
 export default {
-  fetch: createSyncFetch({
+  fetch: createSyncFetch<Env>({
     namespace: (env) => env.WORKSPACE,
     authorize: async (request, { workspaceId }) => {
       // validate the session, check workspace membership

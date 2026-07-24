@@ -93,13 +93,16 @@ export const testApp = defineApp({
   }),
 })
 
-export const WorkspaceDO = createWorkspaceDO({
+// The documented export shape — an empty subclass so the name is also a type
+// (`wrangler types` needs one); extending the returned class is part of the
+// public contract this fixture keeps compiling.
+export class WorkspaceDO extends createWorkspaceDO({
   app: testApp,
   export: {
     bucket: (env: Env) => env.EXPORT_BUCKET,
     maxBatchRows: 5, // small batches so tests exercise multi-object runs
   },
-})
+}) {}
 
 // Same mutators, but tombstones compact immediately when the alarm fires.
 export const CompactingDO = createWorkspaceDO({

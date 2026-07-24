@@ -7,7 +7,7 @@ The worker half of the engine from `@cf-sync/server`: `createWorkspaceDO` builds
 import { createWorkspaceDO, createSyncFetch } from '@cf-sync/server'
 import { app } from '../src/schema' // the same defineApp value the client uses
 
-export const WorkspaceDO = createWorkspaceDO({ app })
+export class WorkspaceDO extends createWorkspaceDO({ app }) {}
 
 export default {
   fetch: createSyncFetch<Env>({
@@ -34,6 +34,8 @@ Builds the Workspace Durable Object class. Export the returned class from the wo
 ```
 
 Each workspace id resolves to one instance holding that workspace's rows, mutation log, and live sockets. The class is deliberately opaque (`WorkspaceDOClass`) — traffic reaches it through the routers below, never through instance methods.
+
+Export it through an empty subclass, as above: a `class` declaration is a type as well as a value, which is what lets `wrangler types` emit `WORKSPACE: DurableObjectNamespace<WorkspaceDO>` (a bare `export const` leaves the generated Env referencing a type that doesn't exist). The subclass exists to *name* the class — keep the body empty. The engine's handlers (`fetch`, `webSocketMessage`, `webSocketClose`, `alarm`) are not extension points; overriding them breaks the invariants the engine maintains. Server-side behavior is added through [`extension`](#extension) instead.
 
 ### app
 
@@ -86,9 +88,9 @@ export default {
 
 ### namespace
 
-`(env: Env) => DurableObjectNamespace` · **required**
+`(env: Env) => DurableObjectNamespace<any>` · **required**
 
-Resolves the workspace Durable Object namespace from the worker env — typically `(env) => env.WORKSPACE`.
+Resolves the workspace Durable Object namespace from the worker env — typically `(env) => env.WORKSPACE`. Typed `DurableObjectNamespace<any>` so both a bare binding and the `DurableObjectNamespace<WorkspaceDO>` that `wrangler types` generates are accepted without a cast.
 
 ### authorize
 
