@@ -27,13 +27,19 @@ export type FieldMsgType =
 
 /**
  * Transport frame guard on a single field UPDATE — the binary-lane analogue
- * of the 900KB poke chunk (D9), not a field-semantics limit. An update this
- * large is a paste or a bug, never typing. The paved place to keep edits
- * under it is the editor binding's own paste/length guard, where the undo is
- * native and the user sees the limit before anything happens — the constant
- * is exported for exactly that.
+ * of the 900KB poke chunk (D9), not a field-semantics limit. Sized against
+ * the field ceiling so the worst frame the lane can produce stays inside the
+ * D9 budget: accept-then-freeze admits one crossing update, so a field's log
+ * (and the STATE diff a fresh client is served from it) is bounded by
+ * MAX_FIELD_BYTES + one guarded update = 900KB. The guard must fit the
+ * push-back leg too — a disconnect's edits merge into ONE update — so it is
+ * far above any live-typing frame; what trips it is a huge paste or an
+ * extreme offline backlog. The paved place to keep edits under it is the
+ * editor binding's own paste/length guard, where the undo is native and the
+ * user sees the limit before anything happens — the constant is exported for
+ * exactly that.
  */
-export const MAX_FIELD_UPDATE_BYTES = 65_536
+export const MAX_FIELD_UPDATE_BYTES = 200_000
 
 /**
  * The field ceiling (running byte total of appended updates). A field is a

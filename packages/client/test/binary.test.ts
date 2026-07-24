@@ -53,6 +53,25 @@ describe('binary lane seams (§17.5)', () => {
     expect(latest().sent.some((m) => m.type === 'hello')).toBe(true)
   })
 
+  it('a throwing listener neither starves other subscribers nor escapes into socket handling', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { client, latest } = makeClient()
+      client.start()
+      latest().open()
+      const seen: number[][] = []
+      client.onBinary(() => {
+        throw new Error('bad add-on')
+      })
+      client.onBinary((bytes) => seen.push([...bytes]))
+      expect(() => latest().receiveBinary(new Uint8Array([5, 6]))).not.toThrow()
+      expect(seen).toEqual([[5, 6]])
+      expect(error).toHaveBeenCalledTimes(1)
+    } finally {
+      error.mockRestore()
+    }
+  })
+
   it('drops non-ArrayBuffer binary data with a one-time warning', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {

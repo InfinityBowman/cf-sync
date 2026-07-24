@@ -1073,7 +1073,15 @@ export class SyncClient<
       }
       return
     }
-    for (const listener of this.#binaryListeners) listener(bytes)
+    // Isolated per listener: this is the add-on seam, and one add-on's throw
+    // must not starve another of the frame (or escape into socket handling).
+    for (const listener of this.#binaryListeners) {
+      try {
+        listener(bytes)
+      } catch (err) {
+        console.error('[cf-sync] onBinary listener threw', err)
+      }
+    }
   }
 
   #onMessage(raw: string): void {

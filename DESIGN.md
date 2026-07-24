@@ -1305,13 +1305,19 @@ broadcast the whole corpus to every tab — seeding goes through admin import
 
 Binary frames are only accepted on `ready` sockets. Two independent limits:
 
-- `MAX_FIELD_UPDATE_BYTES` (64KB) is a **transport frame guard** — the
+- `MAX_FIELD_UPDATE_BYTES` (200KB) is a **transport frame guard** — the
   binary-lane analogue of the 900KB poke chunk (D9), not a field-semantics
-  limit. A single update that large is a paste or a bug, never typing; the
-  server refuses it with a `TooLarge` `REJECT`. The paved place to keep edits
-  under it is the editor binding's own paste/length guard — where the undo is
-  native and the user sees the limit before anything happens — so the library
-  exposes the constant for exactly that.
+  limit; the server refuses a larger update with a `TooLarge` `REJECT`. The
+  number is derived, not felt: accept-then-freeze (below) admits one crossing
+  update, so ceiling + one guarded update = 700KB + 200KB = the 900KB D9
+  budget — the worst `STATE` a frozen field can ever serve still fits one
+  frame. It cannot be smaller with impunity either: the push-back leg (17.6)
+  merges a whole disconnect's edits into ONE update, so the guard must
+  dwarf any live-typing frame — what trips it is a huge paste or an extreme
+  offline backlog. The paved place to keep edits under it is the editor
+  binding's own paste/length guard — where the undo is native and the user
+  sees the limit before anything happens — so the library exposes the
+  constant for exactly that.
 - `MAX_FIELD_BYTES` (700KB) is the **field ceiling**. A field is a note, not a
   document. The number is the binary-lane mirror of `MAX_ROW_BYTES`'s rule — a
   single field must fit inside a frame with room to spare: a fresh client's
@@ -1411,7 +1417,13 @@ extension cannot send to a socket core is already tearing down, and
 
 One slot (`extension`), not an array: multiple extensions would need a routing
 byte on every binary frame for a consumer that doesn't exist. Generalize when
-a second extension is real, not before. The client seam is equally small:
+a second extension is real, not before. The config slot carries a **factory**
+(`extension: () => EngineExtension`), invoked once per workspace DO instance
+in `init` — never a shared object: Cloudflare colocates instances of one DO
+class in a shared isolate, so a singleton extension's closure state (doc
+cache, storage binding, refusal sets) would silently bridge workspaces —
+`yjsFields(options)` accordingly returns the factory, keeping call sites
+(`extension: yjsFields()`) unchanged. The client seam is equally small:
 `SyncClient` exposes `sendBinary(bytes)`, `onBinary(cb)`, and ready-transition
 notifications — enough for `createYjsFields` to be plain library code with no
 privileged access.
@@ -1447,6 +1459,18 @@ in the `TooLarge` case (the server refused one update, not the field), but
 only the client knows its local doc now holds an op the server will never
 accept — flipping back would resume the poisoned push-back. A fresh handle
 after reload rebuilds from server state and starts clean.
+
+The frame guard bounds the push-back leg too, and that is the one place the
+collapse can bite honest edits: a disconnect's ops merge into one update, so
+a client that writes more than `MAX_FIELD_UPDATE_BYTES` of new ops into a
+single field while offline trips the local guard on reconnect and the field
+goes read-only with those ops stranded (no persistence — a reload loses
+them). **Accepted residual risk, not machinery**: the guard is sized (17.3)
+so only a huge paste or an extreme offline backlog can reach it, splitting a
+Yjs update is not a paved operation, and the editor binding's length guard —
+the same one that stops pastes — bounds offline growth at the source. The
+collapse is loud (`canWrite` flips, console warns) so the app can tell the
+user before a reload makes the loss real.
 
 **Decided: no local persistence of field docs** (resolving the open
 question carried since the §14 revision). Field co-editing is an online
@@ -1524,4 +1548,13 @@ doc log-coherent (a `GET` served right after returns the complete diff);
 import under live sockets cycles them and both directions converge (restored
 state pulled, client-held ops pushed back); two clients typing concurrently
 in one field converge to identical state (seeded interleaving, the §11
-convergence-sim pattern applied to text).
+convergence-sim pattern applied to text); two workspaces on one class share
+no extension storage, cache, or delivery — writes to the same `fieldId` in
+each stay invisible to the other (the regression that locks the 17.5
+per-instance factory); a corrupt snapshot on one field neither blocks other
+fields' compaction nor throws out of the maintenance alarm, and its own
+update tail survives the rolled-back attempt; a `STATE` with an undecodable
+state vector still resolves `whenSynced` (the push-back encode is guarded
+like the diff-apply); `getDoc` refuses a fieldId the wire format cannot
+carry before registering any state, and one field's failed re-`GET` on a
+ready transition never starves the rest.

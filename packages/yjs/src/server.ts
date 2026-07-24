@@ -83,8 +83,17 @@ function fromBase64(value: string): Uint8Array {
  *   extension: yjsFields({ authorizeWrite: (auth) => auth?.writeAllowed === true }),
  * })
  * ```
+ *
+ * Returns a factory, not an extension: `createWorkspaceDO` calls it once per
+ * workspace DO instance, so the doc cache, refusal sets, and storage binding
+ * are per-workspace by construction — Cloudflare colocates instances of one
+ * class in a shared isolate, and extension state must never cross workspaces.
  */
-export function yjsFields(options: YjsFieldsOptions = {}): EngineExtension {
+export function yjsFields(options: YjsFieldsOptions = {}): () => EngineExtension {
+  return () => createExtension(options)
+}
+
+function createExtension(options: YjsFieldsOptions): EngineExtension {
   const authorizeWrite = options.authorizeWrite ?? (() => true)
   const maxCachedDocs = options.maxCachedDocs ?? DEFAULT_MAX_CACHED_DOCS
   const compactionThreshold = options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD
@@ -362,7 +371,16 @@ export function yjsFields(options: YjsFieldsOptions = {}): EngineExtension {
           compactionThreshold,
         )
         .toArray()
-      for (const candidate of candidates) compactField(candidate.field_id)
+      // Isolated per field: one corrupt snapshot (loadDoc throws outright,
+      // by design) must not block every other field's compaction — or the
+      // maintenance alarm's remaining work — forever.
+      for (const candidate of candidates) {
+        try {
+          compactField(candidate.field_id)
+        } catch (err) {
+          console.error(`[cf-sync/yjs] compaction failed for field "${candidate.field_id}"`, err)
+        }
+      }
     },
 
     onExport() {

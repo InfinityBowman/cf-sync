@@ -170,4 +170,45 @@ describe('field lifecycle across crashes and corruption (§17.4/17.6)', () => {
     a.close()
     b.close()
   })
+
+  it('one field with a corrupt snapshot does not block the others from compacting', async () => {
+    const workspace = `y-compact-iso-${Date.now()}`
+    const a = await FieldTestClient.ready(workspace, 'a', '/compact') // compactionThreshold: 3
+    const stub = env.COMPACT.get(env.COMPACT.idFromName(workspace))
+
+    // Give 'bad' a snapshot to corrupt: cross the threshold and compact once.
+    const badDoc = new Y.Doc()
+    for (const word of ['one ', 'two ', 'three ', 'four']) {
+      a.update('bad', edit(badDoc, () => badDoc.getText('t').insert(badDoc.getText('t').length, word)))
+    }
+    expect(await readFieldText(a, 'bad')).toBe('one two three four')
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    await runInDurableObject(stub, async (_instance, state) => {
+      const garbage = new Uint8Array([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+      state.storage.sql.exec(`UPDATE yjs_fields SET snapshot = ? WHERE field_id = 'bad'`, garbage.buffer.slice(0))
+    })
+
+    // Both fields cross the threshold again; 'bad' sorts first, so with an
+    // unisolated loop its throw would starve 'good' of compaction entirely.
+    const goodDoc = new Y.Doc()
+    for (const word of ['five ', 'six ', 'seven ', 'eight']) {
+      a.update('bad', edit(badDoc, () => badDoc.getText('t').insert(badDoc.getText('t').length, word)))
+      a.update('good', edit(goodDoc, () => goodDoc.getText('t').insert(goodDoc.getText('t').length, word)))
+    }
+    expect(await readFieldText(a, 'good')).toBe('five six seven eight')
+
+    // The alarm completes rather than throwing out of the maintenance turn.
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    await runInDurableObject(stub, async (_instance, state) => {
+      const count = (field: string) =>
+        Number(
+          state.storage.sql
+            .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM yjs_updates WHERE field_id = ?`, field)
+            .one().n,
+        )
+      expect(count('good')).toBe(0) // compacted despite 'bad'
+      expect(count('bad')).toBe(4) // its transaction rolled back whole; the tail is intact
+    })
+    a.close()
+  })
 })

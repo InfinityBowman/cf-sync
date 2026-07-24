@@ -281,6 +281,70 @@ describe('createYjsFields (§17.6)', () => {
     yf.destroy()
   })
 
+  it('a STATE whose state vector cannot be decoded still resolves whenSynced and notifies', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    const handle = yf.getDoc('f1')
+    handle.doc.getText('t').insert(0, 'edits the push-back would carry')
+    seam.takeSent() // the GET
+
+    const changes: boolean[] = []
+    handle.subscribe(() => changes.push(handle.canWrite))
+    // Well-formed envelope, garbage state vector: 0xff is a varint with its
+    // continuation bit set and nothing after it, so the push-back encode
+    // throws inside Yjs.
+    seam.deliver(FIELD_MSG_STATE, 'f1', encodeFieldState({ writable: true, stateVector: new Uint8Array([0xff]), diff: new Uint8Array([0, 0]) }))
+
+    await handle.whenSynced // must not wedge
+    expect(handle.canWrite).toBe(true)
+    expect(changes).toEqual([true])
+    expect(seam.takeSent()).toEqual([]) // the push-back failed, nothing half-sent
+    expect(warn).toHaveBeenCalledOnce()
+    yf.destroy()
+  })
+
+  it('getDoc refuses an id the wire format cannot carry, before any state is registered', () => {
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    expect(() => yf.getDoc('')).toThrow(/fieldId/)
+    expect(() => yf.getDoc('x'.repeat(257))).toThrow(/fieldId/)
+    expect(() => yf.getDoc('é'.repeat(130))).toThrow(/fieldId/) // 260 utf-8 bytes
+    expect(seam.sent).toEqual([])
+
+    // No zombie entries: a valid field still syncs, and a reconnect re-GETs
+    // it (nothing broken is sitting in the entry map to abort the loop).
+    yf.getDoc('f1')
+    expect(seam.takeSent().map((f) => f.fieldId)).toEqual(['f1'])
+    seam.setStatus('reconnecting')
+    seam.setStatus('synced')
+    expect(seam.takeSent().map((f) => f.fieldId)).toEqual(['f1'])
+    yf.destroy()
+  })
+
+  it('one field failing to re-GET does not starve the others on reconnect', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const seam = new FakeSeam()
+    seam.status = 'synced'
+    const yf = createYjsFields(seam)
+    yf.getDoc('f1')
+    yf.getDoc('f2')
+    seam.takeSent()
+
+    const realSend = seam.sendBinary.bind(seam)
+    vi.spyOn(seam, 'sendBinary').mockImplementation((bytes) => {
+      if (decodeFieldFrame(bytes)?.fieldId === 'f1') throw new Error('transport hiccup')
+      realSend(bytes)
+    })
+    seam.setStatus('reconnecting')
+    seam.setStatus('synced')
+    expect(seam.takeSent().map((f) => f.fieldId)).toEqual(['f2'])
+    expect(error).toHaveBeenCalledOnce()
+    yf.destroy()
+  })
+
   it('destroy detaches from the seam and later frames are ignored', async () => {
     const seam = new FakeSeam()
     seam.status = 'synced'

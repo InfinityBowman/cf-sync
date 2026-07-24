@@ -3,6 +3,7 @@ import {
   FIELD_MSG_REJECT,
   FIELD_MSG_STATE,
   FIELD_MSG_UPDATE,
+  MAX_FIELD_ID_BYTES,
   MAX_FIELD_UPDATE_BYTES,
   decodeFieldFrame,
   decodeFieldState,
@@ -78,6 +79,8 @@ function isEmptyUpdate(update: Uint8Array): boolean {
   return update.byteLength <= 2
 }
 
+const textEncoder = new TextEncoder()
+
 interface Entry {
   fieldId: string
   doc: Y.Doc
@@ -133,7 +136,8 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
       }
       console.warn(
         `[cf-sync/yjs] field "${entry.fieldId}" produced an update over ${MAX_FIELD_UPDATE_BYTES} bytes ` +
-          `(a paste?) — the field is now read-only locally; guard pastes in the editor binding`,
+          `(a paste, or an offline backlog merged by the push-back) — the field is now read-only ` +
+          `locally and these ops will not reach the server; guard sizes in the editor binding`,
       )
       return
     }
@@ -174,8 +178,14 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
         // missing — edits typed during a disconnect, or ops a crash lost —
         // goes back up as one ordinary UPDATE. Suppressed for non-writable
         // fields: the one rule that keeps a refusal from re-uploading forever.
-        const pushBack = Y.encodeStateAsUpdate(entry.doc, state.stateVector)
-        if (!isEmptyUpdate(pushBack)) sendUpdate(entry, pushBack)
+        // Guarded like the diff-apply above: the state vector is wire bytes,
+        // and a throw here must not wedge whenSynced or starve the notify.
+        try {
+          const pushBack = Y.encodeStateAsUpdate(entry.doc, state.stateVector)
+          if (!isEmptyUpdate(pushBack)) sendUpdate(entry, pushBack)
+        } catch (err) {
+          console.warn(`[cf-sync/yjs] failed to compute push-back for field "${frame.fieldId}"`, err)
+        }
       }
       if (entry.canWrite !== wasWritable || !wasSynced) notify(entry)
       entry.resolveSynced()
@@ -197,13 +207,28 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
     // the current state vector pulls what we missed, the STATE push-back
     // sends what the server missed. Apps write no reconnect glue.
     if (status === 'synced') {
-      for (const entry of entries.values()) sendGet(entry)
+      // Isolated per entry: one field's failure must never starve the rest
+      // of the re-GET that keeps them converging.
+      for (const entry of entries.values()) {
+        try {
+          sendGet(entry)
+        } catch (err) {
+          console.error(`[cf-sync/yjs] re-sync GET failed for field "${entry.fieldId}"`, err)
+        }
+      }
     }
   })
 
   return {
     getDoc(fieldId: string): YjsFieldHandle {
       if (destroyed) throw new Error('createYjsFields: destroyed')
+      // Validate before any state mutation: an id the wire format cannot
+      // carry would otherwise throw from encodeFieldFrame after the entry is
+      // registered, leaving a zombie whose whenSynced never resolves.
+      const idLen = textEncoder.encode(fieldId).byteLength
+      if (idLen === 0 || idLen > MAX_FIELD_ID_BYTES) {
+        throw new Error(`createYjsFields: fieldId must be 1..${MAX_FIELD_ID_BYTES} utf-8 bytes, got ${idLen}`)
+      }
       let entry = entries.get(fieldId)
       if (!entry) {
         const doc = new Y.Doc()

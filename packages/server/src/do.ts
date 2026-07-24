@@ -163,6 +163,11 @@ export interface EngineExtensionMessageContext {
  * in-memory state there. One slot, not an array: multiple extensions would
  * need a routing byte on every binary frame for a consumer that doesn't
  * exist yet.
+ *
+ * Config carries a *factory* (`() => EngineExtension`), invoked once per
+ * workspace DO instance: instances of one class share an isolate, so a
+ * single extension object would leak in-memory state (and its storage
+ * binding) across workspaces.
  */
 export interface EngineExtension {
   init(ctx: EngineExtensionContext): void
@@ -203,8 +208,13 @@ export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, 
   compaction?: CompactionConfig
   /** Stream the mutation log to R2 for archive/analytics (DESIGN.md D3). */
   export?: ExportConfig<Env>
-  /** Binary-lane extension (e.g. `yjsFields` from `@cf-sync/yjs/server`) — see {@link EngineExtension}. */
-  extension?: EngineExtension
+  /**
+   * Binary-lane extension factory (e.g. `yjsFields()` from
+   * `@cf-sync/yjs/server`), called once per workspace DO instance so
+   * extension state is never shared across workspaces — see
+   * {@link EngineExtension}.
+   */
+  extension?: () => EngineExtension
 }
 
 const DEFAULT_TOMBSTONE_RETENTION = 10_000
@@ -352,6 +362,14 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      * the next construction retries).
      */
     #initError: Error | null = null
+    /**
+     * This instance's extension, built by the config factory in
+     * `#initExtension` (never shared: instances of one class colocate in an
+     * isolate, and a shared object would mix workspaces' storage bindings
+     * and in-memory state). Null until init succeeds — every use is behind
+     * the `#initError` gate.
+     */
+    #extension: EngineExtension | null = null
     /**
      * Presence, keyed by clientId — in DO memory only, never persisted
      * (DESIGN.md §16.3): a storage write per cursor move would defeat
@@ -511,13 +529,16 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     }
 
     /**
-     * (Re)binds the extension to this instance's storage and delivery gate.
-     * Called on every wake and again after admin reset (which wipes the
-     * extension's tables along with everything else) — extensions treat
-     * `init` as "wake": idempotent DDL, all in-memory state rebuilt fresh.
+     * Builds this instance's extension from the config factory and binds it
+     * to this instance's storage and delivery gate. Called on every wake and
+     * again after admin reset (which wipes the extension's tables along with
+     * everything else) — each call constructs a fresh extension, so `init`
+     * is "wake": idempotent DDL, all in-memory state starting fresh.
      */
     #initExtension(): void {
-      config.extension?.init({
+      if (!config.extension) return
+      this.#extension = config.extension()
+      this.#extension.init({
         sql: this.#sql,
         transactionSync: (fn) => this.ctx.storage.transactionSync(fn),
         broadcast: (bytes, opts) => {
@@ -538,7 +559,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       if (this.#initError) return // nothing to maintain; a successful reset re-arms the alarm
       try {
         if (!config.compaction?.disabled) this.#compact()
-        config.extension?.onAlarm?.()
+        this.#extension?.onAlarm?.()
         if (config.export) await this.#exportLog()
       } finally {
         if (this.#maintenanceEnabled()) {
@@ -745,7 +766,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           // The binary lane (DESIGN.md §17.3) — same defunct/expiry gates as
           // text frames (checked above), routed to the extension, which stays
           // synchronous end-to-end like every other handler (invariant §6.3).
-          if (!config.extension) {
+          if (!this.#extension) {
             this.#sendError(ws, 'BadMessage', 'binary frames are not supported')
             return
           }
@@ -755,7 +776,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           }
           if (attachment.principal !== undefined) msgCtx.principal = attachment.principal
           if (attachment.auth !== undefined) msgCtx.auth = attachment.auth
-          config.extension.onBinaryMessage(ws, new Uint8Array(raw), msgCtx)
+          this.#extension.onBinaryMessage(ws, new Uint8Array(raw), msgCtx)
           return
         }
         let json: unknown
@@ -828,7 +849,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
             exportedAt: new Date().toISOString(),
             version: this.#meta.currentVersion,
             rows,
-            ...(config.extension?.onExport ? { extension: config.extension.onExport() } : {}),
+            ...(this.#extension?.onExport ? { extension: this.#extension.onExport() } : {}),
           })
         }
 
@@ -870,7 +891,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           // import. Carrying it without an extension configured would drop
           // data silently — refuse instead.
           const hasExtensionData = snapshot.extension !== undefined
-          if (hasExtensionData && !config.extension?.onImport) {
+          if (hasExtensionData && !this.#extension?.onImport) {
             return json({ error: 'snapshot carries extension state but no extension with onImport is configured' }, 400)
           }
           // Full state replace at a single new version. Every existing cursor
@@ -891,7 +912,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
               }
               // Same transaction as the row swap: a bad extension payload
               // rolls back the whole import.
-              if (hasExtensionData) config.extension!.onImport!(snapshot.extension)
+              if (hasExtensionData) this.#extension!.onImport!(snapshot.extension)
               this.#sql.exec(`UPDATE meta SET current_version = ?, min_cursor_version = ? WHERE id = 1`, version, version)
             })
           } catch (err) {
@@ -944,7 +965,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           // deleteAll took the extension's tables with it: re-init (fresh
           // DDL + in-memory state), then let the extension observe the reset.
           this.#initExtension()
-          config.extension?.onReset?.()
+          this.#extension?.onReset?.()
           if (this.#maintenanceEnabled()) {
             await this.ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
           }
@@ -1015,7 +1036,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           presence: this.#presence.size,
         },
         counters: { ...this.#counters },
-        ...(config.extension?.onStats ? { extension: config.extension.onStats() } : {}),
+        ...(this.#extension?.onStats ? { extension: this.#extension.onStats() } : {}),
       }
     }
 
