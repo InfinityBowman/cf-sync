@@ -48,6 +48,7 @@ export default defineConfig({
           items: [
             { text: 'Testing your app', link: '/guide/testing' },
             { text: 'Operations', link: '/guide/operations' },
+            { text: 'Limits & costs', link: '/guide/limits-and-costs' },
             { text: 'Troubleshooting', link: '/guide/troubleshooting' },
           ],
         },
