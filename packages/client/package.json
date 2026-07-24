@@ -2,6 +2,25 @@
   "name": "@cf-sync/client",
   "version": "0.0.0",
   "private": true,
+  "description": "Browser client for cf-sync: SyncClient (optimistic mutations, offline outbox, IndexedDB mirror, presence) and a TanStack DB collection adapter, with React hooks",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/InfinityBowman/cf-sync-engine.git",
+    "directory": "packages/client"
+  },
+  "homepage": "https://github.com/InfinityBowman/cf-sync-engine#readme",
+  "keywords": [
+    "sync",
+    "sync-engine",
+    "local-first",
+    "offline-first",
+    "optimistic-updates",
+    "tanstack-db",
+    "react",
+    "indexeddb",
+    "presence"
+  ],
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

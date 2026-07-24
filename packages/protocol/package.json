@@ -2,6 +2,23 @@
   "name": "@cf-sync/protocol",
   "version": "0.0.0",
   "private": true,
+  "description": "Shared app-definition kit and wire protocol for cf-sync: defineApp, defineSchema, defineMutators, zod-validated frames — importable from both worker and browser",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/InfinityBowman/cf-sync-engine.git",
+    "directory": "packages/protocol"
+  },
+  "homepage": "https://github.com/InfinityBowman/cf-sync-engine#readme",
+  "keywords": [
+    "sync",
+    "sync-engine",
+    "local-first",
+    "offline-first",
+    "cloudflare",
+    "durable-objects",
+    "zod"
+  ],
   "type": "module",
   "exports": {
     ".": "./src/index.ts",

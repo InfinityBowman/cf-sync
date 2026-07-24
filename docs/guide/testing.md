@@ -1,0 +1,54 @@
+# Testing your app
+
+Your mutators and migrations are plain functions over a transaction — they deserve unit tests that run in milliseconds, not a workerd harness. `@cf-sync/server/testing` exports an in-memory engine that runs **the same write-buffer, validation, and error semantics as the Durable Object** — shared code, not a reimplementation.
+
+```ts
+import { createTestEngine } from '@cf-sync/server/testing'
+import { app } from '../src/schema'
+
+it('clearCompleted deletes only completed todos', () => {
+  const engine = createTestEngine(app)
+  engine.seed('todos', 't1', { id: 't1', title: 'keep', done: false })
+  engine.seed('todos', 't2', { id: 't2', title: 'drop', done: true })
+
+  const result = engine.mutate('todo.clearCompleted', {})
+
+  expect(result.error).toBeUndefined()
+  expect(engine.get('todos', 't1')).toBeDefined()
+  expect(engine.get('todos', 't2')).toBeUndefined()
+})
+```
+
+Runs in plain vitest or jest, in node — no workerd, no miniflare, no bindings.
+
+::: warning Import paths matter in node
+Import the definition kit from `@cf-sync/protocol` and the test engine from `@cf-sync/server/testing`. The server's **main** entry imports `cloudflare:workers`, which node can't load — never import it in test files that run outside workerd.
+:::
+
+## Testing migrations
+
+Seed rows in their **old** shape at an old stored version; the migration chain replays inside `createTestEngine`, exactly like the DO's first wake after a deploy:
+
+```ts
+it('the 1 -> 2 migration backfills priority', () => {
+  const engine = createTestEngine(app, {
+    storedVersion: 1,
+    rows: { issues: { i1: { id: 'i1', title: 'old', column: 'doing' } } },
+  })
+  expect(engine.get('issues', 'i1')?.priority).toBe('normal')
+})
+```
+
+A chain that produces schema-invalid rows throws from `createTestEngine` itself — you find out in the test run, not on a production workspace's first wake.
+
+## The semantics are the real ones
+
+The engine honors the [engine invariants](https://github.com/InfinityBowman/cf-sync-engine/blob/main/DESIGN.md):
+
+- An `AppError` from a mutator (or invalid args) reports as `result.error` — **permanent**, no data written, and `engine.lastMutationId()` still advances. Assert on both when testing rejection paths.
+- Any other throw is **transient**: rethrown, nothing committed.
+- Auth-dependent mutators can be exercised by passing a principal and auth context, so `ctx.authoritative` permission checks are testable without a socket in sight.
+
+## Testing the full stack
+
+For end-to-end coverage (sockets, hibernation, convergence), the engine's own test suite runs against real workerd via `@cloudflare/vitest-pool-workers` — including a seeded multi-client convergence simulation. Most apps don't need to replicate that layer: if your mutators are correct against `createTestEngine`, the engine's contract tests cover the transport. Put your effort into mutator edge cases and migration coverage.

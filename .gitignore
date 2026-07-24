@@ -7,3 +7,7 @@ coverage/
 .DS_Store
 .env
 .dev.vars
+
+# vitepress
+docs/.vitepress/dist
+docs/.vitepress/cache

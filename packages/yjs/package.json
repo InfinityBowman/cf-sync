@@ -2,6 +2,23 @@
   "name": "@cf-sync/yjs",
   "version": "0.0.0",
   "private": true,
+  "description": "Collaborative-text add-on for cf-sync: Yjs fields living in the same Workspace Durable Object, exposed as an engine extension (server) and field handles (client)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/InfinityBowman/cf-sync-engine.git",
+    "directory": "packages/yjs"
+  },
+  "homepage": "https://github.com/InfinityBowman/cf-sync-engine#readme",
+  "keywords": [
+    "yjs",
+    "crdt",
+    "collaborative-editing",
+    "sync",
+    "local-first",
+    "cloudflare",
+    "durable-objects"
+  ],
   "type": "module",
   "exports": {
     "./server": "./src/server.ts",
