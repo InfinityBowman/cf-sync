@@ -126,7 +126,7 @@ type PresenceStateOf<P> = P extends StandardSchemaV1 ? StandardSchemaV1.InferOut
 
 /**
  * `client.presence` — ephemeral peer state on the existing socket (DESIGN.md
- * §16). The library owns transport and lifecycle: `set` coalesces
+ * §16). The library owns transport and lifecycle: `set` is throttled
  * trailing-edge at `presenceThrottleMs` (safe to call at input frequency) and
  * the last state is re-announced on every reconnect, so apps write neither
  * throttle nor reconnect glue. Peers exclude self (render your own state from
@@ -142,7 +142,10 @@ export interface PresenceApi<TIn = unknown, TOut = unknown> {
    * site never clobbers what another call site set, so no component has to
    * hold the canonical whole. The merged result is validated like `set`
    * (starting from `{}` when nothing is set, so required fields must arrive
-   * by then). Clear one field with `update({ field: undefined })`.
+   * by then — `initialPresence` is the mount-order-proof way to provide
+   * them). Clear one field with `update({ field: undefined })`. The merge
+   * base is the *parsed* state, so the presence schema must parse its own
+   * output (no `transform`s — see `defineApp`'s `presence` docs).
    */
   update(state: Partial<TIn>): void
   /** Clear this client's presence; peers see `state: null`. */
@@ -314,7 +317,7 @@ export interface SyncClientOptions<
    */
   idleTimeoutMs?: number
   /**
-   * Trailing-edge coalescing cadence for `presence.set` — the client sends at
+   * Trailing-edge throttle window for `presence.set` — the client sends at
    * most one presence frame per window, carrying the latest state, so apps
    * call `set` at input frequency without throttle glue. Default: 100ms
    * (Liveblocks' default, proven at far larger scale).
@@ -1317,7 +1320,7 @@ export class SyncClient<
         'SyncClient: the app declares no presence schema — add `presence: <schema>` to defineApp to use client.presence',
       )
     }
-    // Validation runs per call even though sends coalesce to one frame per
+    // Validation runs per call even though sends throttle to one frame per
     // window — deliberate: the throw lands at the offending call site, and
     // `self` always holds a checked value. At presence's 8KB cap the parse
     // plus size measure is microseconds; revisit only with profiler evidence.
@@ -1350,7 +1353,7 @@ export class SyncClient<
   }
 
   /**
-   * Trailing-edge coalescing: at most one frame per cadence window, carrying
+   * Trailing-edge throttle: at most one frame per cadence window, carrying
    * whatever `#presenceState` holds when it fires — so `set` is safe at input
    * frequency and the last call always wins.
    */

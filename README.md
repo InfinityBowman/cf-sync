@@ -261,14 +261,18 @@ peers.map((p) => <Cursor key={p.clientId} name={p.state.name} at={p.state.cursor
 What the library owns so apps don't:
 
 - **Pacing** — call `set`/`update` straight from a `mousemove` handler; the
-  client coalesces trailing-edge (one frame per `presenceThrottleMs`, default
+  client throttles trailing-edge (one frame per `presenceThrottleMs`, default
   100ms, latest state wins). No throttle glue.
 - **Lifecycle** — the last-set state re-announces on every reconnect and after
   DO hibernation wakes; peers reset to empty on disconnect (stale presence is
   worse than absent presence).
 - **Identity** — `clientId`/`principal` on every peer update are stamped by
   the server from the connection's auth verdict, never read from the payload,
-  so a modified client cannot impersonate another user's presence.
+  so a modified client cannot impersonate another user's presence. Peers are
+  per *connection* (one `clientId` per tab), so the same user in two tabs is
+  two peers — key avatar stacks by `principal` (falling back to `clientId`
+  when unauthenticated) and you get "one avatar per user" for free, attested
+  by the server rather than claimed by the payload.
 
 Two semantics to know. Presence is *ephemeral*: nothing is ever stored, so
 changing the presence schema needs **no version bump** — a reshape logs a
@@ -362,5 +366,5 @@ admin surface (including kick/refresh session revocation), an IndexedDB-backed
 local mirror with a durable offline outbox, optimistic execution of intent
 mutations via the shared mutator registry, auth verdict stamps carried on the
 connection with expiry gating, and typed ephemeral presence with live-cursor
-coalescing. See DESIGN.md §12 for the roadmap (remaining: startup replay of
+throttling. See DESIGN.md §12 for the roadmap (remaining: startup replay of
 queued intents, collaborative text per §14's tiered strategy).

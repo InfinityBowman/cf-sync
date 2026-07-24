@@ -992,7 +992,9 @@ const app = defineApp({
   }),
 })
 
-// client — set/update/clear own state; the library re-announces it on reconnect:
+// client — identity once at construction (validated there, like `auth`);
+// afterwards every call site can be a bare merge, immune to mount order:
+new SyncClient({ ..., initialPresence: { user } })
 client.presence.set({ user, editingField: 'q3-notes' })
 client.presence.update({ cursor: { x, y } }) // shallow merge: no re-stating `user`
 client.presence.self                         // own parsed state (never in `peers`)
@@ -1000,10 +1002,11 @@ client.presence.clear()
 
 // react — peers, self excluded, typed by the app's presence schema:
 const peers = usePresence(client)
-// Array<{ clientId: string, principal?: string, state: PresenceOf<typeof app> }>
+// Array<{ clientId, principal?, state: PresenceOf<typeof app>, receivedAt }>
+// receivedAt = local receipt time: the §16.3 ghost-window staleness bound
 ```
 
-`presence.set` is safe to call at input frequency: the client coalesces
+`presence.set` is safe to call at input frequency: the client throttles
 trailing-edge at a configurable cadence (default 100ms — Liveblocks' default,
 proven at far larger scale) so apps never write throttle glue. The server
 still relays what it receives — pacing is a client-library concern, not a
@@ -1076,7 +1079,8 @@ hibernating-CF prior art makes deliberately: y-partyserver strips y-awareness's
 workload a minutes-stale avatar is cosmetic, but apps using presence for the
 §14 "X is editing this field" mitigation should treat the claim as advisory —
 render it with a client-side staleness bound from the update's local receipt
-time, never hard-lock a field on it. Revisit shape if evidence demands: a
+time (exposed as `receivedAt` on every peer entry, stamped by the library so
+apps never keep their own timestamp map), never hard-lock a field on it. Revisit shape if evidence demands: a
 low-cadence client renewal plus an alarm sweep armed only while the map is
 non-empty. The §15 supersede rule (newer socket wins per clientId) closes the
 related zombie-socket race — a late frame from an abandoned half-open socket
@@ -1147,12 +1151,14 @@ entry; oversized payload rejected without disconnect; identity stamping
 ignores any clientId/principal a client embeds in its own payload; relay
 skips defunct sockets, and relay to a socket past `expiresAt` closes it with
 4300 instead of delivering (the §15.6 send-gate test, exercised on the
-presence path). Client side: trailing-edge coalescing, re-announce on
+presence path). Client side: trailing-edge throttling, re-announce on
 `presencePeers` and `presencePoll`, peers reset on disconnect, `set` throws
 without a schema, `update` merges without clobbering and validates the
-merged result, `self` tracks set/update/clear. Presence drift under an
-unchanged version warns softly once and is never priced as table drift
-(`schema-drift.test.ts`).
+merged result, `self` tracks set/update/clear, `initialPresence` announces
+with no set call and turns update-before-set into a merge instead of a
+mount-order schema error (invalid values throw at construction), and peer
+entries carry `receivedAt`. Presence drift under an unchanged version warns
+softly once and is never priced as table drift (`schema-drift.test.ts`).
 
 **Testing hibernation (learned 2026-07-24):** `state.abort()` simulates a
 *crash* — it kills the sockets with the instance (clients observe 1006) — so

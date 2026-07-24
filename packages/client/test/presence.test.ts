@@ -4,7 +4,7 @@ import { FakeSocket, flushMicrotasks } from './fake-socket'
 import { presenceApp, testApp } from './test-schema'
 
 // Client half of DESIGN.md §16: the library owns pacing and re-announcement —
-// `set` coalesces trailing-edge, the last state re-announces on every
+// `set` throttles trailing-edge, the last state re-announces on every
 // connection that reaches ready (presencePeers receipt) and on presencePoll,
 // peers exclude self and reset to empty on disconnect.
 
@@ -79,7 +79,7 @@ describe('presence.set', () => {
     client.stop()
   })
 
-  it('coalesces trailing-edge: rapid sets produce one immediate and one trailing frame with the latest state', () => {
+  it('throttles trailing-edge: rapid sets produce one immediate and one trailing frame with the latest state', () => {
     vi.useFakeTimers()
     const { client, latest } = makeClient()
     const socket = goLive(client, latest)

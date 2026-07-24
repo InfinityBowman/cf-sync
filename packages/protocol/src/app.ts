@@ -58,6 +58,11 @@ export interface AppDefinition<
    * Prefer tolerant changes (add optional fields rather than reshaping) —
    * during a deploy window old and new bundles share the workspace, and
    * invalid peer state is dropped gracefully on both sides.
+   *
+   * The schema must parse its own output — plain object schemas, no
+   * `transform`s: `presence.update` merges partials into the previously
+   * *parsed* state and re-validates the result, and reconnect re-announces
+   * parsed state, so output that fails input validation breaks both.
    */
   readonly presence?: P
 }

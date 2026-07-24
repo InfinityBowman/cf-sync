@@ -23,7 +23,7 @@ export function App() {
 
   // Live cursors: identity was announced via initialPresence at client
   // construction, so every mousemove is a bare presence.update — the client
-  // coalesces trailing-edge (100ms), no throttle glue, and the shallow merge
+  // throttles trailing-edge (100ms) for you, and the shallow merge
   // never re-states `name`. Coordinates are relative to the centered column
   // so they line up across window sizes; leaving the window drops the cursor
   // (`cursor: undefined` clears just that field) but keeps the avatar.
@@ -142,7 +142,7 @@ export function App() {
                 top: peer.state.cursor.y,
                 pointerEvents: 'none',
                 zIndex: 10,
-                // Presence frames arrive at the 100ms coalescing cadence;
+                // Presence frames arrive at the 100ms throttle cadence;
                 // easing between them keeps the motion smooth.
                 transition: 'left 90ms linear, top 90ms linear',
               }}
