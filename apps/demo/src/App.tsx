@@ -1,9 +1,10 @@
 import { usePresence, useSyncStatus } from '@cf-sync/client/react'
 import { useLiveQuery } from '@tanstack/react-db'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { ulid } from 'ulidx'
 import { NotesField, notesFieldId } from './NotesField'
-import { displayName, syncClient, todos, workspaceId } from './sync'
+import type { Todo } from './schema'
+import { displayName, rejections, syncClient, todos, workspaceId } from './sync'
 
 /** Stable per-peer hue so a cursor keeps its color as it moves. */
 function hueOf(key: string): number {
@@ -12,6 +13,11 @@ function hueOf(key: string): number {
   return ((hash % 360) + 360) % 360
 }
 
+const PRIORITY_ORDER = ['low', 'normal', 'high'] as const
+const PRIORITY_COLOR: Record<Todo['priority'], string> = { low: '#8ac', normal: '#bbb', high: '#d43' }
+const nextPriority = (p: Todo['priority']) =>
+  PRIORITY_ORDER[(PRIORITY_ORDER.indexOf(p) + 1) % PRIORITY_ORDER.length]!
+
 export function App() {
   const [title, setTitle] = useState('')
   // Which todos have their notes open — purely local UI state; the field
@@ -19,6 +25,9 @@ export function App() {
   const [openNotes, setOpenNotes] = useState<ReadonlySet<string>>(new Set())
   const status = useSyncStatus(syncClient)
   const peers = usePresence(syncClient)
+  // The latest rejection (sync.ts feeds onMutationRejected into this store),
+  // rendered as a dismissible banner below the status line.
+  const rejection = useSyncExternalStore(rejections.subscribe, rejections.get, rejections.get)
   const mainRef = useRef<HTMLElement>(null)
 
   const { data: items } = useLiveQuery((q) =>
@@ -87,6 +96,32 @@ export function App() {
         cf-sync demo <small style={{ color: '#888' }}>#{workspaceId}</small>
       </h1>
       <p style={{ color: status === 'synced' ? '#2a2' : '#c80' }}>status: {status}</p>
+      {rejection && (
+        <p
+          style={{
+            display: 'flex',
+            gap: 8,
+            alignItems: 'baseline',
+            padding: '6px 10px',
+            borderRadius: 4,
+            background: '#fee',
+            border: '1px solid #e99',
+            color: '#922',
+            fontSize: '0.85rem',
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            <strong>{rejection.name}</strong> rejected ({rejection.code}): {rejection.message} — the
+            optimistic change was rolled back.
+          </span>
+          <button
+            onClick={rejections.dismiss}
+            style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'inherit', padding: 0 }}
+          >
+            ×
+          </button>
+        </p>
+      )}
       <p style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: '0.85rem' }}>
         <span
           style={{
@@ -136,6 +171,28 @@ export function App() {
                   checked={todo.completed}
                   onChange={() => todos.update(todo.id, (draft) => (draft.completed = !draft.completed))}
                 />
+                {/* The v1→v2 migration made visible: rows written before v2
+                    were backfilled to 'normal' (schema.ts), new rows get the
+                    schema default. Cycling goes through the setPriority
+                    intent, whose completed-todo rule runs only on the server
+                    — on a completed todo the dot changes, then snaps back
+                    when the rejection arrives (and the banner explains). */}
+                <button
+                  onClick={() =>
+                    void syncClient.mutate.todos.setPriority({ id: todo.id, priority: nextPriority(todo.priority) })
+                  }
+                  title={`priority: ${todo.priority} — click to cycle (the server rejects this on completed todos)`}
+                  style={{
+                    border: 'none',
+                    background: 'none',
+                    cursor: 'pointer',
+                    padding: 0,
+                    lineHeight: 1,
+                    color: PRIORITY_COLOR[todo.priority],
+                  }}
+                >
+                  ●
+                </button>
                 <span style={{ flex: 1, textDecoration: todo.completed ? 'line-through' : 'none' }}>
                   {todo.title}
                 </span>
@@ -159,8 +216,9 @@ export function App() {
       </button>
       <p style={{ color: '#888', fontSize: '0.85rem' }}>
         Open this page in a second tab: mutations sync, peer cursors move live, and a todo's notes
-        merge character-by-character while both tabs type. Use a URL hash (e.g. #team-a) to switch
-        workspaces.
+        merge character-by-character while both tabs type. Complete a todo, then click its priority
+        dot — the server rejects the change and the optimistic update rolls back. Use a URL hash
+        (e.g. #team-a) to switch workspaces.
       </p>
       {peers.map(
         (peer) =>

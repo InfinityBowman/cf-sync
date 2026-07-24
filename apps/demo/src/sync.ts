@@ -31,6 +31,31 @@ export const displayName = (() => {
   return name
 })()
 
+/**
+ * The demo's rejection surface: `onMutationRejected` below feeds the latest
+ * rejection into this tiny external store, and App.tsx renders it as a
+ * dismissible banner — so rejections with no awaiting caller (collection
+ * writes, outbox replays after a reload) are visible, not just console noise.
+ */
+export interface RejectionNotice {
+  name: string
+  code: string
+  message: string
+}
+let lastRejection: RejectionNotice | null = null
+const rejectionListeners = new Set<() => void>()
+export const rejections = {
+  subscribe(listener: () => void): () => void {
+    rejectionListeners.add(listener)
+    return () => rejectionListeners.delete(listener)
+  },
+  get: (): RejectionNotice | null => lastRejection,
+  dismiss(): void {
+    lastRejection = null
+    for (const listener of rejectionListeners) listener()
+  },
+}
+
 export const syncClient = new SyncClient({
   url: WORKER_URL,
   workspaceId,
@@ -50,7 +75,8 @@ export const syncClient = new SyncClient({
   // (collection writes, offline mutations replayed after a reload). With this
   // set, fire-and-forget mutate calls need no per-call .catch().
   onMutationRejected: (error, { name }) => {
-    console.warn(`[demo] mutation "${name}" rejected: ${error.code} — ${error.message}`)
+    lastRejection = { name, code: error.code, message: error.message }
+    for (const listener of rejectionListeners) listener()
   },
 })
 

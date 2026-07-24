@@ -1,8 +1,8 @@
 # cf-sync demo
 
 A todo app exercising every plane of the sync engine — rows, intent
-mutations, presence, and Tier 2 collaborative text — in ~450 lines you can
-read top to bottom.
+mutations (including a visible server rejection), presence, and Tier 2
+collaborative text — in ~600 lines you can read top to bottom.
 
 ## Run it
 
@@ -22,6 +22,14 @@ Open http://localhost:5173 in **two tabs**. To ship it: `pnpm run deploy`
 - **Intent mutation**: "Clear completed" runs one named mutator on the
   server — concurrent clicks can't resurrect rows, and the local overlay
   applies (and rolls back) atomically.
+- **Server rejection**: complete a todo, then click its priority dot. The
+  optimistic change applies instantly; the server's rule (guarded by
+  `ctx.authoritative`, so it runs only on the authoritative apply) rejects
+  it, the overlay rolls back, and the banner shows the `AppError` — the
+  whole permanent-error path, visible in one click.
+- **Migration**: every todo carries a priority dot. `priority` arrived in
+  schema v2; rows written under v1 were backfilled to `normal` by the
+  migration in `src/schema.ts`, new rows get the zod default.
 - **Presence**: move the mouse (live cursors), focus a notes box — the
   other tab shows who's typing where. Ephemeral: nothing stored.
 - **Yjs field**: open the same todo's `notes ▸` in both tabs and type in
@@ -35,8 +43,8 @@ Open http://localhost:5173 in **two tabs**. To ship it: `pnpm run deploy`
 | File | What it demonstrates |
 | --- | --- |
 | `src/schema.ts` | `defineApp`: one object carrying schema, mutators, presence shape, version + migration chain — imported by **both** bundles so they can't disagree |
-| `src/sync.ts` | `SyncClient` construction (persist, initialPresence), `createCollections`, `createYjsFields` |
-| `src/App.tsx` | Typed collections + live queries, `mutate.*` intents, `useSyncStatus`, `usePresence`, cursor overlay |
+| `src/sync.ts` | `SyncClient` construction (persist, initialPresence), `createCollections`, `createYjsFields`, `onMutationRejected` feeding the banner store |
+| `src/App.tsx` | Typed collections + live queries, `mutate.*` intents, `useSyncStatus`, `usePresence`, cursor overlay, rejection banner |
 | `src/NotesField.tsx` | The reference field integration: `getDoc`/`release` ref-counting, `whenSynced`, reactive `canWrite`, a minimal Y.Text↔textarea binding, field-level presence |
 | `worker/worker.ts` | `createWorkspaceDO` + `yjsFields()` extension, sync/admin routers, R2 log export, bearer-token admin auth |
 

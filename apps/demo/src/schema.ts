@@ -1,4 +1,4 @@
-import { defineApp, defineMutators, defineSchema, type RowOf } from '@cf-sync/protocol'
+import { AppError, defineApp, defineMutators, defineSchema, type RowOf } from '@cf-sync/protocol'
 import { z } from 'zod'
 
 const schema = defineSchema({
@@ -22,6 +22,22 @@ const mutators = defineMutators(schema, {
       for (const { id, data } of tx.list('todos')) {
         if (data.completed) tx.del('todos', id)
       }
+    },
+  },
+  'todos.setPriority': {
+    args: z.object({ id: z.string(), priority: z.enum(['low', 'normal', 'high']) }),
+    apply: (tx, { id, priority }, ctx) => {
+      const todo = tx.get('todos', id)
+      if (!todo) throw new AppError('NotFound', `todo ${id} does not exist`)
+      // Guarded by `ctx.authoritative`: the optimistic run applies, then the
+      // server's AppError rolls the overlay back and surfaces through
+      // onMutationRejected — click a completed todo's priority dot to watch
+      // the whole permanent-error path. A real app would usually check on
+      // both runs for fail-fast UX; this one wants the round trip visible.
+      if (ctx.authoritative && todo.completed) {
+        throw new AppError('CompletedLocked', 'completed todos cannot be reprioritized')
+      }
+      tx.put('todos', id, { ...todo, priority })
     },
   },
 })
