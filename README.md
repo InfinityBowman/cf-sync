@@ -240,10 +240,13 @@ export const app = defineApp({
   }),
 })
 
-// client
-client.presence.set({ name: 'ada' })          // announce; validated locally, fail-fast
+// client — provide identity once at construction (validated there, like
+// `auth`); afterwards every call site can be a bare merge, immune to mount order
+const client = new SyncClient({ ..., initialPresence: { name: 'ada' } })
+
 client.presence.update({ cursor: { x, y } })  // shallow merge — no re-stating `name`
 client.presence.update({ cursor: undefined }) // clear one field, keep the rest
+client.presence.set({ name: 'ada lovelace' }) // full replace, when you mean it
 client.presence.self                          // your own parsed state (never in peers)
 client.presence.clear()                       // peers see you go quiet
 ```
@@ -274,7 +277,9 @@ fields), since old and new bundles share a workspace during a deploy window
 and invalid state is dropped gracefully on both sides. And liveness is
 *TCP-bound*: a peer that dies silently (laptop lid, network partition)
 lingers until socket teardown surfaces, anywhere from ~75s to a couple of
-minutes — treat presence as advisory and never hard-lock UI on it.
+minutes — treat presence as advisory and never hard-lock UI on it. Every peer
+entry carries `receivedAt` (local receipt time) so that staleness bound is one
+comparison: `Date.now() - p.receivedAt > 30_000 && fade(p)`.
 
 ## Testing your app
 

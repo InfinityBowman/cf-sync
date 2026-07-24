@@ -2,29 +2,7 @@ import { usePresence, useSyncStatus } from '@cf-sync/client/react'
 import { useLiveQuery } from '@tanstack/react-db'
 import { useEffect, useRef, useState } from 'react'
 import { ulid } from 'ulidx'
-import { syncClient, todos, workspaceId } from './sync'
-
-// One display name per tab (same lifetime as the clientId): reloads keep it,
-// a second tab gets its own.
-const displayName = (() => {
-  const KEY = 'cf-sync-demo:name'
-  try {
-    const existing = sessionStorage.getItem(KEY)
-    if (existing) return existing
-  } catch {
-    // sessionStorage unavailable: a fresh name per load is fine for a demo
-  }
-  const adjectives = ['amber', 'brisk', 'coral', 'dusky', 'fuzzy', 'ivory', 'lucid', 'mellow', 'nimble', 'vivid']
-  const animals = ['fox', 'heron', 'lynx', 'mole', 'newt', 'otter', 'raven', 'seal', 'tern', 'wren']
-  const pick = (list: string[]) => list[Math.floor(Math.random() * list.length)]!
-  const name = `${pick(adjectives)} ${pick(animals)}`
-  try {
-    sessionStorage.setItem(KEY, name)
-  } catch {
-    // see above
-  }
-  return name
-})()
+import { displayName, syncClient, todos, workspaceId } from './sync'
 
 /** Stable per-peer hue so a cursor keeps its color as it moves. */
 function hueOf(key: string): number {
@@ -43,14 +21,13 @@ export function App() {
     q.from({ todo: todos }).orderBy(({ todo }) => todo.createdAt, 'asc'),
   )
 
-  // Live cursors: announce identity once, then every mousemove calls
-  // presence.update raw — the client coalesces trailing-edge (100ms), so no
-  // throttle glue here, and the shallow merge means cursor updates never
-  // have to re-state `name`. Coordinates are relative to the centered column
+  // Live cursors: identity was announced via initialPresence at client
+  // construction, so every mousemove is a bare presence.update — the client
+  // coalesces trailing-edge (100ms), no throttle glue, and the shallow merge
+  // never re-states `name`. Coordinates are relative to the centered column
   // so they line up across window sizes; leaving the window drops the cursor
   // (`cursor: undefined` clears just that field) but keeps the avatar.
   useEffect(() => {
-    syncClient.presence.set({ name: displayName })
     const move = (event: MouseEvent) => {
       const rect = mainRef.current?.getBoundingClientRect()
       if (!rect) return
@@ -64,7 +41,10 @@ export function App() {
     return () => {
       document.removeEventListener('mousemove', move)
       document.documentElement.removeEventListener('mouseleave', leave)
-      syncClient.presence.clear()
+      // Retract only the cursor: identity is tab-scoped (initialPresence),
+      // and clear() here would wipe it across a StrictMode remount — true
+      // departure is the socket close broadcasting null.
+      syncClient.presence.update({ cursor: undefined })
     }
   }, [])
 

@@ -320,6 +320,17 @@ export interface SyncClientOptions<
    * (Liveblocks' default, proven at far larger scale).
    */
   presenceThrottleMs?: number
+  /**
+   * The presence state announced as soon as the connection is ready, before
+   * any `presence.set` call — Liveblocks' initialPresence-at-room-entry
+   * shape. Provide identity here once (validated at construction, like
+   * `auth`) and every later call can be a bare `presence.update(partial)`:
+   * without it, an `update` firing before some component's `set` (mount
+   * order, a mousemove handler) merges into `{}` and throws on missing
+   * required fields — a race that presents as a schema error. Requires a
+   * `presence` schema in the app.
+   */
+  initialPresence?: PresenceInputOf<P>
   /** Constructor-time convenience; for dynamic subscribers use `subscribeStatus`. */
   onStatusChange?: (status: SyncStatus) => void
   /**
@@ -500,6 +511,9 @@ export class SyncClient<
         }
       },
     } as PresenceApi<PresenceInputOf<P>, PresenceStateOf<P>>
+    // Announced when the connection reaches ready, exactly like a pre-connect
+    // set; invalid state throws here, at construction (fail fast, like auth).
+    if (opts.initialPresence !== undefined) this.#presenceSet(opts.initialPresence)
     // Nothing consumes registered tables synchronously (hydration awaits the
     // store; a real socket's open event is async), so collections created
     // right after the constructor still attach before the first sync.
@@ -1061,7 +1075,7 @@ export class SyncClient<
         this.#presencePeers.clear()
         for (const peer of msg.peers) {
           if (peer.clientId === this.#clientId) continue
-          const entry: PresencePeer = { clientId: peer.clientId, state: peer.state }
+          const entry: PresencePeer = { clientId: peer.clientId, state: peer.state, receivedAt: Date.now() }
           if (peer.principal !== undefined) entry.principal = peer.principal
           this.#presencePeers.set(peer.clientId, entry)
         }
@@ -1365,7 +1379,10 @@ export class SyncClient<
     if (state === null || state === undefined) {
       if (!this.#presencePeers.delete(clientId)) return
     } else {
-      const peer: PresencePeer = { clientId, state }
+      // receivedAt is the §16.3 staleness bound: local receipt time, so apps
+      // fade ghost-window entries with one Date.now() comparison instead of
+      // wrapping subscribe to keep their own timestamp map.
+      const peer: PresencePeer = { clientId, state, receivedAt: Date.now() }
       if (principal !== undefined) peer.principal = principal
       this.#presencePeers.set(clientId, peer)
     }

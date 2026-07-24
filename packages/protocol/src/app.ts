@@ -83,6 +83,15 @@ export interface PresencePeer<T = unknown> {
   clientId: string
   principal?: string
   state: T
+  /**
+   * Local receipt time (`Date.now()`) of the update that produced `state` —
+   * local clock, so it compares against `Date.now()`, never against other
+   * machines. This is the staleness bound DESIGN.md §16.3 says to render
+   * ghost-window presence with: a silently-dead peer lingers until TCP
+   * teardown surfaces (~75s+), so claims like "X is editing this field"
+   * should fade on `Date.now() - receivedAt`, not trust the entry forever.
+   */
+  receivedAt: number
 }
 
 /**

@@ -10,7 +10,10 @@ import { presenceApp, testApp } from './test-schema'
 
 const CLIENT_ID = 'client-a'
 
-function makeClient(app: typeof presenceApp | typeof testApp = presenceApp) {
+function makeClient(
+  app: typeof presenceApp | typeof testApp = presenceApp,
+  extra: Record<string, unknown> = {},
+) {
   const sockets: FakeSocket[] = []
   const client = new SyncClient({
     url: 'ws://test',
@@ -23,6 +26,7 @@ function makeClient(app: typeof presenceApp | typeof testApp = presenceApp) {
       sockets.push(socket)
       return socket
     },
+    ...extra,
   })
   return { client, sockets, latest: () => sockets[sockets.length - 1]! }
 }
@@ -154,6 +158,31 @@ describe('presence.set', () => {
   })
 })
 
+describe('initialPresence', () => {
+  it('is announced when presence goes live, with no set call', () => {
+    const { client, latest } = makeClient(presenceApp, { initialPresence: { name: 'ada' } })
+    expect(client.presence.self).toEqual({ name: 'ada' })
+    const socket = goLive(client, latest)
+    expect(sentPresence(socket)).toEqual([{ name: 'ada' }])
+    client.stop()
+  })
+
+  it('makes update-before-set a non-event instead of a mount-order race', () => {
+    const { client, latest } = makeClient(presenceApp, { initialPresence: { name: 'ada' } })
+    // A mousemove handler firing before any component called set: merges
+    // into the construction-time identity, not into {}.
+    client.presence.update({ cursor: { x: 1, y: 2 } })
+    const socket = goLive(client, latest)
+    expect(sentPresence(socket)).toEqual([{ name: 'ada', cursor: { x: 1, y: 2 } }])
+    client.stop()
+  })
+
+  it('is validated at construction, like auth', () => {
+    expect(() => makeClient(presenceApp, { initialPresence: { name: 42 } })).toThrow(/presence schema/)
+    expect(() => makeClient(testApp, { initialPresence: { name: 'ada' } })).toThrow(/no presence schema/)
+  })
+})
+
 describe('presence.peers', () => {
   it('adopts the snapshot (self excluded), applies updates and nulls, and keeps a stable identity between changes', () => {
     const { client, latest } = makeClient()
@@ -161,7 +190,10 @@ describe('presence.peers', () => {
       { clientId: CLIENT_ID, state: { name: 'me' } },
       { clientId: 'peer-1', principal: 'user-1', state: { name: 'p1' } },
     ])
-    expect(client.presence.peers).toEqual([{ clientId: 'peer-1', principal: 'user-1', state: { name: 'p1' } }])
+    expect(client.presence.peers).toEqual([
+      // receivedAt is the local receipt time — the §16.3 staleness bound.
+      { clientId: 'peer-1', principal: 'user-1', state: { name: 'p1' }, receivedAt: expect.any(Number) },
+    ])
 
     const before = client.presence.peers
     expect(client.presence.peers).toBe(before) // stable until something changes
@@ -173,7 +205,9 @@ describe('presence.peers', () => {
     expect(client.presence.peers.map((p) => p.clientId).sort()).toEqual(['peer-1', 'peer-2'])
 
     socket.receive({ type: 'presence', clientId: 'peer-1', principal: 'user-1', state: null })
-    expect(client.presence.peers).toEqual([{ clientId: 'peer-2', state: { name: 'p2' } }])
+    expect(client.presence.peers).toEqual([
+      { clientId: 'peer-2', state: { name: 'p2' }, receivedAt: expect.any(Number) },
+    ])
     expect(seen).toEqual([2, 1])
 
     // A null for an unknown peer changes nothing and does not notify.
