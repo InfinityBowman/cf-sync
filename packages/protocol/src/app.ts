@@ -1,6 +1,30 @@
 import type { AnySyncSchema } from './schema'
 import type { StandardSchemaV1 } from './standard-schema'
-import { AUTH_CONTEXT, crudMutators, type AnyMutators, type CrudMutators, type MutatorsFor, type MutatorTx } from './mutators'
+import {
+  AUTH_CONTEXT,
+  crudMutators,
+  type AnyMutators,
+  type CrudMutators,
+  type MutatorContext,
+  type MutatorsFor,
+  type MutatorTx,
+} from './mutators'
+
+/**
+ * What a migration runs against. Deliberately untyped by the current schema:
+ * a migration reads rows in their **old** shape (and may touch tables that
+ * have since left the schema), so the current row types would be lies. Reads
+ * come back as `Record<string, unknown>` — narrow what you touch — rather
+ * than `any`, so a typo'd field access still fails to compile. Writes are
+ * shape-free here; the *net result* of the whole chain is validated against
+ * the current schema at commit.
+ */
+export interface MigrationTx {
+  get(tbl: string, id: string): Record<string, unknown> | null
+  list(tbl: string): Array<{ id: string; data: Record<string, unknown> }>
+  put(tbl: string, id: string, data: Record<string, unknown>): void
+  del(tbl: string, id: string): void
+}
 
 /**
  * Rewrites rows stored under version `to - 1` into the shape expected at
@@ -9,9 +33,10 @@ import { AUTH_CONTEXT, crudMutators, type AnyMutators, type CrudMutators, type M
  * atomically at a single new data version, and the *net result* of the chain
  * is validated against the current schema at commit — intermediate shapes are
  * transient, so shipped steps never need editing when a later version
- * reshapes the same table.
+ * reshapes the same table. See {@link MigrationTx} for why `tx` is untyped
+ * by the current schema.
  */
-export type SchemaMigrationFn = (tx: MutatorTx) => void
+export type SchemaMigrationFn = (tx: MigrationTx) => void
 
 /**
  * One step in the app's schema-version history, normalized from the
@@ -138,10 +163,59 @@ export interface PresencePeer<T = unknown> {
  * mutations alongside them and may be omitted for a pure-CRUD app. Pass
  * `crud: false` for an intent-only registry — collections then refuse to
  * attach, and every write must go through a named mutator.
+ *
+ * `mutators` accepts a registry built by `defineMutators` or the definitions
+ * written inline — both infer identically (the same mapped type contextually
+ * types each `apply` from its sibling `args` schema). `defineMutators` is
+ * only *required* when declaring an `authContext` (its third argument).
  */
+// Overload pairs: the mapped overloads come first — they contextually type
+// each `apply` from its sibling `args` schema (the defineMutators trick, so
+// inlining in defineApp loses nothing). Registries carrying an authContext
+// (the AUTH_CONTEXT symbol defineMutators stamps) fail the mapped shape —
+// the symbol's value is a schema, not a mutator def — and fall through to
+// the plain-generic overloads below.
 export function defineApp<
   S extends AnySyncSchema,
-  M extends MutatorsFor<S>,
+  A extends Record<string, unknown>,
+  // The default is not decoration: without one, TS resolves D before the
+  // contextual typing pass and every inline `apply` degrades to `any`.
+  D extends MutatorsFor<S> = Record<never, never>,
+  P extends StandardSchemaV1 | undefined = undefined,
+>(def: {
+  version: number
+  schema: S
+  mutators: {
+    [K in keyof A]: {
+      args?: StandardSchemaV1<any, A[K]>
+      apply: (tx: MutatorTx<S>, args: A[K], ctx: MutatorContext) => void
+    }
+  } & D
+  migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
+  presence?: P
+  crud: false
+}): AppDefinition<S, D, P>
+export function defineApp<
+  S extends AnySyncSchema,
+  A extends Record<string, unknown>,
+  D extends MutatorsFor<S> = Record<never, never>,
+  P extends StandardSchemaV1 | undefined = undefined,
+>(def: {
+  version: number
+  schema: S
+  mutators?: {
+    [K in keyof A]: {
+      args?: StandardSchemaV1<any, A[K]>
+      apply: (tx: MutatorTx<S>, args: A[K], ctx: MutatorContext) => void
+    }
+  } & D
+  migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
+  presence?: P
+  crud?: true
+}): AppDefinition<S, D & CrudMutators<S>, P>
+export function defineApp<
+  S extends AnySyncSchema,
+  M extends MutatorsFor<S> & { [AUTH_CONTEXT]: StandardSchemaV1<any, any> },
   P extends StandardSchemaV1 | undefined = undefined,
 >(def: {
   version: number
@@ -153,12 +227,12 @@ export function defineApp<
 }): AppDefinition<S, M, P>
 export function defineApp<
   S extends AnySyncSchema,
-  M extends MutatorsFor<S> = Record<never, never>,
+  M extends MutatorsFor<S> & { [AUTH_CONTEXT]: StandardSchemaV1<any, any> },
   P extends StandardSchemaV1 | undefined = undefined,
 >(def: {
   version: number
   schema: S
-  mutators?: M
+  mutators: M
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
   presence?: P
   crud?: true

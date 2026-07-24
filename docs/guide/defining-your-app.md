@@ -46,6 +46,8 @@ const mutators = defineMutators(schema, {
 
 The server validates `args` against the schema before `apply` runs. Inside `apply`, `tx` gives you `get`, `put`, `del`, and `list` over the workspace's tables — every write validated, all of them committed atomically with the mutation's bookkeeping.
 
+The definitions can also be written directly inside `defineApp({ mutators: { ... } })` — inference is identical either way. `defineMutators` is only *required* when declaring an [`authContext`](/guide/auth#reading-the-verdict-in-mutators), its third argument.
+
 ### CRUD is included
 
 The full-row last-write-wins pair (`sync.put` / `sync.del`) — what collections emit for local `insert`/`update`/`delete` — is added by `defineApp` automatically. Pass `crud: false` for an intent-only app where every write must go through a named mutator.

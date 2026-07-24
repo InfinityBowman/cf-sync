@@ -192,7 +192,7 @@ export type MutationArgs<Def> = 'args' extends keyof Def
  * }, { authContext: z.object({ role: z.enum(['owner', 'member']), writeAllowed: z.boolean() }) })
  * ```
  */
-export function defineMutators<S extends AnySyncSchema, A extends Record<string, any>, D, AC>(
+export function defineMutators<S extends AnySyncSchema, A extends Record<string, unknown>, D, AC>(
   schema: S,
   defs: {
     [K in keyof A]: {
@@ -202,7 +202,7 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
   } & D,
   opts: { authContext: StandardSchemaV1<any, AC> },
 ): D & { [AUTH_CONTEXT]: StandardSchemaV1<any, AC> }
-export function defineMutators<S extends AnySyncSchema, A extends Record<string, any>, D>(
+export function defineMutators<S extends AnySyncSchema, A extends Record<string, unknown>, D>(
   schema: S,
   defs: {
     [K in keyof A]: {
@@ -211,7 +211,10 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
     }
   } & D,
 ): D
-export function defineMutators<S extends AnySyncSchema, A extends Record<string, any>, D>(
+// `A extends Record<string, unknown>` (not `any`): a mutator with no args
+// schema has no inference site for A[K], so it falls back to the constraint —
+// `unknown`, which the body must narrow, instead of a silent `any`.
+export function defineMutators<S extends AnySyncSchema, A extends Record<string, unknown>, D>(
   schema: S,
   defs: {
     [K in keyof A]: {
