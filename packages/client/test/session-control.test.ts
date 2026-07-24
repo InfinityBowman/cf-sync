@@ -17,7 +17,8 @@ import { FakeSocket, flushMicrotasks } from './fake-socket'
 
 // Session control (DESIGN.md §15): permanent close codes go fatal with the
 // close {code, reason} attached; 4300 refreshes reconnect immediately exactly
-// once per streak; the `auth` option feeds optimistic runs as ctx.auth.
+// once per streak; the `authContext` option feeds optimistic runs as
+// ctx.auth; `authToken` rides the URL fresh on every connection attempt.
 
 const CLIENT_ID = 'client-a'
 
@@ -137,7 +138,7 @@ describe('refresh (4300)', () => {
   })
 })
 
-describe('the auth option', () => {
+describe('the authContext option', () => {
   const schema = defineSchema({
     todos: z.object({ id: z.string(), title: z.string() }),
   })
@@ -167,7 +168,7 @@ describe('the auth option', () => {
   )
   const app = defineApp({ version: 1, schema, mutators })
 
-  function setup(auth?: { writeAllowed: boolean }) {
+  function setup(authContext?: { writeAllowed: boolean }) {
     const sockets: FakeSocket[] = []
     const client = new SyncClient({
       url: 'ws://test',
@@ -175,7 +176,7 @@ describe('the auth option', () => {
       clientId: CLIENT_ID,
       autoStart: false,
       app,
-      auth,
+      authContext,
       createSocket: () => {
         const socket = new FakeSocket()
         sockets.push(socket)
@@ -219,7 +220,88 @@ describe('the auth option', () => {
     expect(socket.sent.some((m) => m.type === 'push')).toBe(true) // reached the wire
   })
 
-  it('validates auth against the authContext schema at construction', () => {
+  it('validates authContext against the app schema at construction', () => {
     expect(() => setup({ writeAllowed: 'yes' as unknown as boolean })).toThrow(/authContext/)
+  })
+})
+
+describe('the authToken option', () => {
+  function tokenClient(authToken: string | (() => string | Promise<string>) | undefined, url = 'ws://test') {
+    const urls: string[] = []
+    const sockets: FakeSocket[] = []
+    const client = new SyncClient({
+      url,
+      workspaceId: 'w1',
+      clientId: CLIENT_ID,
+      autoStart: false,
+      app: testApp,
+      authToken,
+      createSocket: (socketUrl: string) => {
+        urls.push(socketUrl)
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    return { client, urls, sockets, latest: () => sockets[sockets.length - 1]! }
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('a static token rides the sync URL as ?token=…', () => {
+    const { client, urls } = tokenClient('secret/123')
+    client.start()
+    expect(urls[0]).toBe(`ws://test/sync/w1?clientId=${CLIENT_ID}&token=secret%2F123`)
+  })
+
+  it('a token function is re-invoked on every connection attempt', async () => {
+    let n = 0
+    const { client, urls, latest } = tokenClient(() => `t${++n}`)
+    client.start()
+    await flushMicrotasks()
+    expect(urls[0]).toContain('&token=t1')
+
+    // A 4300 refresh reconnects immediately — and must carry a fresh token.
+    latest().open()
+    bootstrap(latest())
+    latest().serverClose(CLOSE_REFRESH, 'stamps-expired')
+    await flushMicrotasks()
+    expect(urls[1]).toContain('&token=t2')
+  })
+
+  it('an async token provider resolves before the socket opens', async () => {
+    const { client, urls } = tokenClient(async () => 'later')
+    client.start()
+    expect(urls.length).toBe(0) // nothing until the token resolves
+    await flushMicrotasks()
+    expect(urls[0]).toContain('&token=later')
+  })
+
+  it('a rejecting token provider retries with backoff instead of dying', async () => {
+    vi.useFakeTimers()
+    try {
+      let calls = 0
+      const { client, urls } = tokenClient(() => {
+        calls++
+        return Promise.reject(new Error('idp down'))
+      })
+      client.start()
+      await flushMicrotasks() // let the rejection propagate
+      expect(urls.length).toBe(0)
+      expect(client.status).toBe('reconnecting')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(calls).toBeGreaterThan(1) // the retry asked for a token again
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects a base url carrying a query at construction, pointing at authToken', () => {
+    expect(() => tokenClient(undefined, 'ws://test?token=abc')).toThrow(/authToken/)
   })
 })

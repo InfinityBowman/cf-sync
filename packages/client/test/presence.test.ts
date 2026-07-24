@@ -202,7 +202,7 @@ describe('initialPresence', () => {
     client.stop()
   })
 
-  it('is validated at construction, like auth', () => {
+  it('is validated at construction, like authContext', () => {
     expect(() => makeClient(presenceApp, { initialPresence: { name: 42 } })).toThrow(/presence schema/)
     expect(() => makeClient(testApp, { initialPresence: { name: 'ada' } })).toThrow(/no presence schema/)
   })

@@ -24,6 +24,25 @@ describe('createSyncRoute', () => {
     const res = await sync(new Request('https://w/sync/ws1'), {})
     expect(res?.status).toBe(426)
   })
+
+  it('strips the authToken credential from the URL forwarded to the DO', async () => {
+    let forwarded: string | undefined
+    const namespace = {
+      idFromName: () => 'id',
+      get: () => ({
+        fetch: (url: string) => {
+          forwarded = url
+          return new Response(null, { status: 200 })
+        },
+      }),
+    } as unknown as DurableObjectNamespace
+    const sync = createSyncRoute({ namespace: () => namespace })
+    await sync(
+      new Request('https://w/sync/ws1?clientId=c1&token=super-secret', { headers: { Upgrade: 'websocket' } }),
+      {},
+    )
+    expect(forwarded).toBe('https://w/sync/ws1?clientId=c1')
+  })
 })
 
 describe('createAdminRoute', () => {

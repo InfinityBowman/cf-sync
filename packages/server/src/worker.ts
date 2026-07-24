@@ -156,7 +156,11 @@ export function createSyncRoute<Env>(opts: SyncFetchOptions<Env>) {
     // (Rpc.Provider over `any`) exceeds TS's instantiation depth.
     const namespace = opts.namespace(env) as DurableObjectNamespace
     const stub = namespace.get(namespace.idFromName(workspaceId))
-    return stub.fetch(request.url, { headers })
+    // The client's authToken has served its purpose (authorize read it);
+    // strip it so the credential never reaches the DO or workspace-side logs.
+    const forward = new URL(request.url)
+    forward.searchParams.delete('token')
+    return stub.fetch(forward.toString(), { headers })
   }
 }
 

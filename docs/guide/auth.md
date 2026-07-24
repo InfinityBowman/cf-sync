@@ -37,6 +37,33 @@ The verdict's `principal` and `context` are stamped onto the connection, survive
 A browser can't see the HTTP status of a failed WebSocket upgrade — a 403 looks identical to a network error. So on a structured rejection, the router completes the upgrade and immediately closes with a code and your `reason` slug. The client gets a real close event, your `onFatal` gets the reason, and the DO never wakes. Keep reasons short stable slugs (`membership-revoked`, not prose) — WebSocket close reasons cap at 123 bytes.
 :::
 
+## Sending a credential
+
+Cookie-based sessions need nothing: the browser attaches cookies to the upgrade request and `verifyAuth(request, env)` above reads them. Token-based auth uses the client's `authToken` option — browsers can't set headers on a WebSocket upgrade, so the token rides the sync URL as a `token` query parameter:
+
+```ts
+const client = new SyncClient({
+  url: SYNC_URL,
+  workspaceId,
+  app,
+  authToken: () => getSession().accessToken,
+})
+```
+
+```ts
+// worker — the authorize hook reads it back off the URL
+authorize: async (request, { workspaceId, env }) => {
+  const token = new URL(request.url).searchParams.get('token')
+  const session = token && (await verifyToken(token, env))
+  if (!session) return { ok: false, reason: 'unauthenticated' }
+  // …membership checks as above
+}
+```
+
+A function is invoked fresh on **every** connection attempt — including the immediate reconnect after a [refresh close](#close-codes) — so short-lived tokens renew without any bookkeeping: revoke entitlements, `disconnect({ mode: 'refresh' })`, and the reconnect carries a new token through a fresh `authorize` run. An async provider is awaited before the socket opens; a rejection counts as a failed attempt and retries with backoff. The router strips `token` from the URL after `authorize` runs, so the credential never reaches the Durable Object or workspace-side logs.
+
+Don't confuse this with `authContext`, the client's *local, untransmitted* copy of what `authorize` stamps — that one only feeds optimistic mutator runs (`ctx.auth`), and the server never sees or trusts it.
+
 ## Reading the verdict in mutators
 
 Type the context once with `authContext`, and every mutator sees it as `ctx.auth`:

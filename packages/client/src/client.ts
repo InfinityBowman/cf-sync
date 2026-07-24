@@ -320,6 +320,19 @@ export interface SyncClientOptions<
    */
   app: AppDefinition<S, M, P>
   /**
+   * The connection credential. Browsers cannot set headers on a WebSocket
+   * upgrade, so the token travels as a `token` query parameter on the sync
+   * URL, where the worker's `authorize` hook reads it:
+   * `new URL(request.url).searchParams.get('token')`.
+   *
+   * A function is invoked fresh on **every** connection attempt — including
+   * the immediate reconnect after a 4300 refresh close — so short-lived
+   * tokens renew naturally: `authToken: () => getSession().accessToken`.
+   * It may be async; a rejection is treated like a failed connection
+   * attempt (logged, retried with backoff).
+   */
+  authToken?: string | (() => string | Promise<string>)
+  /**
    * This client's own view of its auth context — the same shape the server's
    * `authorize` hook stamps (typed by the registry's `authContext` schema).
    * Optimistic mutator runs see it as `ctx.auth` with
@@ -328,8 +341,12 @@ export interface SyncClientOptions<
    * round-trip rejection. Validated against the app's `authContext` schema at
    * construction when one is declared. The server's stamps remain
    * authoritative either way.
+   *
+   * Not a credential: it is never transmitted, and the server never trusts
+   * it. (If you're arriving from Replicache or Zero, their `auth` option is
+   * the transmitted token — here that's {@link authToken}.)
    */
-  auth?: AuthContextOf<M>
+  authContext?: AuthContextOf<M>
   /**
    * Durable storage for synced rows, the cursor, and the outbox. When set,
    * start() hydrates registered tables from the store (collections show
@@ -523,6 +540,8 @@ export class SyncClient<
   #socket: WebSocketLike | null = null
   #status: SyncStatus = 'idle'
   #auth: unknown
+  /** Bumped on every #connect entry; an async authToken resolution from a superseded attempt is dropped. */
+  #connectEpoch = 0
   /**
    * Consecutive 4300 (refresh) closes with no intervening ready connection.
    * Only the first reconnects immediately; a streak means something is
@@ -606,17 +625,17 @@ export class SyncClient<
       throw new Error('SyncClient: pass either `store` or `persist`, not both')
     }
     this.#opts = opts
-    this.#auth = opts.auth
-    if (opts.auth !== undefined && opts.app.authContext) {
+    this.#auth = opts.authContext
+    if (opts.authContext !== undefined && opts.app.authContext) {
       // Fail fast on drift between the app's authorize hook shape and what
       // this client was handed — the same check the server runs at upgrade.
-      const result = opts.app.authContext['~standard'].validate(opts.auth)
+      const result = opts.app.authContext['~standard'].validate(opts.authContext)
       if (result instanceof Promise) {
         void result.catch(() => {})
         throw new Error('SyncClient: async authContext validation is not supported')
       }
       if (result.issues) {
-        throw new Error(`SyncClient: auth fails the app's authContext schema: ${formatIssues(result.issues)}`)
+        throw new Error(`SyncClient: authContext fails the app's authContext schema: ${formatIssues(result.issues)}`)
       }
       this.#auth = result.value
     }
@@ -645,7 +664,7 @@ export class SyncClient<
       },
     } as PresenceApi<PresenceInputOf<P>, PresenceStateOf<P>>
     // Announced when the connection reaches ready, exactly like a pre-connect
-    // set; invalid state throws here, at construction (fail fast, like auth).
+    // set; invalid state throws here, at construction (fail fast, like authContext).
     if (opts.initialPresence !== undefined) this.#presenceSet(opts.initialPresence)
     // Nothing consumes registered tables synchronously (hydration awaits the
     // store; a real socket's open event is async), so collections created
@@ -1106,17 +1125,47 @@ export class SyncClient<
 
   #connect(): void {
     if (this.#stopped) return
+    const epoch = ++this.#connectEpoch
+    const token = this.#opts.authToken
+    if (token === undefined) {
+      this.#openSocket(this.#url)
+      return
+    }
+    if (typeof token === 'string') {
+      this.#openSocket(withToken(this.#url, token))
+      return
+    }
+    // A token function is invoked fresh on every attempt, so the immediate
+    // reconnect after a 4300 refresh close carries a renewed token. The
+    // epoch guard drops a resolution that a newer connect has superseded.
+    Promise.resolve()
+      .then(token)
+      .then(
+        (value) => {
+          if (this.#stopped || epoch !== this.#connectEpoch) return
+          this.#openSocket(withToken(this.#url, value))
+        },
+        (err) => {
+          if (this.#stopped || epoch !== this.#connectEpoch) return
+          console.warn('[cf-sync] authToken provider failed; retrying', err)
+          this.#socket = null
+          this.#scheduleReconnect()
+        },
+      )
+  }
+
+  #openSocket(url: string): void {
     const createSocket =
       this.#opts.createSocket ??
-      ((url: string) => {
-        const ws = new WebSocket(url)
+      ((socketUrl: string) => {
+        const ws = new WebSocket(socketUrl)
         // Binary lane frames (§17) must arrive as ArrayBuffer, not Blob.
         ws.binaryType = 'arraybuffer'
         return ws as unknown as WebSocketLike
       })
     let socket: WebSocketLike
     try {
-      socket = createSocket(this.#url)
+      socket = createSocket(url)
     } catch (err) {
       // Browsers throw synchronously from `new WebSocket` for malformed URLs
       // and some CSP blocks. Treat it as an instant disconnect — an uncaught
@@ -1887,11 +1936,25 @@ function validateLocalRow(
 /**
  * `<base><prefix>/<workspaceId>?clientId=<id>` — the shape createSyncFetch
  * routes. `http(s)` is mapped to `ws(s)`; a trailing slash on the base is
- * tolerated so `location.origin`-derived URLs compose cleanly.
+ * tolerated so `location.origin`-derived URLs compose cleanly. A query or
+ * fragment on the base is rejected at construction: the sync path is
+ * appended after it, so the URL would come out malformed — credentials
+ * belong in the `authToken` option, which appends per connection attempt.
  */
 function buildSyncUrl(base: string, prefix: string, workspaceId: string, clientId: string): string {
+  if (base.includes('?') || base.includes('#')) {
+    throw new Error(
+      `SyncClient: url must not carry a query or fragment (got "${base}") — the sync path is appended to it. ` +
+        'To send a credential, use the authToken option; it rides the URL as ?token=… on every connection attempt.',
+    )
+  }
   const wsBase = base.replace(/^http/, 'ws').replace(/\/+$/, '')
   return `${wsBase}${prefix}/${encodeURIComponent(workspaceId)}?clientId=${encodeURIComponent(clientId)}`
+}
+
+/** The sync URL always ends in `?clientId=…`, so the token appends with `&`. */
+function withToken(url: string, token: string): string {
+  return `${url}&token=${encodeURIComponent(token)}`
 }
 
 /**

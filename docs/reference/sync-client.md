@@ -54,11 +54,19 @@ Durable storage for synced rows, the cursor, and the outbox — pass your own [`
 
 Identifies one contiguous mutation sequence — unique per SyncClient instance (per tab/session), never shared across concurrent tabs. The managed default is persisted per workspace in sessionStorage (reload continuity without cross-tab sharing), random where sessionStorage is unavailable. Pass explicitly to take over the lifecycle.
 
-### auth
+### authToken
+
+`string | (() => string | Promise<string>)`
+
+The connection credential. Browsers cannot set headers on a WebSocket upgrade, so the token travels as a `token` query parameter on the sync URL, where the worker's [`authorize`](/guide/auth#the-authorize-hook) hook reads it: `new URL(request.url).searchParams.get('token')`. A function is invoked fresh on **every** connection attempt — including the immediate reconnect after a 4300 refresh close — so short-lived tokens renew naturally: `authToken: () => getSession().accessToken`. It may be async; a rejection is treated like a failed connection attempt (logged, retried with backoff). See [Auth & sessions](/guide/auth#sending-a-credential).
+
+### authContext
 
 `AuthContextOf<M>`
 
 This client's own view of its auth context — the same shape the server's `authorize` hook stamps (typed by the app's `authContext` schema). Optimistic mutator runs see it as `ctx.auth` with `ctx.authoritative: false`, so permission checks written without the `authoritative` guard fail fast locally instead of surfacing as a server round-trip rejection. Validated against the app's `authContext` schema at construction when one is declared. The server's stamps remain authoritative either way.
+
+Not a credential: it is never transmitted, and the server never trusts it. (Arriving from Replicache or Zero? Their `auth` option is the transmitted token — here that's [`authToken`](#authtoken).)
 
 ### autoStart
 
