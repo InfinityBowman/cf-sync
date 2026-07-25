@@ -71,6 +71,12 @@ Streams the workspace's mutation log to an R2 bucket as ndjson objects on the ma
 
 Binary-lane extension factory — e.g. `yjsFields()` from [`@cf-sync/yjs/server`](/reference/yjs). A factory, not an instance: it is invoked once per workspace DO instance, because instances of one class share an isolate and a single extension object would leak in-memory state across workspaces. See [EngineExtension](#engineextension) below.
 
+### logger
+
+`EngineLogger` — `(level: 'warn' | 'error', message, ...detail) => void` · default: the console
+
+Where the engine's diagnostics go — init failures, [schema-drift warnings](/guide/schema-evolution#drift-detection), internal errors. The default is visible in `wrangler tail`; inject to route them into your own logging pipeline. Messages arrive fully formatted (including the `[cf-sync]` prefix).
+
 ## createSyncFetch · createSyncRoute
 
 `(opts: SyncFetchOptions) => (request, env) => Promise<Response>` · `…Promise<Response | null>`
@@ -156,3 +162,5 @@ The binary-lane extension seam an add-on plugs into — [`@cf-sync/yjs/server`](
 ## Custom routers
 
 `encodeAuthStamps(stamps)` / `decodeAuthStamps(value)` and the `AUTH_HEADER` / `WORKSPACE_HEADER` constants exist for routers replacing `createSyncFetch`. The routers carry the authorize verdict's stamps (`{ principal?, context?, expiresAt? }`) to the DO in `AUTH_HEADER` as base64-encoded JSON, and name the workspace in `WORKSPACE_HEADER`. A custom router must reproduce the security-critical move: **strip any inbound `AUTH_HEADER` before setting its own**, so stamps cannot be spoofed from outside — the DO trusts whatever the router says. `encodeAuthStamps` serializes a verdict's stamps into the header value; `decodeAuthStamps` parses one back (the DO calls it at upgrade; a custom router only needs it to inspect its own header).
+
+`rejectUpgrade(code, reason)` completes the seam: it accepts the upgrade and immediately closes it with the given code and reason — the browser-observable rejection the built-in routers use (a bare 403 is indistinguishable from a network error in a browser). A custom router should reject the same way.

@@ -12,6 +12,20 @@ const { todos, issues } = createCollections(client)
 todos.insert({ id: crypto.randomUUID(), title: 'ship it' })
 ```
 
+## createWorkspace
+
+`(options: SyncClientOptions & { startSync? }) => Workspace`
+
+The one-call bootstrap: constructs the [`SyncClient`](/reference/sync-client) and every collection, and returns `{ client, collections, destroy }` — the unit to hold and thread:
+
+```ts
+const ws = createWorkspace({ url: SYNC_URL, workspaceId, app, persist: true })
+ws.collections.todos.insert({ id, title: 'ship it' })
+await ws.client.mutate.todos.clearCompleted()
+```
+
+The unit shape is the point for workspace-per-project apps: switching projects is `await ws.destroy()` then `createWorkspace({ ...same, workspaceId: next })` — nothing to individually rebuild or re-thread. Takes every `SyncClientOptions` field plus `startSync`, forwarded to [`createCollections`](#createcollections). Constructing the pieces separately (below) remains fully supported.
+
 ## createCollections
 
 `(client: SyncClient, options?: { startSync?: boolean }) => WorkspaceCollections`

@@ -102,27 +102,25 @@ The workspace DO requires SQLite-backed storage. Declaring it with `new_classes`
 ## 4. The client
 
 ```ts
-// src/main.ts
-import { SyncClient, createCollections } from '@cf-sync/client'
+// src/sync.ts
+import { createWorkspace } from '@cf-sync/client'
 import { app } from './schema'
 
-const client = new SyncClient({
+export const { client, collections } = createWorkspace({
   url: 'ws://localhost:8787',   // wss://your-worker in production
   workspaceId: 'my-first-workspace',
   app,
   persist: true,                // IndexedDB mirror + durable offline outbox
 })
 
-const { todos } = createCollections(client)
-
 // Optimistic local write, synced as a full-row mutation:
-todos.insert({ id: crypto.randomUUID(), title: 'ship it' })
+collections.todos.insert({ id: crypto.randomUUID(), title: 'ship it' })
 
 // Typed intent mutation — runs instantly locally, authoritatively on the server:
 await client.mutate.todo.toggle({ id })
 ```
 
-The client connects on construction (pass `autoStart: false` to decouple that — SSR, auth gating), appends `/sync/<workspaceId>?clientId=…` to your URL, and manages the clientId lifecycle for you. `createCollections` gives you one typed collection per schema table — row types, runtime validation, and keys all derive from the schema — and syncing starts immediately (the socket carries every table's pokes regardless; pass `{ startSync: false }` to defer to first subscriber). For per-table control, use `workspaceCollectionOptions`.
+The client connects on construction (pass `autoStart: false` to decouple that — SSR, auth gating), appends `/sync/<workspaceId>?clientId=…` to your URL, and manages the clientId lifecycle for you. `createWorkspace` returns one typed collection per schema table — row types, runtime validation, and keys all derive from the schema — plus the client and a single `destroy` that tears everything down (the unit to rebuild when [switching workspaces](/guide/offline-persistence#closing-a-workspace)). Syncing starts immediately (the socket carries every table's pokes regardless; pass `startSync: false` to defer to first subscriber). For finer control, construct the pieces yourself with `new SyncClient(...)` + `createCollections`/`workspaceCollectionOptions`.
 
 In React, read collections with `useLiveQuery` from `@tanstack/react-db` — install it alongside `@cf-sync/client` (it's declared as an optional peer, so your package manager will flag a version pair whose pinned `@tanstack/db` disagrees). Sync state comes from the shipped hooks:
 
@@ -141,7 +139,7 @@ npm run dev             # your vite dev server, second terminal
 
 Open the app in **two tabs**. Mutations apply instantly in the originating tab and propagate to the other through the server. Then try turning the network off in devtools, mutating, and reloading — the mirror hydrates instantly and the outbox replays on reconnect.
 
-Each `workspaceId` is its own Durable Object with its own storage and sockets. Switching workspaces means constructing a new client — see [Offline & persistence](/guide/offline-persistence#closing-a-workspace).
+Each `workspaceId` is its own Durable Object with its own storage and sockets. Switching workspaces is `await ws.destroy()` then `createWorkspace({ ...same, workspaceId: next })` — see [Offline & persistence](/guide/offline-persistence#closing-a-workspace).
 
 ## Where next
 

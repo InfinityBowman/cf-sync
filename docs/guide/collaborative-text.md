@@ -72,7 +72,7 @@ yjsFields({
 
 (Without an app value in scope, the explicit generic still works: `yjsFields<MyAuthContext>({ … })`.)
 
-Readers aren't second-class: the sync state carries the writable flag, so `handle.canWrite` is correct from first paint — no flash of editable UI before a rejection.
+Readers aren't second-class: the sync state carries the writable flag, so `handle.canWrite` is correct from first paint — no flash of editable UI before a rejection. And when a field *is* read-only, `handle.writeBlocked` (also on `useYjsField`'s state) says why — `'NotWritable'`/`'Frozen'` (access) vs `'TooLarge'`/`'LocalTooLarge'` (the document is full) — so the banner can tell the user something actionable.
 
 ## Presence for fields
 

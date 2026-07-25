@@ -61,7 +61,8 @@ A ref-counted live view of one field. Two call sites holding the same `fieldId` 
 - `text` — the paved path: a `Y.Text` at a fixed, library-owned key, so every reader and writer of a field agrees on type and key with nothing to coordinate.
 - `whenSynced` — resolves on the first server state and stays resolved. It answers "can I render this field", not "am I currently live" — liveness is the client's [`SyncStatus`](/reference/sync-client#syncstatus).
 - `canWrite` — whether this client may write, reactively: the server's writable flag, flipped `false` by any reject. A reject-flipped `false` is **sticky for the handle's lifetime** — only this client knows its local doc holds an op the server refused, so a later state saying writable must not resume uploading (it would re-send the refused op forever). Starts `false` and is meaningful after `whenSynced` — never guessed, so readers get no flash of editable UI.
-- `subscribe(listener)` — notifies on `canWrite` or first-sync changes; returns an unsubscribe function.
+- `writeBlocked` — *why* `canWrite` is false, or `null` while writable (or pre-sync): `'NotWritable'` (no write access), `'Frozen'` (administratively frozen), `'TooLarge'` (the server refused an oversized update), `'LocalTooLarge'` (the client's own frame guard tripped before sending). Render the difference — "this document is full" and "you can't edit this" deserve different UI.
+- `subscribe(listener)` — notifies on `canWrite`/`writeBlocked` or first-sync changes; returns an unsubscribe function.
 - `release()` — drop this reference; idempotent.
 
 A non-writable field never sends: local edits stay buffered in the doc, and the apply-then-reject path is designed out rather than handled.
@@ -94,9 +95,11 @@ Discriminated on `synced`, so the loading state is impossible to forget:
 
 ```ts
 type YjsFieldState =
-  | { synced: false; handle: null; doc: null; text: null; canWrite: false }
-  | { synced: true; handle: YjsFieldHandle; doc: Y.Doc; text: Y.Text; canWrite: boolean }
+  | { synced: false; handle: null; doc: null; text: null; canWrite: false; writeBlocked: null }
+  | { synced: true; handle: YjsFieldHandle; doc: Y.Doc; text: Y.Text; canWrite: boolean; writeBlocked: WriteBlockedReason | null }
 ```
+
+`writeBlocked` carries the [reason](#yjsfieldhandle) `canWrite` is false, so the read-only banner can say why.
 
 ## Field ids are an app convention
 

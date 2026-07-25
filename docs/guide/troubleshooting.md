@@ -46,6 +46,19 @@ Liveness is TCP-bound: silent deaths (laptop lid, network partition) take ~75s+ 
 
 The collection name must match a table key in `defineSchema`. The error lists the known tables — usually it's a typo, or the client and worker are importing different copies of the app definition. There must be exactly one `defineApp` value shared by both bundles.
 
+## Duplicate clients under Vite HMR / React Fast Refresh
+
+A module-scope `createWorkspace(...)` (or `new SyncClient(...)`) is safe as long as the module it lives in triggers a full reload on change. The moment it's exported from a file Fast Refresh *accepts* — a component file, usually — a hot update re-evaluates the module and constructs a **second live client** sharing the first one's sessionStorage clientId: two sockets, duplicate collections, confusing double traffic. Dev-only, but it looks exactly like a sync bug.
+
+Two fixes: keep the workspace in its own module that no component file re-exports (the demo's `sync.ts` pattern), or register a dispose hook so the old client is torn down before the module re-evaluates:
+
+```ts
+export const ws = createWorkspace({ url, workspaceId, app, persist: true })
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => void ws.destroy())
+}
+```
+
 ## Two tabs, one user — two presence avatars
 
 Peers are per connection by design. Group by `principal` (server-attested) for one-avatar-per-user — see [Presence](/guide/presence).

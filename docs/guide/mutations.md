@@ -42,7 +42,7 @@ What resolution looks like depends on whether the client has a durable store:
 
 The memory-only timeout is honest: without a store, a queued mutation would not survive a reload anyway, so the client refuses to pretend otherwise.
 
-Beyond server rejection, a pending mutation can also reject with `Stopped` (`client.stop()` / `client.destroy()` was called) or `Fatal` (the connection hit a permanent failure — see [Auth & sessions](/guide/auth#close-codes)).
+Beyond server rejection, a pending mutation can also reject with `Stopped` (`client.destroy()` was called) or `Fatal` (the connection hit a permanent failure — see [Auth & sessions](/guide/auth#close-codes)).
 
 ## Rejection codes
 
@@ -70,7 +70,7 @@ The built-in set is exported as `MutationErrorCode`, so branching on codes autoc
 
 ## One handler instead of a catch per call site
 
-Per-call `try`/`catch` is right when the caller can *do* something specific. For everything else — toasting, logging, telemetry — set `onMutationRejected` once at construction:
+Per-call `try`/`catch` is right when the caller can *do* something specific. For everything else — toasting, logging, telemetry — attach `onMutationRejected` once. Two equivalent surfaces: the constructor option, or the subscription method for layers that mount after the client exists (a toast system, an error boundary):
 
 ```ts
 const client = new SyncClient({
@@ -78,6 +78,11 @@ const client = new SyncClient({
   onMutationRejected: (error, { name }) => {
     toast.error(`"${name}" was rejected: ${error.message}`)
   },
+})
+
+// …or attach later, with an unsubscribe:
+const unsubscribe = client.onMutationRejected((error, { name }) => {
+  toast.error(`"${name}" was rejected: ${error.message}`)
 })
 ```
 

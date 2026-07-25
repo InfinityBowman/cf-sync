@@ -102,7 +102,13 @@ Force a reconnect when no frame of any kind has arrived for this long — the on
 
 `number` · default `30_000`
 
-Cap on the exponential reconnect backoff.
+Cap on the exponential reconnect backoff. The browser's `online` and `visibilitychange` events short-circuit a pending backoff — a reopened laptop reconnects immediately, not after waiting out the timer.
+
+### logger
+
+`SyncLogger` — `(level: 'warn' | 'error', message, ...detail) => void` · default: the console
+
+Where the client's diagnostics go — reconnect decisions, dropped frames, persistence failures. Inject to route them into your own logging; the messages arrive fully formatted (including the `[cf-sync]` prefix).
 
 ### createSocket
 
@@ -114,7 +120,7 @@ Socket factory for tests and non-browser runtimes. A custom factory that wraps a
 
 `PresenceInput`
 
-The presence state announced as soon as the connection is ready, before any `presence.set` call. Provide identity here once (validated at construction, like `auth`) and every later call site can be a bare `presence.update(partial)` — immune to component mount order. Requires a `presence` schema in the app. See [Presence](/guide/presence).
+The presence state announced as soon as the connection is ready, before any `presence.set` call. Provide identity here once (validated at construction, like `authContext`) and every later call site can be a bare `presence.update(partial)` — immune to component mount order. Requires a `presence` schema in the app. See [Presence](/guide/presence).
 
 ### presenceThrottleMs
 
@@ -165,7 +171,7 @@ Ephemeral peer state on the existing socket — see [Presence](/guide/presence) 
 - `presence.clear()` — peers see you go quiet.
 - `presence.self` — your own parsed state (never included in peers).
 - `presence.peers` — the current peers, each `{ clientId, principal?, state, receivedAt }` with identity stamped by the server.
-- `presence.subscribe(listener)` — change notifications; returns an unsubscribe function.
+- `presence.subscribe(listener)` — change notifications (peer changes *and* local `set`/`update`/`clear`, so `self` renders reactively); returns an unsubscribe function.
 
 ### status · cursor · workspaceId · clientId · app · schema
 
@@ -185,17 +191,17 @@ Subscribe to [`SyncStatus`](#syncstatus) transitions; returns an unsubscribe fun
 
 Connect (only meaningful with `autoStart: false`). Hydrates from the store first when one is configured, then opens the socket. Throws if the client was destroyed.
 
-### stop
-
-`() => void`
-
-Stop syncing: closes the socket and rejects pending mutations with `Stopped`. Queued mutations already in a durable store are not lost — the next client for this workspace hydrates the same store. Terminal: a stopped client cannot be restarted; construct a new SyncClient to reconnect.
-
 ### destroy
 
 `() => Promise<void>`
 
-The one-call teardown: stops syncing, cleans up every collection from `createCollections`, detaches add-ons (Yjs fields), and closes the store connection. Nothing durable is lost — persisted rows and the offline outbox stay on disk, and the managed clientId is reused, so offline mutations still replay exactly once on the next construction. See [Closing a workspace](/guide/offline-persistence#closing-a-workspace).
+The one teardown: stops syncing (socket close, timer cancels, and `Stopped` settlements all happen synchronously, before the first await — `void client.destroy()` in an unload path is safe), cleans up every collection from `createCollections`, detaches add-ons (Yjs fields), and closes the store connection. Nothing durable is lost — persisted rows and the offline outbox stay on disk, and the managed clientId is reused, so offline mutations still replay exactly once on the next construction. See [Closing a workspace](/guide/offline-persistence#closing-a-workspace).
+
+### onMutationRejected (method)
+
+`(listener: (error: MutationError, mutation: { name, args }) => void) => () => void`
+
+The attach-later counterpart to the [`onMutationRejected` option](#onmutationrejected) — same payload, same "considered handled" semantics, both fire when both are set. For layers that mount after the client exists (a toast system, an error boundary). Returns an unsubscribe function.
 
 ### onDestroy
 
@@ -219,7 +225,7 @@ What an awaited `mutate` call rejects with and what `onMutationRejected` receive
 | Client-local outcomes | `Timeout` · `Stopped` · `Fatal` · `LocalApplyFailed` |
 | Your app's codes | whatever your mutators throw in `AppError('YourCode', …)`, passed through verbatim |
 
-The built-in vocabulary is exported as `MutationErrorCode`. `message` is diagnostic prose — branch on `code`, not on it.
+The built-in vocabulary is exported as `MutationErrorCode`. `message` is diagnostic prose — branch on `code`, not on it. `mutation` carries the rejected mutation's `{ name, args }` when the client knows them, so an awaiting `catch` has the same context the hook receives.
 
 ```ts
 import { MutationError } from '@cf-sync/client'
@@ -245,7 +251,7 @@ What `onFatal` receives when the server permanently rejects this client. `code` 
 type SyncStatus = 'idle' | 'connecting' | 'syncing' | 'synced' | 'reconnecting' | 'fatal'
 ```
 
-One value describing the pipe, not any individual mutation (those settle through `mutate`'s promise and `onMutationRejected`). `idle` is before `start()` and after `stop()`; `connecting` covers hydration and the first socket attempt; `syncing` means the socket is open and catch-up is in flight; `synced` holds between pokes; `reconnecting` means backoff retries are running — queued mutations wait, nothing is lost; `fatal` means the server permanently rejected this client.
+One value describing the pipe, not any individual mutation (those settle through `mutate`'s promise and `onMutationRejected`). `idle` is before `start()` and after `destroy()`; `connecting` covers hydration and the first socket attempt; `syncing` means the socket is open and catch-up is in flight; `synced` holds between pokes; `reconnecting` means backoff retries are running — queued mutations wait, nothing is lost, and the browser's `online`/`visibilitychange` events short-circuit the backoff so a reopened laptop reconnects immediately; `fatal` means the server permanently rejected this client.
 
 ### SyncStore
 

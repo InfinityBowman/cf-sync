@@ -1,4 +1,4 @@
-import { SyncClient, createCollections } from '@cf-sync/client'
+import { createWorkspace } from '@cf-sync/client'
 import { createYjsFields } from '@cf-sync/yjs/client'
 import { app } from './schema'
 
@@ -56,7 +56,10 @@ export const rejections = {
   },
 }
 
-export const syncClient = new SyncClient({
+// One call bootstraps the client and a typed collection per schema table
+// (syncing starts immediately); `workspace.destroy` is the matching one-call
+// teardown — the unit a workspace-switching app rebuilds per project.
+const workspace = createWorkspace({
   url: WORKER_URL,
   workspaceId,
   // The shared app definition: schema version, typed mutate calls with local
@@ -71,18 +74,22 @@ export const syncClient = new SyncClient({
   // Identity once, at construction: every later presence call is a bare
   // update({...}) with no mount-order concerns about who announces first.
   initialPresence: { name: displayName },
-  // One place to surface rejections — including ones with no awaiting caller
-  // (collection writes, offline mutations replayed after a reload). With this
-  // set, fire-and-forget mutate calls need no per-call .catch().
-  onMutationRejected: (error, { name }) => {
-    lastRejection = { name, code: error.code, message: error.message }
-    for (const listener of rejectionListeners) listener()
-  },
 })
 
-// One typed collection per schema table (syncing starts immediately);
-// components read status via useSyncStatus(syncClient) from '@cf-sync/client/react'.
-export const { todos } = createCollections(syncClient)
+export const syncClient = workspace.client
+
+// Components read status via useSyncStatus(syncClient) from '@cf-sync/client/react'.
+export const { todos } = workspace.collections
+
+// One place to surface rejections — including ones with no awaiting caller
+// (collection writes, offline mutations replayed after a reload). The
+// subscription form attaches after construction (a toast layer would too);
+// with a listener attached, fire-and-forget mutate calls need no per-call
+// .catch(). The `onMutationRejected` constructor option works identically.
+syncClient.onMutationRejected((error, { name }) => {
+  lastRejection = { name, code: error.code, message: error.message }
+  for (const listener of rejectionListeners) listener()
+})
 
 // Tier 2 fields: real-merge text (two people typing in one prose box) on the
 // same socket, attached through the client's binary seam. Handles are

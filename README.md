@@ -15,10 +15,9 @@ export class WorkspaceDO extends createWorkspaceDO({ app }) {}
 export default { fetch: createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE, authorize }) }
 
 // Browser — typed collections and optimistic intent mutations:
-const client = new SyncClient({ url, workspaceId, app, persist: true })
-const { issues } = createCollections(client)
+const { client, collections } = createWorkspace({ url, workspaceId, app, persist: true })
 
-issues.insert({ id: ulid(), title: 'ship it' })  // optimistic, converges via the server
+collections.issues.insert({ id: ulid(), title: 'ship it' })  // optimistic, converges via the server
 await client.mutate.issue.move({ id, column })   // one intent, one wire op, atomic rollback
 ```
 
