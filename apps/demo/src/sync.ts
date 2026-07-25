@@ -7,10 +7,9 @@ import { app } from './schema'
 const WORKER_URL =
   import.meta.env.VITE_SYNC_URL ??
   (import.meta.env.DEV ? 'ws://localhost:8787' : location.origin.replace(/^http/, 'ws'))
-const workspaceId = location.hash.slice(1) || 'demo'
 
-// One display name per tab (same lifetime as the clientId): reloads keep it,
-// a second tab gets its own.
+// One display name per tab, kept across workspace switches and reloads: it is
+// the person, not the connection.
 export const displayName = (() => {
   const KEY = 'cf-sync-demo:name'
   try {
@@ -125,48 +124,100 @@ export const network = {
   },
 }
 
-// One call bootstraps the client and a typed collection per schema table
-// (syncing starts immediately); `workspace.destroy` is the matching one-call
-// teardown — the unit a workspace-switching app rebuilds per project.
-const workspace = createWorkspace({
-  url: WORKER_URL,
-  workspaceId,
-  // The demo's offline switch (above) lives here — in normal apps this is
-  // omitted and the client builds its own browser WebSocket.
-  createSocket,
-  // The shared app definition: schema version, typed mutate calls with local
-  // fail-fast validation, and collections that infer their row types.
-  app,
-  // Durable local mirror in IndexedDB: reloads hydrate instantly and resume
-  // by cursor; mutations made offline replay on reconnect. The clientId
-  // lifecycle (one per tab/session) is managed by the client, and so is
-  // fatal recovery (throttled reload into the current bundle). Connecting
-  // starts here too — pass autoStart: false to defer it (e.g. SSR).
-  persist: true,
-  // Identity once, at construction: every later presence call is a bare
-  // update({...}) with no mount-order concerns about who announces first.
-  initialPresence: { name: displayName },
-})
+/**
+ * One workspace's live objects. Every one of them belongs to a single
+ * `workspaceId` — that is the whole point of the switcher below: none of this
+ * is global state, and switching rebuilds all of it.
+ */
+function createSession(workspaceId: string) {
+  // One call bootstraps the client and a typed collection per schema table
+  // (syncing starts immediately); `workspace.destroy` is the matching one-call
+  // teardown — the unit a workspace-switching app rebuilds per project.
+  const workspace = createWorkspace({
+    url: WORKER_URL,
+    workspaceId,
+    // The demo's offline switch (above) lives here — in normal apps this is
+    // omitted and the client builds its own browser WebSocket.
+    createSocket,
+    // The shared app definition: schema version, typed mutate calls with local
+    // fail-fast validation, and collections that infer their row types.
+    app,
+    // Durable local mirror in IndexedDB: reloads hydrate instantly and resume
+    // by cursor; mutations made offline replay on reconnect. The clientId
+    // lifecycle (one per tab/session, per workspace) is managed by the client,
+    // and so is fatal recovery (throttled reload into the current bundle).
+    // Connecting starts here too — pass autoStart: false to defer it (e.g. SSR).
+    persist: true,
+    // Identity once, at construction: every later presence call is a bare
+    // update({...}) with no mount-order concerns about who announces first.
+    initialPresence: { name: displayName },
+  })
 
-export const syncClient = workspace.client
+  // One place to surface rejections — including ones with no awaiting caller
+  // (collection writes, offline mutations replayed after a reload). The
+  // subscription form attaches after construction (a toast layer would too);
+  // with a listener attached, fire-and-forget mutate calls need no per-call
+  // .catch(). The `onMutationRejected` constructor option works identically.
+  workspace.client.onMutationRejected((error, { name }) => {
+    lastRejection = { name, code: error.code, message: error.message }
+    for (const listener of rejectionListeners) listener()
+  })
 
-// Components read status via useSyncStatus(syncClient) from '@cf-sync/client/react'.
-export const { todos } = workspace.collections
+  return {
+    workspaceId,
+    client: workspace.client,
+    // Components read status via useSyncStatus(session.client).
+    todos: workspace.collections.todos,
+    // Tier 2 fields: real-merge text (two people typing in one prose box) on
+    // the same socket, attached through the client's binary seam. Handles are
+    // ref-counted (`getDoc`/`release`) and re-sync themselves on every
+    // reconnect — components write no reconnect glue. The add-on registers its
+    // own teardown via `client.onDestroy`, so `workspace.destroy()` below
+    // collects it too; there is nothing extra to unwind per switch.
+    yfields: createYjsFields(workspace.client),
+    destroy: workspace.destroy,
+  }
+}
 
-// One place to surface rejections — including ones with no awaiting caller
-// (collection writes, offline mutations replayed after a reload). The
-// subscription form attaches after construction (a toast layer would too);
-// with a listener attached, fire-and-forget mutate calls need no per-call
-// .catch(). The `onMutationRejected` constructor option works identically.
-syncClient.onMutationRejected((error, { name }) => {
-  lastRejection = { name, code: error.code, message: error.message }
-  for (const listener of rejectionListeners) listener()
-})
+export type Session = ReturnType<typeof createSession>
 
-// Tier 2 fields: real-merge text (two people typing in one prose box) on the
-// same socket, attached through the client's binary seam. Handles are
-// ref-counted (`getDoc`/`release`) and re-sync themselves on every
-// reconnect — components write no reconnect glue.
-export const yfields = createYjsFields(syncClient)
+/** Offered by the switcher; any other id still works by typing a URL hash. */
+export const WORKSPACES = ['demo', 'team-a', 'team-b']
 
-export { workspaceId }
+const workspaceFromHash = (): string => location.hash.slice(1) || 'demo'
+
+let session = createSession(workspaceFromHash())
+const sessionListeners = new Set<() => void>()
+
+export const sessions = {
+  subscribe(listener: () => void): () => void {
+    sessionListeners.add(listener)
+    return () => sessionListeners.delete(listener)
+  },
+  get: (): Session => session,
+  /**
+   * Switch workspaces without a reload — the lifecycle `createWorkspace` was
+   * shaped for. The new workspace is built *before* the old one is torn down:
+   * the ids differ, so the two never share a clientId, a socket, or an
+   * IndexedDB store, and the UI never renders an in-between empty state.
+   *
+   * Re-entrant by construction — a second click mid-switch just chains another
+   * create/destroy pair, since `session` is already the newer one by then.
+   */
+  async switchTo(id: string): Promise<void> {
+    if (id === session.workspaceId) return
+    const previous = session
+    session = createSession(id)
+    // Keep the URL shareable. Assigning the hash fires `hashchange`, which
+    // lands back here as a no-op now that `session` already moved.
+    if (workspaceFromHash() !== id) location.hash = id
+    for (const listener of sessionListeners) listener()
+    // App.tsx keys its subtree on workspaceId, so by the time this resolves
+    // the old tree has unmounted and released every Yjs handle it held.
+    // Releasing after a destroy is a guarded no-op anyway.
+    await previous.destroy()
+  },
+}
+
+// Editing the hash by hand (or the back button) switches too.
+window.addEventListener('hashchange', () => void sessions.switchTo(workspaceFromHash()))

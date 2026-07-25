@@ -1,7 +1,7 @@
 import { usePresence } from '@cf-sync/client/react'
 import { useYjsField } from '@cf-sync/yjs/react'
 import { useEffect, useState } from 'react'
-import { syncClient, yfields } from './sync'
+import type { Session } from './sync'
 
 /** Field ids are an app convention the engine never interprets (§17.1). */
 export const notesFieldId = (todoId: string) => `todo-notes:${todoId}`
@@ -21,7 +21,8 @@ export const notesFieldId = (todoId: string) => `todo-notes:${todoId}`
  * production editor drops `field.text` (or `field.doc`) into y-codemirror,
  * y-prosemirror, etc., which own caret math properly.
  */
-export function NotesField({ todoId }: { todoId: string }) {
+export function NotesField({ session, todoId }: { session: Session; todoId: string }) {
+  const { client: syncClient, yfields } = session
   const fieldId = notesFieldId(todoId)
   const field = useYjsField(yfields, fieldId)
   const [value, setValue] = useState('')

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { ulid } from 'ulidx'
 import { NotesField, notesFieldId } from './NotesField'
 import type { Todo } from './schema'
-import { displayName, network, rejections, syncClient, todos, workspaceId } from './sync'
+import { WORKSPACES, displayName, network, rejections, sessions, type Session } from './sync'
 
 /** Stable per-peer hue so a cursor keeps its color as it moves. */
 function hueOf(key: string): number {
@@ -39,7 +39,47 @@ function PeerChip({ hue, name, self }: { hue: number; name: string; self?: boole
   )
 }
 
+/**
+ * Everything below the shell belongs to one workspace, so the whole subtree is
+ * keyed on `workspaceId`: switching unmounts it (releasing every Yjs handle and
+ * live query) and mounts a fresh one against the new session's collections. No
+ * hook has to reason about its client changing underneath it.
+ */
 export function App() {
+  const session = useSyncExternalStore(sessions.subscribe, sessions.get, sessions.get)
+  return <Workspace key={session.workspaceId} session={session} />
+}
+
+function WorkspaceSwitcher({ current }: { current: string }) {
+  // An id typed into the URL hash is offered alongside the built-in three.
+  const ids = WORKSPACES.includes(current) ? WORKSPACES : [...WORKSPACES, current]
+  return (
+    <div className="border-line mt-3 inline-flex rounded-lg border bg-white p-0.5">
+      {ids.map((id) => (
+        <button
+          key={id}
+          onClick={() => void sessions.switchTo(id)}
+          aria-current={id === current ? 'page' : undefined}
+          title={
+            id === current
+              ? `#${id} — the workspace you are in`
+              : `Switch to #${id}: a separate Durable Object with its own rows, sockets, and fields`
+          }
+          className={`cursor-pointer rounded-md px-2.5 py-1 font-mono text-xs ${
+            id === current
+              ? 'bg-[hsl(var(--self-hue)_60%_95%)] text-[hsl(var(--self-hue)_45%_32%)] font-medium'
+              : 'text-ink-soft hover:text-ink hover:bg-paper'
+          }`}
+        >
+          #{id}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Workspace({ session }: { session: Session }) {
+  const { client: syncClient, todos, workspaceId } = session
   const [title, setTitle] = useState('')
   // Which todos have their notes open — purely local UI state; the field
   // handle underneath is acquired/released as the panel mounts/unmounts.
@@ -84,7 +124,7 @@ export function App() {
       // departure is the socket close broadcasting null.
       syncClient.presence.update({ cursor: undefined })
     }
-  }, [])
+  }, [syncClient])
 
   const addTodo = () => {
     const trimmed = title.trim()
@@ -122,9 +162,6 @@ export function App() {
     >
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 className="font-mono text-lg font-medium tracking-tight">cf-sync</h1>
-        <span className="border-line text-ink-soft rounded-full border bg-white px-2.5 py-0.5 font-mono text-xs">
-          #{workspaceId}
-        </span>
         <span className="ml-auto inline-flex items-center gap-2">
           <button
             onClick={network.toggle}
@@ -150,6 +187,8 @@ export function App() {
           </span>
         </span>
       </header>
+
+      <WorkspaceSwitcher current={workspaceId} />
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <PeerChip hue={selfHue} name={displayName} self />
@@ -247,7 +286,7 @@ export function App() {
                   ×
                 </button>
               </div>
-              {notesOpen && <NotesField todoId={todo.id} />}
+              {notesOpen && <NotesField session={session} todoId={todo.id} />}
             </li>
           )
         })}
@@ -269,8 +308,9 @@ export function App() {
         merge character-by-character while both tabs type. Complete a todo, then click its priority
         dot: the server rejects the change and the optimistic update rolls back. Hit{' '}
         <span className="font-mono">go offline</span> and keep working — mutations queue locally
-        (a reload still shows them, from IndexedDB) and replay when you come back. Use a URL hash
-        (e.g. <span className="font-mono">#team-a</span>) to switch workspaces.
+        (a reload still shows them, from IndexedDB) and replay when you come back. Switch
+        workspaces to reach a different Durable Object, with its own rows and peers: no reload,
+        just the old client torn down and a new one built.
       </p>
 
       {peers.map(

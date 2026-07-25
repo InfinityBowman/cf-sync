@@ -42,16 +42,21 @@ Open http://localhost:5173 in **two tabs**. To ship it: `pnpm run deploy`
 - **Yjs field**: open the same todo's `notes ▸` in both tabs and type in
   both at once — characters merge instead of last-write-wins. Kill the
   network mid-sentence; edits merge on resume.
-- **Workspaces**: `#team-a` in the URL hash is its own isolated Durable
-  Object with its own storage, sockets, and fields.
+- **Workspaces**: the `#demo / #team-a / #team-b` buttons switch workspaces
+  with no page reload — each is its own Durable Object with its own storage,
+  sockets, presence, and fields, so the todos and peers change completely.
+  This is `createWorkspace`'s lifecycle: `await workspace.destroy()` and a
+  fresh `createWorkspace()` for the next id, which is exactly what a
+  project-switching app does. Typing any other id in the URL hash still
+  works and joins the switcher.
 
 ## File tour
 
 | File | What it demonstrates |
 | --- | --- |
 | `src/schema.ts` | `defineApp`: one object carrying schema, mutators, presence shape, version + migration chain — imported by **both** bundles so they can't disagree |
-| `src/sync.ts` | `SyncClient` construction (persist, initialPresence), `createCollections`, `createYjsFields`, `onMutationRejected` feeding the banner store, and the offline switch built on the `createSocket` seam |
-| `src/App.tsx` | Typed collections + live queries, `mutate.*` intents, `useSyncStatus`, `usePresence`, cursor overlay, rejection banner |
+| `src/sync.ts` | `createWorkspace` per session (persist, initialPresence), `createYjsFields`, `onMutationRejected` feeding the banner store, the offline switch built on the `createSocket` seam, and `sessions.switchTo` — the destroy/rebuild that swaps workspaces live |
+| `src/App.tsx` | Typed collections + live queries, `mutate.*` intents, `useSyncStatus`, `usePresence`, cursor overlay, rejection banner, and the subtree keyed on `workspaceId` so a switch rebuilds every hook |
 | `src/NotesField.tsx` | The reference field integration: `getDoc`/`release` ref-counting, `whenSynced`, reactive `canWrite`, a minimal Y.Text↔textarea binding, field-level presence |
 | `worker/worker.ts` | `createWorkspaceDO` + `yjsFields()` extension, sync/admin routers, R2 log export, bearer-token admin auth |
 
