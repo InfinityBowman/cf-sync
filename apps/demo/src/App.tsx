@@ -162,7 +162,18 @@ function Workspace({ session }: { session: Session }) {
     >
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 className="font-mono text-lg font-medium tracking-tight">cf-sync</h1>
-        <span className="ml-auto inline-flex items-center gap-2">
+        {/* Status first, the control that changes it directly underneath. */}
+        <span className="ml-auto inline-flex flex-col items-end gap-1.5">
+          <span className="inline-flex items-center gap-1.5 font-mono text-xs">
+            <span
+              className={
+                status === 'synced'
+                  ? 'size-2 rounded-full bg-[#3a9e5f]'
+                  : 'motion-safe:animate-pulse size-2 rounded-full bg-[#d9930d]'
+              }
+            />
+            <span className={status === 'synced' ? 'text-[#2e7d4c]' : 'text-[#a06c07]'}>{status}</span>
+          </span>
           <button
             onClick={network.toggle}
             aria-pressed={offline}
@@ -175,16 +186,6 @@ function Workspace({ session }: { session: Session }) {
           >
             {offline ? 'go online' : 'go offline'}
           </button>
-          <span className="inline-flex items-center gap-1.5 font-mono text-xs">
-            <span
-              className={
-                status === 'synced'
-                  ? 'size-2 rounded-full bg-[#3a9e5f]'
-                  : 'motion-safe:animate-pulse size-2 rounded-full bg-[#d9930d]'
-              }
-            />
-            <span className={status === 'synced' ? 'text-[#2e7d4c]' : 'text-[#a06c07]'}>{status}</span>
-          </span>
         </span>
       </header>
 
