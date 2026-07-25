@@ -19,9 +19,13 @@ Open http://localhost:5173 in **two tabs**. To ship it: `pnpm run deploy`
 
 ## What to try
 
-- **Rows**: add/complete/delete todos in one tab, watch the other. Go
-  offline (devtools), mutate, reload — the IndexedDB mirror hydrates
-  instantly and the outbox replays on reconnect.
+- **Rows**: add/complete/delete todos in one tab, watch the other.
+- **Offline**: hit `go offline` in the header. The status pill drops to
+  `reconnecting`, peers disappear, and everything still works — mutations
+  queue in the durable outbox, and a reload mid-outage still paints the
+  todos (the IndexedDB mirror hydrates before the socket). Come back
+  online and the queue replays in order. Notes typed offline in two tabs
+  merge on resume rather than clobbering.
 - **Intent mutation**: "Clear completed" runs one named mutator on the
   server — concurrent clicks can't resurrect rows, and the local overlay
   applies (and rolls back) atomically.
@@ -46,7 +50,7 @@ Open http://localhost:5173 in **two tabs**. To ship it: `pnpm run deploy`
 | File | What it demonstrates |
 | --- | --- |
 | `src/schema.ts` | `defineApp`: one object carrying schema, mutators, presence shape, version + migration chain — imported by **both** bundles so they can't disagree |
-| `src/sync.ts` | `SyncClient` construction (persist, initialPresence), `createCollections`, `createYjsFields`, `onMutationRejected` feeding the banner store |
+| `src/sync.ts` | `SyncClient` construction (persist, initialPresence), `createCollections`, `createYjsFields`, `onMutationRejected` feeding the banner store, and the offline switch built on the `createSocket` seam |
 | `src/App.tsx` | Typed collections + live queries, `mutate.*` intents, `useSyncStatus`, `usePresence`, cursor overlay, rejection banner |
 | `src/NotesField.tsx` | The reference field integration: `getDoc`/`release` ref-counting, `whenSynced`, reactive `canWrite`, a minimal Y.Text↔textarea binding, field-level presence |
 | `worker/worker.ts` | `createWorkspaceDO` + `yjsFields()` extension, sync/admin routers, R2 log export, bearer-token admin auth |

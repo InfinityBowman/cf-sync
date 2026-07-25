@@ -1,4 +1,4 @@
-import { createWorkspace } from '@cf-sync/client'
+import { createWorkspace, type WebSocketLike } from '@cf-sync/client'
 import { createYjsFields } from '@cf-sync/yjs/client'
 import { app } from './schema'
 
@@ -56,12 +56,84 @@ export const rejections = {
   },
 }
 
+/**
+ * The demo's offline switch — "no network" is the state a sync engine exists
+ * for (mutations queue, presence drops, Yjs edits pile up locally and merge on
+ * resume), and the one state a visitor can't reach without devtools.
+ *
+ * It rides the client's `createSocket` seam, the same injection point the tests
+ * use: while offline every connect attempt gets a socket that never opens, so
+ * the client parks in `reconnecting` exactly as it would with the wifi off.
+ * Nothing in the engine is special-cased or aware of this — note that `stop()`
+ * is *not* the mechanism, since it is terminal and settles the outbox.
+ */
+class OfflineSocket implements WebSocketLike {
+  readonly #closeListeners = new Set<(event: { code?: number; reason?: string }) => void>()
+  /** Never opens, so the client never pushes; the outbox holds the work. */
+  send(): void {}
+  close(): void {}
+  addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: (event: any) => void): void {
+    if (type === 'close') this.#closeListeners.add(listener)
+  }
+  /** Report the drop so the reconnect path runs now instead of after a backoff. */
+  drop(): void {
+    for (const listener of this.#closeListeners) listener({ code: 1006, reason: 'demo: back online' })
+  }
+}
+
+let offline = false
+let liveSocket: WebSocket | null = null
+let parkedSocket: OfflineSocket | null = null
+const networkListeners = new Set<() => void>()
+
+function createSocket(url: string): WebSocketLike {
+  if (offline) {
+    parkedSocket = new OfflineSocket()
+    return parkedSocket
+  }
+  const ws = new WebSocket(url)
+  // Binary-lane frames (the Yjs field) must arrive as ArrayBuffer, not Blob.
+  // The built-in factory sets this; a custom one has to as well.
+  ws.binaryType = 'arraybuffer'
+  liveSocket = ws
+  return ws as unknown as WebSocketLike
+}
+
+export const network = {
+  subscribe(listener: () => void): () => void {
+    networkListeners.add(listener)
+    return () => networkListeners.delete(listener)
+  },
+  isOffline: (): boolean => offline,
+  toggle(): void {
+    offline = !offline
+    if (offline) {
+      // An ordinary close: the client runs its normal disconnect path (1000 is
+      // outside the permanent band, so it retries rather than going fatal), and
+      // every retry from here lands on a socket that never opens. Mutations
+      // queue in the durable outbox and their promises stay pending — a
+      // persisted client has no confirm timeout, so nothing is discarded.
+      liveSocket?.close(1000, 'demo offline')
+      liveSocket = null
+    } else {
+      // Toggling back before the backoff timer fired leaves nothing parked —
+      // the pending retry simply finds `offline` false and opens a real socket.
+      parkedSocket?.drop()
+      parkedSocket = null
+    }
+    for (const listener of networkListeners) listener()
+  },
+}
+
 // One call bootstraps the client and a typed collection per schema table
 // (syncing starts immediately); `workspace.destroy` is the matching one-call
 // teardown — the unit a workspace-switching app rebuilds per project.
 const workspace = createWorkspace({
   url: WORKER_URL,
   workspaceId,
+  // The demo's offline switch (above) lives here — in normal apps this is
+  // omitted and the client builds its own browser WebSocket.
+  createSocket,
   // The shared app definition: schema version, typed mutate calls with local
   // fail-fast validation, and collections that infer their row types.
   app,

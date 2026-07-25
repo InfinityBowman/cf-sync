@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { ulid } from 'ulidx'
 import { NotesField, notesFieldId } from './NotesField'
 import type { Todo } from './schema'
-import { displayName, rejections, syncClient, todos, workspaceId } from './sync'
+import { displayName, network, rejections, syncClient, todos, workspaceId } from './sync'
 
 /** Stable per-peer hue so a cursor keeps its color as it moves. */
 function hueOf(key: string): number {
@@ -49,6 +49,9 @@ export function App() {
   // The latest rejection (sync.ts feeds onMutationRejected into this store),
   // rendered as a dismissible banner below the header.
   const rejection = useSyncExternalStore(rejections.subscribe, rejections.get, rejections.get)
+  // The demo's simulated network cut (sync.ts) — the status pill keeps
+  // reporting the client's real status, which is `reconnecting` while it holds.
+  const offline = useSyncExternalStore(network.subscribe, network.isOffline, network.isOffline)
   const mainRef = useRef<HTMLElement>(null)
   const selfHue = hueOf(syncClient.clientId)
 
@@ -115,22 +118,36 @@ export function App() {
       // Each tab's accent is its own peer hue (see index.css) — the presence
       // identity threaded through the chrome itself.
       style={{ '--self-hue': selfHue } as React.CSSProperties}
-      className="font-sans text-ink relative mx-auto max-w-[34rem] px-5 py-12"
+      className="font-sans text-ink relative mx-auto max-w-136 px-5 py-12"
     >
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 className="font-mono text-lg font-medium tracking-tight">cf-sync</h1>
         <span className="border-line text-ink-soft rounded-full border bg-white px-2.5 py-0.5 font-mono text-xs">
           #{workspaceId}
         </span>
-        <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-xs">
-          <span
-            className={
-              status === 'synced'
-                ? 'size-2 rounded-full bg-[#3a9e5f]'
-                : 'motion-safe:animate-pulse size-2 rounded-full bg-[#d9930d]'
-            }
-          />
-          <span className={status === 'synced' ? 'text-[#2e7d4c]' : 'text-[#a06c07]'}>{status}</span>
+        <span className="ml-auto inline-flex items-center gap-2">
+          <button
+            onClick={network.toggle}
+            aria-pressed={offline}
+            title="Simulate losing the network: mutations queue in the durable outbox and replay on reconnect"
+            className={`cursor-pointer rounded-full border px-2.5 py-0.5 font-mono text-xs ${
+              offline
+                ? 'border-reject/40 bg-reject-soft text-reject'
+                : 'border-line text-ink-soft hover:text-ink bg-white'
+            }`}
+          >
+            {offline ? 'go online' : 'go offline'}
+          </button>
+          <span className="inline-flex items-center gap-1.5 font-mono text-xs">
+            <span
+              className={
+                status === 'synced'
+                  ? 'size-2 rounded-full bg-[#3a9e5f]'
+                  : 'motion-safe:animate-pulse size-2 rounded-full bg-[#d9930d]'
+              }
+            />
+            <span className={status === 'synced' ? 'text-[#2e7d4c]' : 'text-[#a06c07]'}>{status}</span>
+          </span>
         </span>
       </header>
 
@@ -192,7 +209,7 @@ export function App() {
                   type="checkbox"
                   checked={todo.completed}
                   onChange={() => todos.update(todo.id, (draft) => (draft.completed = !draft.completed))}
-                  className="size-4 shrink-0 cursor-pointer [accent-color:hsl(var(--self-hue)_60%_42%)]"
+                  className="size-4 shrink-0 cursor-pointer accent-[hsl(var(--self-hue)_60%_42%)]"
                 />
                 {/* The v1→v2 migration made visible: rows written before v2
                     were backfilled to 'normal' (schema.ts), new rows get the
@@ -250,7 +267,9 @@ export function App() {
       <p className="text-ink-soft mt-6 text-xs leading-relaxed">
         Open this page in a second tab: mutations sync, peer cursors move live, and a todo's notes
         merge character-by-character while both tabs type. Complete a todo, then click its priority
-        dot: the server rejects the change and the optimistic update rolls back. Use a URL hash
+        dot: the server rejects the change and the optimistic update rolls back. Hit{' '}
+        <span className="font-mono">go offline</span> and keep working — mutations queue locally
+        (a reload still shows them, from IndexedDB) and replay when you come back. Use a URL hash
         (e.g. <span className="font-mono">#team-a</span>) to switch workspaces.
       </p>
 

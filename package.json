@@ -11,11 +11,13 @@
     "docs:dev": "pnpm --filter docs dev",
     "docs:build": "pnpm --filter docs build",
     "docs:preview": "pnpm --filter docs preview",
+    "demo:dev": "concurrently -n worker,web -c magenta,cyan --kill-others-on-fail \"pnpm demo:worker\" \"pnpm demo:web\"",
     "demo:web": "pnpm --filter @cf-sync/demo dev:web",
     "demo:worker": "pnpm --filter @cf-sync/demo dev:worker"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "concurrently": "^9.2.1",
     "publint": "^0.3.21",
     "tsdown": "^0.22.12",
     "typescript": "^5.6.0"
