@@ -8,7 +8,7 @@ import { TestClient } from './harness'
 
 /**
  * Schema-drift detection: table schemas changing while the version string
- * stays put — a forgotten version bump (DESIGN.md §9: every schema change
+ * stays put — a forgotten version bump (ARCHITECTURE.md#schema-evolution: every schema change
  * requires one). The engine warns once per change and restamps the stored
  * fingerprint; deliberately a warning, not an init failure, because the
  * fingerprint can shift on a zod upgrade with no semantic change.
@@ -137,7 +137,7 @@ describe('schema drift under an unchanged version', () => {
   })
 })
 
-describe('presence drift under an unchanged version (§16.1)', () => {
+describe('presence drift under an unchanged version (ARCHITECTURE.md#presence)', () => {
   it('first declaration is silent; reshaping warns softly once with no version machinery', async () => {
     const workspace = `presence-drift-${Date.now()}`
     const warn = vi.spyOn(console, 'warn')

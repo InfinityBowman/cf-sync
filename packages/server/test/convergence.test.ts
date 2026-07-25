@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { TestClient, mulberry32 } from './harness'
 
 /**
- * Seeded multi-client simulation (DESIGN.md §11): random interleaved intent
+ * Seeded multi-client simulation (ARCHITECTURE.md#testing): random interleaved intent
  * mutations, duplicate pushes, and mid-stream reconnects. Invariant: after
  * quiescence every client's materialized state deep-equals a fresh
  * bootstrap's, and per-client LMIDs never regress.

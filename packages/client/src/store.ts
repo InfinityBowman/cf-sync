@@ -49,7 +49,7 @@ export interface PokePersist {
   outbox: PersistedOutboxEntry[]
 }
 
-// The server-side transaction invariant this mirrors: DESIGN.md §6.
+// The server-side transaction invariant this mirrors: invariant 1, ARCHITECTURE.md#invariants.
 /**
  * Durable client-side storage for synced rows, the cursor, and the outbox.
  *

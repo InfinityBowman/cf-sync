@@ -34,7 +34,7 @@ export const testSchema = defineSchema({
 export const testMutators = defineMutators(testSchema, {
   ...crudMutators(testSchema),
   // Writes the mutator context into a row so tests can assert what the
-  // server stamped (§15.4).
+  // server stamped (ARCHITECTURE.md#session-control).
   'ctx.echo': {
     args: z.object({ id: z.string() }),
     apply: (tx, { id }, ctx) => {
@@ -76,7 +76,7 @@ export const testMutators = defineMutators(testSchema, {
   },
 }, {
   // Verdicts arriving through the '/auth' route validate against this at
-  // upgrade (§15.4); '/sync' has no authorize hook, so it stamps nothing.
+  // upgrade (ARCHITECTURE.md#session-control); '/sync' has no authorize hook, so it stamps nothing.
   authContext: z.object({ role: z.string(), writeAllowed: z.boolean() }),
 })
 
@@ -84,7 +84,7 @@ export const testApp = defineApp({
   version: 1,
   schema: testSchema,
   mutators: testMutators,
-  // Presence drills (§16). `label` has a default so tests can assert the
+  // Presence drills (ARCHITECTURE.md#presence). `label` has a default so tests can assert the
   // relayed state is the parsed output, not the raw payload.
   presence: z.object({
     name: z.string(),
@@ -124,7 +124,7 @@ export const RolloutDO = createWorkspaceDO(rolloutConfig)
 
 const mainHandler = createSyncFetch<Env>({ namespace: (env) => env.WORKSPACE, authorize: 'public' })
 
-// Session-control drills (§15): the verdict is driven entirely by request
+// Session-control drills (ARCHITECTURE.md#session-control): the verdict is driven entirely by request
 // headers so each test scripts its own authorize outcome.
 const verdictRoute = createSyncRoute<Env>({
   namespace: (env) => env.WORKSPACE,

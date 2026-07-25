@@ -76,7 +76,7 @@ const importSnapshotSchema = z.object({
       data: z.record(z.string(), z.unknown()),
     }),
   ),
-  /** Extension-contributed state (DESIGN.md §17.7); shape is the extension's own. */
+  /** Extension-contributed state (ARCHITECTURE.md#yjs-fields); shape is the extension's own. */
   extension: z.unknown().optional(),
 })
 
@@ -85,12 +85,12 @@ interface Attachment {
   clientId: string
   /** True once hello succeeded; only ready sockets receive broadcasts. */
   ready: boolean
-  /** The authorize verdict's principal (DESIGN.md §15.3). */
+  /** The authorize verdict's principal (ARCHITECTURE.md#session-control). */
   principal?: string
   /** The verdict's context, validated against the app's authContext schema at upgrade. */
   auth?: unknown
   /**
-   * Epoch ms past which the stamps are no longer trusted (§15.2). Checked at
+   * Epoch ms past which the stamps are no longer trusted (ARCHITECTURE.md#session-control). Checked at
    * the two synchronous points that matter: inbound frames (gates writes) and
    * poke fan-out (gates reads); past-due sockets close with 4300 so the
    * reconnect re-runs authorize.
@@ -99,7 +99,7 @@ interface Attachment {
   /**
    * Set when the DO itself closes the socket (kick, supersede, expiry). A
    * close is not instantaneous — inbound frames already in flight still fire
-   * webSocketMessage until the peer acks — and close must beat push (§15.6):
+   * webSocketMessage until the peer acks — and close must beat push (ARCHITECTURE.md#session-control):
    * frames from a defunct socket are dropped, never processed. Only
    * DO-initiated closes set this; a frame racing a *client's* own close is
    * legitimate and still lands.
@@ -137,7 +137,7 @@ const RESERVED_CLOSE_CODES = new Set([1005, 1006, 1015])
  * That subclass exists to *name* the class — keep its body empty. The
  * engine's handlers (`fetch`, `webSocketMessage`, `webSocketClose`, `alarm`)
  * are not extension points: overriding them breaks the engine's invariants
- * (DESIGN.md §6). Server-side behavior is added through the `extension`
+ * (ARCHITECTURE.md#invariants). Server-side behavior is added through the `extension`
  * config seam instead.
  */
 export type WorkspaceDOClass<Env = unknown> = new (
@@ -226,7 +226,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     #extension: EngineExtension | null = null
     /**
      * Presence, keyed by clientId — in DO memory only, never persisted
-     * (DESIGN.md §16.3): a storage write per cursor move would defeat
+     * (ARCHITECTURE.md#presence): a storage write per cursor move would defeat
      * hibernation. Hibernation drops the map while sockets survive; the
      * constructor's presencePoll rebuilds it in one round-trip. Each entry
      * remembers its owning socket so a superseded socket's late close event
@@ -256,7 +256,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG))
       // The constructor runs on every wake: surviving ready sockets mean
       // hibernation just dropped the presence map — ask clients to re-send
-      // their state (§16.3). A cold start has no sockets, so this is free.
+      // their state (ARCHITECTURE.md#presence). A cold start has no sockets, so this is free.
       if (config.app.presence) {
         const poll = JSON.stringify({ type: 'presencePoll' } satisfies ServerMsg)
         for (const socket of this.#readySockets()) this.#deliver(socket, [poll])
@@ -282,7 +282,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         // warning applies.
         this.#migrateAppSchema(fingerprint, presenceHash)
       } else if (this.#meta.presenceHash !== presenceHash) {
-        // Presence drift is advisory (§16.1): ephemera is never stored, so a
+        // Presence drift is advisory (ARCHITECTURE.md#presence): ephemera is never stored, so a
         // shape change needs no version bump — warn softly (mid-deploy skew
         // should stay on the radar) and restamp. '' means the presence schema
         // is new (or the row predates the column): silent.
@@ -301,7 +301,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       }
       if (this.#meta.schemaHash !== fingerprint) {
         // Same version, different table schemas: a forgotten version bump
-        // (DESIGN.md §9 — every schema change requires one). Warn once per
+        // (ARCHITECTURE.md#schema-evolution — every schema change requires one). Warn once per
         // change and restamp; a hard error here would brick workspaces on a
         // false positive (the fingerprint can shift with a zod upgrade).
         // '' predates the fingerprint column; backfill quietly.
@@ -540,7 +540,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         return new Response('missing or invalid clientId', { status: 400 })
       }
 
-      // Auth stamps from the router (DESIGN.md §15.3). Malformed stamps,
+      // Auth stamps from the router (ARCHITECTURE.md#session-control). Malformed stamps,
       // context that fails the app's authContext schema, and an attachment
       // over the 2KB budget all fail the upgrade with a permanent 4401: each
       // is an app configuration bug (authorize and mutators disagree), so
@@ -577,7 +577,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         )
       }
 
-      // Supersede rule (§15.3): a clientId's newest socket wins. The old one
+      // Supersede rule (ARCHITECTURE.md#session-control): a clientId's newest socket wins. The old one
       // is almost always a half-open zombie the client already abandoned;
       // closing it before accepting keeps a late edge-buffered frame from
       // being attributed to the reconnected client.
@@ -595,8 +595,8 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       return new Response(null, { status: 101, webSocket: client })
     }
 
-    // Handlers below are intentionally synchronous end-to-end (DESIGN.md
-    // invariant 3): no await between reading engine state and sending frames,
+    // Handlers below are intentionally synchronous end-to-end (invariant 3,
+    // ARCHITECTURE.md#invariants): no await between reading engine state and sending frames,
     // so per-socket frame order is FIFO relative to version advances.
     override async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
       // Sockets can outlive a wake whose initialization failed (hibernation
@@ -606,11 +606,11 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         return
       }
       const attachment = ws.deserializeAttachment() as Attachment
-      // Close beats push (§15.6): a DO-initiated close (kick, supersede,
+      // Close beats push (ARCHITECTURE.md#session-control): a DO-initiated close (kick, supersede,
       // expiry) still delivers in-flight frames until the peer acks — drop
       // them instead of processing.
       if (attachment.defunct) return
-      // Expired stamps gate writes (§15.2): close with refresh so the
+      // Expired stamps gate writes (ARCHITECTURE.md#session-control): close with refresh so the
       // reconnect re-runs authorize. Keepalive pings never reach here — the
       // runtime auto-responds without waking the DO.
       if (attachment.expiresAt !== undefined && Date.now() >= attachment.expiresAt) {
@@ -619,9 +619,9 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       }
       try {
         if (typeof raw !== 'string') {
-          // The binary lane (DESIGN.md §17.3) — same defunct/expiry gates as
+          // The binary lane (ARCHITECTURE.md#yjs-fields) — same defunct/expiry gates as
           // text frames (checked above), routed to the extension, which stays
-          // synchronous end-to-end like every other handler (invariant §6.3).
+          // synchronous end-to-end like every other handler (invariant 3 of ARCHITECTURE.md#invariants).
           if (!this.#extension) {
             this.#sendError(ws, 'BadMessage', 'binary frames are not supported')
             return
@@ -743,7 +743,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
             }
             importRows.push({ tbl: row.tbl, id: row.id, data })
           }
-          // Extension state (e.g. §17 fields) restores through the same
+          // Extension state (e.g. ARCHITECTURE.md#yjs-fields fields) restores through the same
           // import. Carrying it without an extension configured would drop
           // data silently — refuse instead.
           const hasExtensionData = snapshot.extension !== undefined
@@ -777,7 +777,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           this.#meta.currentVersion = version
           this.#meta.minCursorVersion = version
           if (hasExtensionData) {
-            // §17.7: clients only re-GET fields on ready *transitions*, so an
+            // ARCHITECTURE.md#yjs-fields: clients only re-GET fields on ready *transitions*, so an
             // import carrying extension state cycles every socket with a
             // refresh instead of hot-swapping rows over live sockets — one
             // close keeps both planes consistent. The reconnect re-bootstraps
@@ -830,7 +830,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         }
 
         case 'POST disconnect': {
-          // Revoke or refresh live sessions (DESIGN.md §15.5). No selector
+          // Revoke or refresh live sessions (ARCHITECTURE.md#session-control). No selector
           // means all sockets; given selectors must all match. kick closes
           // permanently (4403 or the given code), refresh closes with 4300 so
           // clients reconnect through a fresh authorize run.
@@ -846,7 +846,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           const closeCode = mode === 'refresh' ? CLOSE_REFRESH : (code ?? CLOSE_UNAUTHORIZED)
           const closeReason = truncateCloseReason(reason ?? mode)
           let disconnected = 0
-          // Synchronous walk (invariant §6.3): the awaits above finished
+          // Synchronous walk (invariant 3 of ARCHITECTURE.md#invariants): the awaits above finished
           // before any socket state is read.
           for (const socket of this.ctx.getWebSockets()) {
             const attachment = socket.deserializeAttachment() as Attachment | null
@@ -913,7 +913,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         cursor.backendId === this.#meta.backendId &&
         cursor.version >= this.#meta.minCursorVersion &&
         cursor.version <= this.#meta.currentVersion
-      // Reset is the bootstrap path, not an error (DESIGN.md D7): stale or
+      // Reset is the bootstrap path, not an error (D7 in ARCHITECTURE.md#locked-decisions): stale or
       // unknown cursors get `clear` + full snapshot.
       const patch: PatchOp[] = valid
         ? this.#patchSince(cursor.version)
@@ -925,10 +925,10 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       })
       ws.serializeAttachment({ ...attachment, ready: true } satisfies Attachment)
       if (config.app.presence) {
-        // Snapshot so late joiners render peers immediately (§16.2). Sent
+        // Snapshot so late joiners render peers immediately (ARCHITECTURE.md#presence). Sent
         // even when empty: receipt is the client's re-announce trigger. After
         // a hibernation wake this can be sparse until poll replies relay — a
-        // recorded decision (§16.3); presence is eventually-correct.
+        // recorded decision (ARCHITECTURE.md#presence); presence is eventually-correct.
         const peers: PresencePeersMsg['peers'] = []
         for (const [clientId, entry] of this.#presence) {
           if (clientId === attachment.clientId) continue
@@ -941,7 +941,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     }
 
     /**
-     * Set/clear the sender's presence and relay it (DESIGN.md §16.2). Payload
+     * Set/clear the sender's presence and relay it (ARCHITECTURE.md#presence). Payload
      * is client-claimed but schema-validated; identity is server-attested —
      * clientId/principal come from the attachment, so a client cannot
      * impersonate another user's presence. Invalid or oversized states are
@@ -998,7 +998,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     }
 
     /**
-     * Socket teardown half of presence (§16.3): remove the entry and
+     * Socket teardown half of presence (ARCHITECTURE.md#presence): remove the entry and
      * broadcast the null. Ownership check: after a supersede, the old
      * socket's close event can land *after* the new socket announced — an
      * entry owned by a different socket is the reconnected client's fresh
@@ -1243,11 +1243,11 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
 
     /**
      * The one per-socket delivery gate — every fan-out path (pokes, presence
-     * relay/snapshot/poll, and §17 field updates when they land) sends through
-     * here so the §15 checks are never duplicated. Skips sockets the DO
+     * relay/snapshot/poll, and ARCHITECTURE.md#yjs-fields field updates when they land) sends through
+     * here so the ARCHITECTURE.md#session-control checks are never duplicated. Skips sockets the DO
      * already closed (defunct — the close is in flight but frames would still
      * dispatch), and closes past-due stamps with 4300 instead of delivering:
-     * reads are gated at the fan-out (§15.2) because a passive reader
+     * reads are gated at the fan-out (ARCHITECTURE.md#session-control) because a passive reader
      * generates no inbound frames, so this is the one place expiry can bite.
      */
     #deliver(socket: WebSocket, frames: readonly (string | Uint8Array)[]): void {
@@ -1262,7 +1262,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         this.#counters.framesSent += frames.length
       } catch {
         // Slow/broken socket: dropping it is always safe — the client
-        // catches up by cursor on reconnect (DESIGN.md §8).
+        // catches up by cursor on reconnect (ARCHITECTURE.md#connections-and-lifecycle).
         this.#closeSocket(socket, 1011, 'send failed')
       }
     }
@@ -1270,7 +1270,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     /**
      * Every DO-initiated close funnels through here: the defunct mark commits
      * before the close so any frame already in flight from this socket is
-     * dropped by webSocketMessage — close beats push (§15.6). One
+     * dropped by webSocketMessage — close beats push (ARCHITECTURE.md#session-control). One
      * serializeAttachment write per close; closes are rare, so this never
      * lands on a hot path.
      */

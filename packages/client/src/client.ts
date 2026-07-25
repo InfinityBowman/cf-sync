@@ -137,7 +137,7 @@ export class SyncClient<
    * Consecutive 4300 (refresh) closes with no intervening ready connection.
    * Only the first reconnects immediately; a streak means something is
    * refreshing on every connect (a bug, or a stuck webhook), and pacing the
-   * retries keeps that from becoming a zero-delay authorize storm (§15.2).
+   * retries keeps that from becoming a zero-delay authorize storm (ARCHITECTURE.md#session-control).
    */
   #refreshStreak = 0
   #cursor: Cursor | null = null
@@ -161,7 +161,7 @@ export class SyncClient<
   #startNudgeTimer: ReturnType<typeof setTimeout> | null = null
   #lastFrameAt = 0
 
-  // Presence (§16). `#presenceState` is this client's last-set state
+  // Presence (ARCHITECTURE.md#presence). `#presenceState` is this client's last-set state
   // (undefined = never set, null = cleared); it survives reconnects so the
   // library can re-announce. `#presenceLive` flips on `presencePeers` receipt
   // — the server's "presence is live on this connection" signal — and off on
@@ -172,7 +172,7 @@ export class SyncClient<
   #presenceSnapshot: ReadonlyArray<PresencePeer> | null = null
   #presenceLive = false
   #presenceTimer: ReturnType<typeof setTimeout> | null = null
-  /** One-time guard: the presence schema must parse its own output (§16.1). */
+  /** One-time guard: the presence schema must parse its own output (ARCHITECTURE.md#presence). */
   #presenceRoundTripChecked = false
   #presenceLastSentAt = 0
 
@@ -343,7 +343,7 @@ export class SyncClient<
     this.#intentRunner = runner
   }
 
-  // Binary-lane framing: DESIGN.md §17.5.
+  // Binary-lane framing: ARCHITECTURE.md#yjs-fields.
   /**
    * Sends one binary-lane frame — the client half of the extension seam,
    * used by add-ons like `createYjsFields`. Fire-and-forget
@@ -507,7 +507,7 @@ export class SyncClient<
    * cached rows feed registered tables so collections are ready with data
    * before any network I/O. Restored entries then replay locally — their
    * mutators re-run against the hydrated base and their writes land as
-   * optimistic overlays (DESIGN.md §7.2), so the reloaded UI matches the
+   * optimistic overlays (ARCHITECTURE.md#optimistic-intents), so the reloaded UI matches the
    * pre-reload optimistic view. Restored mutations have no awaiting caller,
    * so they carry no confirm timeout — they stay queued until the server
    * settles them.
@@ -566,7 +566,7 @@ export class SyncClient<
       }
       for (const tbl of byTable.keys()) this.#warnUnregistered(tbl)
     }
-    // Startup replay (DESIGN.md §7.2): rows commit first so the replayed
+    // Startup replay (ARCHITECTURE.md#optimistic-intents): rows commit first so the replayed
     // mutators read the hydrated base (outbox-only state replays against
     // empty collections — offline-created rows still reappear), markReady
     // comes last so the first paint is base-plus-overlays, never a flash of
@@ -581,7 +581,7 @@ export class SyncClient<
 
   /**
    * Re-lays one restored outbox entry's optimistic overlay at hydration
-   * (DESIGN.md §7.2): re-runs the mutator's `apply` against the hydrated
+   * (ARCHITECTURE.md#optimistic-intents): re-runs the mutator's `apply` against the hydrated
    * collections and flushes the writes through the intent runner, with the
    * persist step tied to the entry's existing settlement — confirm swaps
    * the overlay for the authoritative patch, rejection rolls it back (and
@@ -731,7 +731,7 @@ export class SyncClient<
     const writes = new LocalWriteSet(this.schema, this.#appliers)
     try {
       // No server verdict exists here: no principal, and `authoritative:
-      // false` is the honest signal permission checks key on (§15.4).
+      // false` is the honest signal permission checks key on (ARCHITECTURE.md#session-control).
       def.apply(writes.tx, applyArgs, { clientId: this.#clientId, auth: this.#auth, authoritative: false })
     } catch (err) {
       if (err instanceof MissingApplierError) {
@@ -888,7 +888,7 @@ export class SyncClient<
       this.#opts.createSocket ??
       ((socketUrl: string) => {
         const ws = new WebSocket(socketUrl)
-        // Binary lane frames (§17) must arrive as ArrayBuffer, not Blob.
+        // Binary lane frames (ARCHITECTURE.md#yjs-fields) must arrive as ArrayBuffer, not Blob.
         ws.binaryType = 'arraybuffer'
         return ws as unknown as WebSocketLike
       })
@@ -937,7 +937,7 @@ export class SyncClient<
     this.#awaitingCatchUp = false
     this.#stopHeartbeat()
     this.#presenceDisconnected()
-    // Close codes are the rejection channel (DESIGN.md §15.2): a browser
+    // Close codes are the rejection channel (ARCHITECTURE.md#session-control): a browser
     // cannot see the HTTP status of a failed upgrade, so the server
     // accept-then-closes with a policy code instead.
     if (code !== undefined && isPermanentCloseCode(code)) {
@@ -1049,7 +1049,7 @@ export class SyncClient<
   // inbound
   // -------------------------------------------------------------------------
 
-  /** Fans a binary-lane frame out to `onBinary` subscribers (DESIGN.md §17.5). */
+  /** Fans a binary-lane frame out to `onBinary` subscribers (ARCHITECTURE.md#yjs-fields). */
   #onBinaryFrame(data: unknown): void {
     let bytes: Uint8Array
     if (data instanceof ArrayBuffer) {
@@ -1138,7 +1138,7 @@ export class SyncClient<
         break
       case 'presencePeers': {
         // The snapshot right after hello is the server's "presence is live"
-        // signal: adopt it, then re-announce our own state (§16.4) — apps
+        // signal: adopt it, then re-announce our own state (ARCHITECTURE.md#presence) — apps
         // never write reconnect glue.
         this.#presenceLive = true
         this.#presencePeers.clear()
@@ -1153,7 +1153,7 @@ export class SyncClient<
         break
       }
       case 'presencePoll':
-        // Hibernation dropped the server's map (§16.3): re-send unprompted.
+        // Hibernation dropped the server's map (ARCHITECTURE.md#presence): re-send unprompted.
         if (this.#presenceState !== undefined && this.#presenceState !== null) this.#sendPresence()
         break
       case 'error':
@@ -1381,7 +1381,7 @@ export class SyncClient<
   }
 
   // -------------------------------------------------------------------------
-  // presence (§16)
+  // presence (ARCHITECTURE.md#presence)
   // -------------------------------------------------------------------------
 
   #presenceSet(state: unknown): void {
@@ -1421,7 +1421,7 @@ export class SyncClient<
               `SyncClient: the presence schema does not parse its own output ` +
                 `(${formatIssues(echo.issues)}). presence.update merges into previously parsed state and ` +
                 `reconnect re-announces it, so the schema must round-trip — use a plain object schema ` +
-                `(no transform/pipe) for presence (DESIGN.md §16.1)`,
+                `(no transform/pipe) for presence (ARCHITECTURE.md#presence)`,
             )
           }
         }
@@ -1488,7 +1488,7 @@ export class SyncClient<
     if (state === null || state === undefined) {
       if (!this.#presencePeers.delete(clientId)) return
     } else {
-      // receivedAt is the §16.3 staleness bound: local receipt time, so apps
+      // receivedAt is the ARCHITECTURE.md#presence staleness bound: local receipt time, so apps
       // fade ghost-window entries with one Date.now() comparison instead of
       // wrapping subscribe to keep their own timestamp map.
       const peer: PresencePeer = { clientId, state, receivedAt: Date.now() }

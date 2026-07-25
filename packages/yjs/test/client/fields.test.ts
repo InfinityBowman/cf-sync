@@ -15,7 +15,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('createYjsFields (§17.6)', () => {
+describe('createYjsFields (ARCHITECTURE.md#yjs-fields)', () => {
   it('getDoc sends GET when synced, and defers it to the ready transition otherwise', () => {
     const seam = new FakeSeam()
     const yf = createYjsFields(seam)

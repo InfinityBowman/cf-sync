@@ -19,7 +19,7 @@ export function testAppAt(version: number) {
   return defineApp({ version, schema: testSchema, mutators: crudMutators(testSchema) })
 }
 
-/** testApp plus a presence schema (§16 drills). */
+/** testApp plus a presence schema (ARCHITECTURE.md#presence drills). */
 export const presenceApp = defineApp({
   version: 1,
   schema: testSchema,

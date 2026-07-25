@@ -1,7 +1,7 @@
 import type { AnySyncSchema, StandardSchemaV1 } from '@cf-sync/protocol'
 import { z } from 'zod'
 
-// Schema-evolution rules: DESIGN.md §9.
+// Schema-evolution rules: ARCHITECTURE.md#schema-evolution.
 /**
  * A structural fingerprint of the app's table schemas, stored in DO meta next
  * to the schema version. Its only job is drift detection: when a wake sees
@@ -26,7 +26,7 @@ export function schemaFingerprint(schema: AnySyncSchema): string {
 
 /**
  * The presence schema's own fingerprint, tracked separately from the table
- * fingerprint because its drift is priced differently (DESIGN.md §16.1):
+ * fingerprint because its drift is priced differently (ARCHITECTURE.md#presence):
  * presence is ephemera — never stored, at most one connection long — so a
  * shape change warns softly and never demands a version bump, while a table
  * change under an unbumped version is a real bug. '' = no presence declared.

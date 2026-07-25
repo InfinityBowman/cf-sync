@@ -17,7 +17,7 @@ import type { StandardSchemaV1 } from './standard-schema'
  */
 export type EngineErrorCode = 'InvalidArgs' | 'UnknownMutator' | 'RowTooLarge'
 
-// Permanent errors advancing the LMID is DESIGN.md §6 invariant 2.
+// Permanent errors advancing the LMID is invariant 2, ARCHITECTURE.md#invariants.
 /**
  * Thrown by mutators to reject a mutation permanently. The engine discards
  * the mutation's writes but still advances the client's `last_mutation_id` in
@@ -53,7 +53,7 @@ export interface MutatorContext<A = unknown> {
    * the server, so both runs of one mutation see the same value.
    */
   clientId: string
-  // Authorize verdicts and stamps are DESIGN.md §15.
+  // Authorize verdicts and stamps are ARCHITECTURE.md#session-control.
   /**
    * The principal the worker's `authorize` hook stamped on the connection —
    * undefined when no authorize hook stamped one, and always undefined in
@@ -287,7 +287,7 @@ export type CrudMutators<S extends AnySyncSchema> = {
   'sync.del': { args: StandardSchemaV1<CrudDelArgs<S>, CrudDelArgs<S>>; apply(tx: MutatorTx<S>, args: CrudDelArgs<S>, ctx: MutatorContext): void }
 }
 
-// CRUD-as-degenerate-mutators is DESIGN.md §7.
+// CRUD-as-degenerate-mutators is ARCHITECTURE.md#client-adapter.
 /**
  * Full-row last-write-wins CRUD as degenerate "intent" mutators — the
  * mutations the TanStack DB collection adapter emits. `defineApp` includes

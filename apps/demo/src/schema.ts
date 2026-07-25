@@ -62,8 +62,8 @@ export const app = defineApp({
     cursor: z.object({ x: z.number(), y: z.number() }).optional(),
     /**
      * Which notes field this peer has focused (`todo-notes:<id>`), if any —
-     * field-level "who's editing" comes from presence (§16), while the text
-     * itself merges through the Yjs field (§17). Added later, additively:
+     * field-level "who's editing" comes from presence (ARCHITECTURE.md#presence), while the text
+     * itself merges through the Yjs field (ARCHITECTURE.md#yjs-fields). Added later, additively:
      * exactly the kind of presence change that needs no version bump.
      */
     editing: z.string().optional(),

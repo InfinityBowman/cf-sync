@@ -5,7 +5,7 @@ import type { TableApplier } from './types'
 
 /**
  * Buffers a single intent's local writes — the client mirror of the server's
- * WriteSet (DESIGN.md §6). Reads see the mutation's own buffer first, then
+ * WriteSet (ARCHITECTURE.md#mutation-processing). Reads see the mutation's own buffer first, then
  * fall through to the table's collection (whose view already includes earlier
  * pending intents' overlays, so overlapping intents read each other). Any
  * touched table without an attached collection aborts the speculative run via

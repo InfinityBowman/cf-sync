@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { TestClient } from './harness'
 
 /**
- * Compaction contract (DESIGN.md D8): tombstones behind the retention horizon
+ * Compaction contract (D8 in ARCHITECTURE.md#locked-decisions): tombstones behind the retention horizon
  * are hard-deleted; min_cursor_version advances to the youngest deleted
  * tombstone. Clients at or past the horizon still get valid deltas; clients
  * behind it re-bootstrap via clear + snapshot. The fixture's CompactingDO uses

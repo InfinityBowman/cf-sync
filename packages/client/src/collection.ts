@@ -11,7 +11,7 @@ import {
 } from './types'
 
 /**
- * DESIGN.md §7.2: one atomic optimistic transaction per intent mutation.
+ * ARCHITECTURE.md#optimistic-intents: one atomic optimistic transaction per intent mutation.
  * Writes inside `tx.mutate` join the ambient transaction and skip the
  * collections' own mutation handlers; the overlay drops when `persist`
  * resolves (the confirm patch is already applied — synced commits buffer
@@ -50,8 +50,8 @@ function stripVirtualProps(row: Record<string, unknown>): Record<string, unknown
  * pending-clear flag, sufficient because patches are full-row LWW — and
  * `attach` drains the buffer into the real hooks as one synced transaction,
  * then becomes pass-through. This removes the late-`registerTable` full
- * resync for every collection created before its first subscriber (DESIGN.md
- * §7.2).
+ * resync for every collection created before its first subscriber
+ * (ARCHITECTURE.md#optimistic-intents).
  */
 interface HookGate {
   hooks: TableHooks
@@ -214,7 +214,7 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
   // subscriber. The gate buffers synced data until TanStack starts the (lazy)
   // sync pipeline, so collections created up front never trigger the
   // late-registration full resync no matter when they get their first
-  // subscriber (DESIGN.md §7.2).
+  // subscriber (ARCHITECTURE.md#optimistic-intents).
   const gate = createHookGate()
   let registered = true
   let unregister = client.registerTable(table, gate.hooks)

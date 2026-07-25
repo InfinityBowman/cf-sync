@@ -4,7 +4,7 @@ A server-authoritative, Linear-style sync engine on **Cloudflare Durable Objects
 
 Optimistic mutations, real-time propagation, offline with exactly-once replay, typed presence, and opt-in collaborative text — as a library, on infrastructure you already run. One Durable Object per workspace, DO SQLite as the system of record, no external database tier.
 
-**[Documentation](./docs/guide/getting-started.md)** · **[Why cf-sync?](./docs/guide/why.md)** · **[Design document](./DESIGN.md)**
+**[Documentation](./docs/guide/getting-started.md)** · **[Why cf-sync?](./docs/guide/why.md)** · **[Architecture](./ARCHITECTURE.md)**
 
 ```ts
 // One definition, imported by both the worker and the browser:
@@ -51,7 +51,7 @@ React apps read collections with `useLiveQuery` from **`@tanstack/react-db`** �
 - Client: [Reading data](./docs/guide/reading-data.md) · [Offline & persistence](./docs/guide/offline-persistence.md)
 - Production: [Offline & persistence](./docs/guide/offline-persistence.md) · [Testing](./docs/guide/testing.md) · [Operations](./docs/guide/operations.md) · [Limits & costs](./docs/guide/limits-and-costs.md) · [Troubleshooting](./docs/guide/troubleshooting.md)
 - [API reference](./docs/reference/index.md) — [SyncClient](./docs/reference/sync-client.md) · [Collections](./docs/reference/collections.md) · [Definition kit](./docs/reference/define-kit.md) · [Server](./docs/reference/server.md) · [Test engine](./docs/reference/testing.md) · [Yjs fields](./docs/reference/yjs.md)
-- [DESIGN.md](./DESIGN.md) — the architecture, locked decisions, and invariants, with prior-art citations
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — the contributor doc: locked decisions and invariants, with prior-art citations
 
 Run the docs site locally with `pnpm docs:dev`.
 
@@ -77,11 +77,11 @@ pnpm build           # bundle each package to dist/ (tsdown: ESM + .d.ts)
 pnpm check:packages  # pack as publishing would; gate with publint + arethetypeswrong
 ```
 
-Packages are ESM-only. In the monorepo, `exports` point at TypeScript source; `publishConfig` swaps them to `dist/` at pack time, and CI verifies the packed artifacts. Read [DESIGN.md](./DESIGN.md) before changing protocol, storage schema, or sync semantics.
+Packages are ESM-only. In the monorepo, `exports` point at TypeScript source; `publishConfig` swaps them to `dist/` at pack time, and CI verifies the packed artifacts. Read [ARCHITECTURE.md](./ARCHITECTURE.md) before changing protocol, storage schema, or sync semantics.
 
 ## Status
 
-M0–M2, M3 phases 1–2, session control, presence, and Tier 2 Yjs fields are implemented and tested. Remaining on the [roadmap](./DESIGN.md#12-milestones): startup replay of queued intents. Packages are not yet published to npm.
+The full roadmap is implemented and tested: protocol core, resilience, operability, client persistence with startup replay, optimistic intent mutators, session control, presence, and Tier 2 Yjs fields. Packages are not yet published to npm.
 
 ## License
 

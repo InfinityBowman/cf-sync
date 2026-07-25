@@ -150,7 +150,7 @@ function createExtension(options: YjsFieldsOptions<any>): EngineExtension {
   /** Doc cache, LRU by Map insertion order (delete+set refreshes). */
   let cache = new Map<string, Y.Doc>()
   /**
-   * The server half of the refusal collapse (§17.3): fields this socket has
+   * The server half of the refusal collapse (ARCHITECTURE.md#yjs-fields): fields this socket has
    * been REJECTed on. Frames already in flight when the REJECT lands (one RTT
    * of keystrokes after a TooLarge paste) depend on the refused op's client
    * clocks — appending them would plant a permanent gap in the log, so they
@@ -217,7 +217,7 @@ function createExtension(options: YjsFieldsOptions<any>): EngineExtension {
   }
 
   /**
-   * Materializes a field: snapshot plus update tail (DESIGN.md §17.4).
+   * Materializes a field: snapshot plus update tail (ARCHITECTURE.md#yjs-fields).
    * Corrupt update rows are skipped-and-logged — any connected client still
    * holding the lost ops re-uploads them through the push-back leg; corrupt
    * snapshots throw outright (fail loudly, never guess). `fresh: true`
@@ -287,7 +287,7 @@ function createExtension(options: YjsFieldsOptions<any>): EngineExtension {
   }
 
   /**
-   * The typing path (§17.4): append to the log and relay, synchronously —
+   * The typing path (ARCHITECTURE.md#yjs-fields): append to the log and relay, synchronously —
    * persist-then-broadcast, so no client ever sees state the server has not
    * durably stored. Never materializes a document; the freeze ceiling rides
    * a running byte total kept in the same append transaction.
@@ -327,7 +327,7 @@ function createExtension(options: YjsFieldsOptions<any>): EngineExtension {
     }
 
     const byteTotal = (row?.byteTotal ?? 0) + update.byteLength
-    // Accept the crossing update, then freeze (§17.3): rejecting it would
+    // Accept the crossing update, then freeze (ARCHITECTURE.md#yjs-fields): rejecting it would
     // leave the sender's doc permanently ahead of the server. The running
     // sum deliberately over-estimates; compaction reconciles it.
     const frozen = byteTotal > MAX_FIELD_BYTES
@@ -354,7 +354,7 @@ function createExtension(options: YjsFieldsOptions<any>): EngineExtension {
         toArrayBuffer(update),
       )
     })
-    // Log coherence (§17.4): a cached doc must never fall behind the log, or
+    // Log coherence (ARCHITECTURE.md#yjs-fields): a cached doc must never fall behind the log, or
     // the next GET it serves returns an incomplete diff. Apply or evict.
     const cached = cache.get(fieldId)
     if (cached) {
@@ -387,7 +387,7 @@ function createExtension(options: YjsFieldsOptions<any>): EngineExtension {
         toArrayBuffer(snapshot),
         lastSeq,
         // Reconcile the over-estimating running sum to the true encoded
-        // size. `frozen` is untouched: the freeze is sticky (§17.4).
+        // size. `frozen` is untouched: the freeze is sticky (ARCHITECTURE.md#yjs-fields).
         snapshot.byteLength,
         fieldId,
       )
@@ -407,7 +407,7 @@ function createExtension(options: YjsFieldsOptions<any>): EngineExtension {
     },
 
     onBinaryMessage(ws, bytes, msgCtx) {
-      if (!msgCtx.ready) return // binary frames are only accepted on ready sockets (§17.3)
+      if (!msgCtx.ready) return // binary frames are only accepted on ready sockets (ARCHITECTURE.md#yjs-fields)
       const frame = decodeFieldFrame(bytes)
       if (!frame) {
         console.warn('[cf-sync/yjs] dropping malformed binary frame')
@@ -464,7 +464,7 @@ function createExtension(options: YjsFieldsOptions<any>): EngineExtension {
           fieldId,
           toArrayBuffer(snapshot),
           snapshot.byteLength,
-          // An import with a smaller field resets the ceiling (§17.3).
+          // An import with a smaller field resets the ceiling (ARCHITECTURE.md#yjs-fields).
           snapshot.byteLength > MAX_FIELD_BYTES ? 1 : 0,
         )
       }

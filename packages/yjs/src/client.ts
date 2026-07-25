@@ -103,7 +103,7 @@ export interface YjsFields {
   destroy(): void
 }
 
-/** The paved-path text key — fixed and library-owned (DESIGN.md §17.1). */
+/** The paved-path text key — fixed and library-owned (ARCHITECTURE.md#yjs-fields). */
 const TEXT_KEY = 't'
 
 /** Transaction origin marking updates applied from the server (never re-sent). */
@@ -215,7 +215,7 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
       if (!entry.rejected) entry.writeBlocked = state.writable ? null : 'NotWritable'
       entry.synced = true
       if (entry.canWrite) {
-        // The push-back leg (§17.3): everything the server's state vector is
+        // The push-back leg (ARCHITECTURE.md#yjs-fields): everything the server's state vector is
         // missing — edits typed during a disconnect, or ops a crash lost —
         // goes back up as one ordinary UPDATE. Suppressed for non-writable
         // fields: the one rule that keeps a refusal from re-uploading forever.

@@ -49,7 +49,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0
 }
 
-// Verdict/stamps design: DESIGN.md §15.2.
+// Verdict/stamps design: ARCHITECTURE.md#session-control.
 /**
  * The structured return of a sync `authorize` hook.
  *
@@ -140,7 +140,7 @@ export function createSyncRoute<Env>(opts: SyncFetchOptions<Env>) {
     if (!clientId) return new Response('missing clientId', { status: 400 })
 
     // The auth header is router-owned: strip any inbound value before the
-    // authorize verdict can set its own, so it cannot be spoofed (§15.3).
+    // authorize verdict can set its own, so it cannot be spoofed (ARCHITECTURE.md#session-control).
     const headers = new Headers(request.headers)
     headers.delete(AUTH_HEADER)
     headers.set(WORKSPACE_HEADER, workspaceId)
@@ -151,7 +151,7 @@ export function createSyncRoute<Env>(opts: SyncFetchOptions<Env>) {
       if (verdict === false) return new Response('unauthorized', { status: 403 })
       if (typeof verdict === 'object') {
         if (!verdict.ok) {
-          // Accept-then-close in the router (§15.2): the client gets a real
+          // Accept-then-close in the router (ARCHITECTURE.md#session-control): the client gets a real
           // close event with a policy code, and the DO never wakes.
           return rejectUpgrade(verdict.code ?? CLOSE_UNAUTHORIZED, verdict.reason ?? 'unauthorized')
         }
@@ -272,7 +272,7 @@ export function createAdminFetch<Env>(opts: AdminFetchOptions<Env>) {
     (await route(request, env)) ?? new Response('not found', { status: 404 })
 }
 
-// Session revocation design: DESIGN.md §15.5.
+// Session revocation design: ARCHITECTURE.md#session-control.
 /** Selects which live sockets a `disconnect` closes, and how. */
 export interface DisconnectOptions {
   /** Only sockets whose verdict stamped this principal. */

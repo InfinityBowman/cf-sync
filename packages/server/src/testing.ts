@@ -89,7 +89,7 @@ class MemoryRowStore implements EngineRowStore {
   }
 }
 
-// Permanent-vs-transient error semantics: DESIGN.md §6 invariant 2.
+// Permanent-vs-transient error semantics: invariant 2, ARCHITECTURE.md#invariants.
 /**
  * In-memory workspace engine for unit-testing app definitions — mutators and
  * schema migrations — in plain vitest/jest, no workerd required. It runs the
@@ -349,7 +349,7 @@ export async function checkSchemaEvolution(
         `zod table schemas, so a schema change in them would pass this check unseen. Passing here ` +
         `would be a false green, not protection. Define these tables with zod to get the tripwire, ` +
         `or drop this check and own the version-bump discipline manually (every schema change ` +
-        `requires a bump — DESIGN.md §9).`,
+        `requires a bump — ARCHITECTURE.md#schema-evolution).`,
     )
   }
   const fs = await import('node:fs')
@@ -395,7 +395,7 @@ export async function checkSchemaEvolution(
     throw new Error(
       `checkSchemaEvolution: the snapshot records version ${stored.version} but the app declares ` +
         `${current.version} — a version rollback (or a stale branch merged over a newer snapshot). ` +
-        `Deployed versions never roll back (DESIGN.md §9): restore the higher version, or delete ` +
+        `Deployed versions never roll back (ARCHITECTURE.md#schema-evolution): restore the higher version, or delete ` +
         `${String(snapshotPath)} if this branch intentionally diverged.`,
     )
   }

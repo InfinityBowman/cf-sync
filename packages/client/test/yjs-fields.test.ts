@@ -16,7 +16,7 @@ import { FakeSocket } from './fake-socket'
 import { testApp } from './test-schema'
 
 /**
- * Integration of the add-on with the real SyncClient over the §17.5 seams
+ * Integration of the add-on with the real SyncClient over the ARCHITECTURE.md#yjs-fields seams
  * (sendBinary / onBinary / subscribeStatus) — also the compile-time proof
  * that SyncClient structurally satisfies YjsFieldsClient.
  */

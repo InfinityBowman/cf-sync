@@ -6,7 +6,7 @@ import { FieldTestClient, applyRemote, edit } from './harness'
 const reader = { 'x-test-auth': JSON.stringify({ writeAllowed: false }) }
 const writer = { 'x-test-auth': JSON.stringify({ writeAllowed: true }) }
 
-describe('authorizeWrite over the §15 stamps (§17.4)', () => {
+describe('authorizeWrite over the ARCHITECTURE.md#session-control stamps (ARCHITECTURE.md#yjs-fields)', () => {
   it('a reader gets writable: false in STATE, can GET, and its UPDATEs are refused with NotWritable', async () => {
     const workspace = `y-auth-${Date.now()}`
     const w = await FieldTestClient.ready(workspace, 'w', '/auth', writer)

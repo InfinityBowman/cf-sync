@@ -5,7 +5,7 @@ import { crudMutators, defineApp } from '../src/index'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 import { presenceApp, testApp, testSchema } from './test-schema'
 
-// Client half of DESIGN.md §16: the library owns pacing and re-announcement —
+// Client half of ARCHITECTURE.md#presence: the library owns pacing and re-announcement —
 // `set` throttles trailing-edge, the last state re-announces on every
 // connection that reaches ready (presencePeers receipt) and on presencePoll,
 // peers exclude self and reset to empty on disconnect.
@@ -216,7 +216,7 @@ describe('presence.peers', () => {
       { clientId: 'peer-1', principal: 'user-1', state: { name: 'p1' } },
     ])
     expect(client.presence.peers).toEqual([
-      // receivedAt is the local receipt time — the §16.3 staleness bound.
+      // receivedAt is the local receipt time — the ARCHITECTURE.md#presence staleness bound.
       { clientId: 'peer-1', principal: 'user-1', state: { name: 'p1' }, receivedAt: expect.any(Number) },
     ])
 

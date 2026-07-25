@@ -29,7 +29,7 @@ function typeChunk(client: FieldTestClient, fieldId: string, doc: Y.Doc, chars: 
   return update.byteLength
 }
 
-describe('transport frame guard and field ceiling (§17.3)', () => {
+describe('transport frame guard and field ceiling (ARCHITECTURE.md#yjs-fields)', () => {
   it('an update over MAX_FIELD_UPDATE_BYTES gets a TooLarge REJECT, the socket stays open, and the in-flight tail is refused', async () => {
     const workspace = `y-large-${Date.now()}`
     const a = await FieldTestClient.ready(workspace, 'a')

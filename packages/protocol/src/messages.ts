@@ -4,7 +4,7 @@ export const PROTOCOL_VERSION = 1
 
 /**
  * Hibernated DO WebSockets can fail on frames just under 1MB (empirical, see
- * DESIGN.md D9), so all frames stay at or below this budget.
+ * D9 in ARCHITECTURE.md#locked-decisions), so all frames stay at or below this budget.
  */
 export const MAX_FRAME_BYTES = 900_000
 /** Patch-op budget per pokePart, leaving headroom for the message envelope. */
@@ -17,7 +17,7 @@ export const MAX_PART_PATCH_BYTES = 850_000
  * with a 400.
  */
 export const MAX_ROW_BYTES = 700_000
-// Presence design is DESIGN.md §16.2.
+// Presence design is ARCHITECTURE.md#presence.
 /**
  * The per-client presence-state byte cap (8 KiB of JSON) — presence payloads
  * are cursor-cadence ephemera, not documents. Oversized states are rejected
@@ -37,7 +37,7 @@ export const KEEPALIVE_PING = '{"type":"ping"}'
 export const KEEPALIVE_PONG = '{"type":"pong"}'
 
 // ---------------------------------------------------------------------------
-// close codes (DESIGN.md §15.2)
+// close codes (ARCHITECTURE.md#session-control)
 // ---------------------------------------------------------------------------
 
 /**
@@ -64,7 +64,7 @@ export const CLOSE_AUTH_CONTEXT_INVALID = 4401
  * client stops reconnecting and reports it through `onFatal`.
  */
 export const CLOSE_UNAUTHORIZED = 4403
-// The supersede rule is DESIGN.md §15.3.
+// The supersede rule is ARCHITECTURE.md#session-control.
 /**
  * A newer socket with the same clientId took over — the server keeps exactly
  * one live socket per clientId and closes the older one. The closed socket is
@@ -155,7 +155,7 @@ export const pushMsgSchema = z.object({
 export type PushMsg = z.infer<typeof pushMsgSchema>
 
 /**
- * The client's own presence state (DESIGN.md §16.2); null clears it. The
+ * The client's own presence state (ARCHITECTURE.md#presence); null clears it. The
  * payload is opaque here — the server validates it against the app's
  * `presence` schema before relaying, and identity is never carried in the
  * message: the relay stamps `clientId`/`principal` from the socket attachment.
@@ -257,7 +257,7 @@ export const presencePeerSchema = z.object({
 /**
  * Full peer snapshot, sent once right after hello completes. Doubles as the
  * client's "presence is live on this connection" signal: receipt triggers
- * re-announcement of its own state (DESIGN.md §16.4).
+ * re-announcement of its own state (ARCHITECTURE.md#presence).
  */
 export const presencePeersMsgSchema = z.object({
   type: z.literal('presencePeers'),
@@ -268,7 +268,7 @@ export type PresencePeersMsg = z.infer<typeof presencePeersMsgSchema>
 /**
  * "Re-send your state": hibernation dropped the server's in-memory presence
  * map while the sockets survived; the map converges in one round-trip as
- * clients re-announce (DESIGN.md §16.3).
+ * clients re-announce (ARCHITECTURE.md#presence).
  */
 export const presencePollMsgSchema = z.object({ type: z.literal('presencePoll') })
 export type PresencePollMsg = z.infer<typeof presencePollMsgSchema>

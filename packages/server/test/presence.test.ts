@@ -5,7 +5,7 @@ import { presenceFingerprint, schemaFingerprint } from '../src/fingerprint'
 import { testSchema } from './fixture/worker'
 import { TestClient, type PresenceLaneMsg } from './harness'
 
-// Presence (DESIGN.md §16): in-memory relay over the sync socket. Identity is
+// Presence (ARCHITECTURE.md#presence): in-memory relay over the sync socket. Identity is
 // server-attested, payloads are schema-validated before relay, nothing ever
 // touches storage, and the map is rebuilt by polling after a wake.
 
@@ -162,7 +162,7 @@ describe('validation', () => {
   })
 })
 
-describe('session-control gates on the presence path (§15.6)', () => {
+describe('session-control gates on the presence path (ARCHITECTURE.md#session-control)', () => {
   it('a supersede-lagged close cannot wipe the reconnected client’s fresh state', async () => {
     const workspace = `presence-supersede-${Date.now()}`
     const { client: c1 } = await connectLive(workspace, 'c1')
@@ -321,7 +321,7 @@ describe('restart recovery', () => {
 })
 
 describe('fingerprint', () => {
-  it('presence has its own fingerprint, independent of the table fingerprint (§16.1)', () => {
+  it('presence has its own fingerprint, independent of the table fingerprint (ARCHITECTURE.md#presence)', () => {
     // Declaring or changing presence never moves the table fingerprint —
     // that is what keeps its drift decoupled from the version-bump economy.
     expect(schemaFingerprint(testSchema)).toBe(schemaFingerprint(testSchema))

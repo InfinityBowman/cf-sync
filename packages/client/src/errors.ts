@@ -45,7 +45,7 @@ export class MutationError extends Error {
  */
 export type SyncFatalCode = number | 'VersionNotSupported' | 'Unauthorized'
 
-// Permanent-rejection protocol: DESIGN.md §15.2.
+// Permanent-rejection protocol: ARCHITECTURE.md#session-control.
 /**
  * What `onFatal` receives when the server permanently rejects this client.
  * `reason` is the close frame's slug (`membership-revoked`,

@@ -1,6 +1,6 @@
 import type { AnySyncSchema, AppDefinition } from '@cf-sync/protocol'
 
-// Tombstone-compaction decision record: DESIGN.md D8.
+// Tombstone-compaction decision record: D8 in ARCHITECTURE.md#locked-decisions.
 /**
  * Tunes tombstone compaction, which runs on the workspace's periodic
  * maintenance alarm to keep deleted-row bookkeeping from growing forever.
@@ -55,7 +55,7 @@ export interface ExportConfig<Env = unknown> {
   prefix?: string
 }
 
-// Extension seam design: DESIGN.md §17.5; delivery gate: §15.
+// Extension seam design: ARCHITECTURE.md#yjs-fields; delivery gate: ARCHITECTURE.md#session-control.
 /**
  * What an extension's `init` receives: the workspace's SQLite handle, a
  * transaction wrapper, and the outbound delivery seam. `broadcast` and
@@ -80,7 +80,7 @@ export interface EngineExtensionMessageContext {
   ready: boolean
 }
 
-// Extension seam: DESIGN.md §17.5; sync invariant §6.3; import cycling §17.7.
+// Extension seam: ARCHITECTURE.md#yjs-fields; sync invariant 3 of ARCHITECTURE.md#invariants; import cycling ARCHITECTURE.md#yjs-fields.
 /**
  * The binary-lane extension seam an add-on like `@cf-sync/yjs/server` plugs
  * into: one config slot, types only — core imports nothing from any

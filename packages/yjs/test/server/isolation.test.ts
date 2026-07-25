@@ -14,7 +14,7 @@ async function readText(client: FieldTestClient, fieldId: string): Promise<strin
   return doc.getText('t').toString()
 }
 
-describe('workspace isolation (§17.5 per-instance extension)', () => {
+describe('workspace isolation (ARCHITECTURE.md#yjs-fields per-instance extension)', () => {
   it('two workspaces on one class share no extension storage, cache, or delivery', async () => {
     const wsA = `iso-a-${Date.now()}`
     const wsB = `iso-b-${Date.now()}`

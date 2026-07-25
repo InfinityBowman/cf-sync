@@ -29,7 +29,7 @@ export interface Meta {
   presenceHash: string
 }
 
-// Storage schema per DESIGN.md §5. mutation_log has its own sequence because a
+// Storage schema per ARCHITECTURE.md#storage. mutation_log has its own sequence because a
 // mutation that writes no rows (app error, no-op) advances the client's LMID
 // without advancing the data version — cursor versions track data changes only.
 //

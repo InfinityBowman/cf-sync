@@ -9,7 +9,7 @@ import {
 } from '../src/index'
 import { AUTH_CONTEXT, truncateCloseReason } from '../src/internal'
 
-// Session-control plumbing (DESIGN.md §15): the authContext schema is
+// Session-control plumbing (ARCHITECTURE.md#session-control): the authContext schema is
 // declared with the mutators, carried on the registry, and lifted onto the
 // app definition; close codes split permanent from refresh.
 

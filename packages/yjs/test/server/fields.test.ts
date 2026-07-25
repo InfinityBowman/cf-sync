@@ -18,7 +18,7 @@ async function readState(client: FieldTestClient, fieldId: string) {
   return state!
 }
 
-describe('field sync hot path (§17.3/17.4)', () => {
+describe('field sync hot path (ARCHITECTURE.md#yjs-fields)', () => {
   it('GET on a nonexistent field returns an empty, writable STATE (implicit creation)', async () => {
     const a = await FieldTestClient.ready(`f-fresh-${Date.now()}`, 'a')
     a.get('never-written')
@@ -161,7 +161,7 @@ describe('field sync hot path (§17.3/17.4)', () => {
     const words = ['sync', 'field', 'merge', 'crdt', 'note']
 
     // Seeded interleaving: both sides type without waiting for each other;
-    // relays queue and are drained in bursts (the §11 convergence-sim
+    // relays queue and are drained in bursts (the ARCHITECTURE.md#testing convergence-sim
     // pattern applied to text).
     for (let i = 0; i < 30; i++) {
       const [client, doc] = random() < 0.5 ? ([a, docA] as const) : ([b, docB] as const)

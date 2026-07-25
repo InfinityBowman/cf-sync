@@ -102,7 +102,7 @@ describe('push', () => {
   })
 })
 
-describe('permanent app errors (DESIGN.md §6 invariant 2)', () => {
+describe('permanent app errors (invariant 2, ARCHITECTURE.md#invariants)', () => {
   it('advance the LMID, report the error, and write nothing', async () => {
     const workspace = ws()
     const c1 = await TestClient.connect(workspace, 'c1')

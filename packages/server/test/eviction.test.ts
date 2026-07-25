@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { TestClient } from './harness'
 
 /**
- * DO eviction/restart fault test (DESIGN.md §11): after the object is killed
+ * DO eviction/restart fault test (ARCHITECTURE.md#testing): after the object is killed
  * mid-life, a fresh instance must recover meta from storage — same backendId,
  * same version counter, same per-client LMIDs — so reconnecting clients
  * resume by cursor instead of re-bootstrapping, and replayed mutations stay

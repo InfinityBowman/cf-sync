@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { TestClient } from './harness'
 
 /**
- * R2 mutation-log export (DESIGN.md D3): the maintenance alarm ships log
+ * R2 mutation-log export (D3 in ARCHITECTURE.md#locked-decisions): the maintenance alarm ships log
  * entries past the export cursor as ndjson objects keyed by log_seq range.
  * The fixture uses maxBatchRows: 5 so multi-object runs are exercised.
  */

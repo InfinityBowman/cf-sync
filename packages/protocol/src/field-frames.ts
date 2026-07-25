@@ -1,5 +1,5 @@
 /**
- * Binary lane for Tier 2 Yjs fields (DESIGN.md §17.3). Field traffic travels
+ * Binary lane for Tier 2 Yjs fields (ARCHITECTURE.md#yjs-fields). Field traffic travels
  * as binary WebSocket frames beside the JSON protocol — the frame type itself
  * is the mux, so there is no envelope inside the JSON protocol and no base64
  * inflation. These helpers are dependency-free (no zod: the payloads are
@@ -48,7 +48,7 @@ export const MAX_FIELD_UPDATE_BYTES = 200_000
  * carries the whole doc diff in one binary frame, and pure-insert text
  * encodes at roughly its content size, so a ceiling near 1MB would let that
  * frame cross the 900KB hibernated-socket budget (D9). Crossing the ceiling
- * freezes the field (accept-then-freeze; DESIGN.md §17.3/17.4).
+ * freezes the field (accept-then-freeze; ARCHITECTURE.md#yjs-fields).
  */
 export const MAX_FIELD_BYTES = 700_000
 
@@ -60,7 +60,7 @@ export const FIELD_STATE_WRITABLE = 0b0000_0001
 
 /**
  * Why an UPDATE was refused. All three collapse to one client concept —
- * the field is no longer writable on this connection (DESIGN.md §17.6).
+ * the field is no longer writable on this connection (ARCHITECTURE.md#yjs-fields).
  */
 export type FieldRejectReason = 'NotWritable' | 'Frozen' | 'TooLarge'
 

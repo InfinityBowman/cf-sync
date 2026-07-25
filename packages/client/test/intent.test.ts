@@ -7,7 +7,7 @@ import { createCollections, workspaceCollectionOptions } from '../src/collection
 import { AppError, crudMutators, defineApp, defineMutators, defineSchema } from '../src/index'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
-// Optimistic intent execution (DESIGN.md §7.2): `mutate` runs the shared
+// Optimistic intent execution (ARCHITECTURE.md#optimistic-intents): `mutate` runs the shared
 // mutator locally against the collections and lands its writes as one atomic
 // overlay — one wire mutation, no crud echoes, rolled back on rejection.
 

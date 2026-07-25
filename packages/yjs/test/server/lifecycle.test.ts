@@ -23,7 +23,7 @@ async function readFieldText(client: FieldTestClient, fieldId: string): Promise<
   return doc.getText('t').toString()
 }
 
-describe('field lifecycle across crashes and corruption (§17.4/17.6)', () => {
+describe('field lifecycle across crashes and corruption (ARCHITECTURE.md#yjs-fields)', () => {
   it('eviction mid-session converges, including updates typed while disconnected', async () => {
     const workspace = `y-evict-${Date.now()}`
     const a = await FieldTestClient.ready(workspace, 'a')

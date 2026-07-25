@@ -3,7 +3,7 @@ import { truncateCloseReason } from '@cf-sync/protocol/internal'
 /** Set by the worker routers so the DO can learn its own workspace id. */
 export const WORKSPACE_HEADER = 'x-cf-sync-workspace'
 
-// Stamp-forwarding design: DESIGN.md §15.3.
+// Stamp-forwarding design: ARCHITECTURE.md#session-control.
 /**
  * Carries the authorize verdict's stamps from `createSyncFetch` to the DO.
  * The router strips any inbound value before setting its own, so it cannot
@@ -56,7 +56,7 @@ export function decodeAuthStamps(value: string): AuthStamps {
 export const MAX_ATTACHMENT_BYTES = 2048
 
 /**
- * Accept-then-close (DESIGN.md §15.2): a browser WebSocket cannot observe the
+ * Accept-then-close (ARCHITECTURE.md#session-control): a browser WebSocket cannot observe the
  * HTTP status of a failed upgrade — a 403 is indistinguishable from a network
  * error — so rejections complete the upgrade with a local pair and close it
  * with a policy code + reason the client can act on. The local pair initiates

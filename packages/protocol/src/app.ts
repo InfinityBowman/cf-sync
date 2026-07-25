@@ -67,7 +67,7 @@ export interface AppDefinition<
   readonly mutators: M
   /** Ascending by `to`; consecutive versions (each step's `to` is the previous step's `to` + 1). */
   readonly migrations: readonly SchemaMigration[]
-  // Auth-context validation at connect is DESIGN.md §15.4.
+  // Auth-context validation at connect is ARCHITECTURE.md#session-control.
   /**
    * The `authContext` schema declared with the mutator registry
    * (`defineMutators`' third argument), lifted here so the server can
@@ -75,7 +75,7 @@ export interface AppDefinition<
    * fail-fast-validate its `auth` option.
    */
   readonly authContext?: StandardSchemaV1<any, any>
-  // Presence design is DESIGN.md §16.
+  // Presence design is ARCHITECTURE.md#presence.
   /**
    * Schema for the app's ephemeral presence payload. Declaring
    * it enables `client.presence` / `usePresence`; the server validates every
@@ -118,7 +118,7 @@ export interface PresencePeer<T = unknown> {
   clientId: string
   principal?: string
   state: T
-  // The ghost window is DESIGN.md §16.3.
+  // The ghost window is ARCHITECTURE.md#presence.
   /**
    * Local receipt time (`Date.now()`) of the update that produced `state` —
    * local clock, so it compares against `Date.now()`, never against other

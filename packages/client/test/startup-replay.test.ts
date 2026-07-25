@@ -7,7 +7,7 @@ import { AppError, crudMutators, defineApp, defineMutators, defineSchema } from 
 import { MemorySyncStore } from '../src/store'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
-// Startup replay of queued intents (DESIGN.md §7.2): hydration re-runs each
+// Startup replay of queued intents (ARCHITECTURE.md#optimistic-intents): hydration re-runs each
 // restored outbox entry's shared `apply` against the hydrated base and lays
 // the writes as the same atomic overlay a live `mutate` produces, so the
 // reloaded UI matches the pre-reload optimistic view. Replay failures

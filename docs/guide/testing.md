@@ -55,7 +55,7 @@ Commit the snapshot file it scaffolds; a legitimate version bump rewrites it aut
 
 ## The semantics are the real ones
 
-The engine honors the [engine invariants](https://github.com/InfinityBowman/cf-sync-engine/blob/main/DESIGN.md):
+The engine honors the [engine invariants](https://github.com/InfinityBowman/cf-sync-engine/blob/main/ARCHITECTURE.md#invariants):
 
 - An `AppError` from a mutator (or invalid args) reports as `result.error` — **permanent**, no data written, and `engine.lastMutationId()` still advances. Assert on both when testing rejection paths.
 - Any other throw is **transient**: rethrown, nothing committed.

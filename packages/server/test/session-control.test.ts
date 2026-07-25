@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { decodeAuthStamps, encodeAuthStamps, workspaceAdmin } from '../src/index'
 import { TestClient } from './harness'
 
-// Session control (DESIGN.md §15): verdict stamps ride the connection, kick
+// Session control (ARCHITECTURE.md#session-control): verdict stamps ride the connection, kick
 // and refresh close live sockets, expiry gates both writes (inbound frames)
 // and reads (poke fan-out), and the supersede rule makes newest-socket-wins.
 

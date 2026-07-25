@@ -16,7 +16,7 @@ import {
 import { testApp } from './test-schema'
 import { FakeSocket, flushMicrotasks } from './fake-socket'
 
-// Session control (DESIGN.md §15): permanent close codes go fatal with the
+// Session control (ARCHITECTURE.md#session-control): permanent close codes go fatal with the
 // close {code, reason} attached; 4300 refreshes reconnect immediately exactly
 // once per streak; the `authContext` option feeds optimistic runs as
 // ctx.auth; `authToken` rides the URL fresh on every connection attempt.

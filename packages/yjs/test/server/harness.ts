@@ -14,7 +14,7 @@ import * as Y from 'yjs'
 /**
  * A raw protocol client for the binary lane: minimal JSON handling (hello →
  * ready), full field-frame handling. Mirrors the server package's TestClient
- * shape, trimmed to what §17 tests need.
+ * shape, trimmed to what ARCHITECTURE.md#yjs-fields tests need.
  */
 export class FieldTestClient {
   errors: Extract<ServerMsg, { type: 'error' }>[] = []
@@ -200,7 +200,7 @@ export function applyRemote(doc: Y.Doc, payload: Uint8Array): void {
   Y.applyUpdate(doc, payload, 'remote')
 }
 
-/** Deterministic PRNG (the §11 convergence-sim pattern). */
+/** Deterministic PRNG (the ARCHITECTURE.md#testing convergence-sim pattern). */
 export function mulberry32(seed: number): () => number {
   let state = seed >>> 0
   return () => {

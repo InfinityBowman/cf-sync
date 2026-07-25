@@ -57,7 +57,7 @@ export class FakeSocket implements WebSocketLike {
     this.#emit('close', {})
   }
 
-  /** Server-initiated close carrying a policy code + reason (DESIGN.md §15.2). */
+  /** Server-initiated close carrying a policy code + reason (ARCHITECTURE.md#session-control). */
   serverClose(code: number, reason = ''): void {
     this.closed = true
     this.#emit('close', { code, reason })

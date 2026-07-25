@@ -70,7 +70,8 @@ interface RowWrite {
 
 /**
  * Buffers a single mutation's writes so they can be discarded on AppError
- * while the LMID advance still commits (DESIGN.md §6). Reads see the overlay.
+ * while the LMID advance still commits (invariant 2, ARCHITECTURE.md#invariants).
+ * Reads see the overlay.
  *
  * `validateAtFlush` defers row validation from `put` to `flush` — schema
  * migration replays need it, because intermediate steps of a chain may write

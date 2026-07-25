@@ -66,7 +66,7 @@ export const TABLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
  */
 export const MAX_ID_LENGTH = 256
 
-// Server-side row validation is DESIGN.md §6a.
+// Server-side row validation is ARCHITECTURE.md#mutation-processing.
 /**
  * Declares the synced tables and their row schemas — the single source of
  * truth shared by server and client. The server validates every row write

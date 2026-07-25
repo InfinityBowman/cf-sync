@@ -20,7 +20,7 @@ function makeClient() {
   return { client, sockets, latest: () => sockets[sockets.length - 1]! }
 }
 
-describe('binary lane seams (§17.5)', () => {
+describe('binary lane seams (ARCHITECTURE.md#yjs-fields)', () => {
   it('sendBinary writes bytes to the live socket, and is a no-op without one', () => {
     const { client, latest } = makeClient()
     client.sendBinary(new Uint8Array([1, 2, 3])) // not started: silent no-op

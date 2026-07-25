@@ -56,8 +56,8 @@ export default defineConfig({
           text: 'Internals',
           items: [
             {
-              text: 'Design document',
-              link: 'https://github.com/InfinityBowman/cf-sync-engine/blob/main/DESIGN.md',
+              text: 'Architecture',
+              link: 'https://github.com/InfinityBowman/cf-sync-engine/blob/main/ARCHITECTURE.md',
             },
           ],
         },

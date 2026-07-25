@@ -11,7 +11,7 @@ import {
 import * as Y from 'yjs'
 import type { YjsFieldsClient } from '../src/client'
 
-/** Scripted stand-in for the SyncClient seam (§17.5). */
+/** Scripted stand-in for the SyncClient seam (ARCHITECTURE.md#yjs-fields). */
 export class FakeSeam implements YjsFieldsClient {
   status = 'connecting'
   sent: FieldFrame[] = []

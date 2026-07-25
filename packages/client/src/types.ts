@@ -22,7 +22,7 @@ import type { SyncStore } from './store'
  */
 export type SyncStatus = 'idle' | 'connecting' | 'syncing' | 'synced' | 'reconnecting' | 'fatal'
 
-// Binary lane: DESIGN.md §17.3.
+// Binary lane: ARCHITECTURE.md#yjs-fields.
 /**
  * Minimal socket surface so tests and non-browser runtimes can inject one.
  * A custom `createSocket` that wraps a real browser WebSocket must set
@@ -106,7 +106,7 @@ export type SyncLogger = (level: 'warn' | 'error', message: string, ...detail: u
 export type PresenceInputOf<P> = P extends StandardSchemaV1 ? StandardSchemaV1.InferInput<P> : never
 export type PresenceStateOf<P> = P extends StandardSchemaV1 ? StandardSchemaV1.InferOutput<P> : never
 
-// Presence protocol: DESIGN.md §16.
+// Presence protocol: ARCHITECTURE.md#presence.
 /**
  * `client.presence` — ephemeral peer state on the existing sync socket.
  * The library owns transport and lifecycle: `set` is throttled

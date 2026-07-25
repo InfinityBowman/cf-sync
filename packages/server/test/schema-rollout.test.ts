@@ -5,7 +5,7 @@ import { rolloutApp, rolloutConfig, testSchema } from './fixture/worker'
 import { TestClient } from './harness'
 
 /**
- * The schema-version rollout drill (DESIGN.md §9, §12 M3): prove every link
+ * The schema-version rollout drill (ARCHITECTURE.md#schema-evolution): prove every link
  * in the upgrade chain. A "deploy" is simulated by swapping the shared
  * rolloutConfig's app and evicting the DO, so the next wake constructs
  * against the new version — the same sequence a real worker deploy produces.

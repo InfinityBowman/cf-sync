@@ -18,7 +18,7 @@ async function readFieldText(client: FieldTestClient, fieldId: string): Promise<
   return doc.getText('t').toString()
 }
 
-describe('admin surface for fields (§17.7)', () => {
+describe('admin surface for fields (ARCHITECTURE.md#yjs-fields)', () => {
   it('export → reset → import round-trips fields, and stats report them', async () => {
     const workspace = `y-admin-${Date.now()}`
     const a = await FieldTestClient.ready(workspace, 'a')
