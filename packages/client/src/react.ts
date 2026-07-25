@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import type { PresencePeer } from '@cf-sync/protocol'
-import type { PresenceApi, SyncClient, SyncStatus } from './client'
+import type { SyncClient } from './client'
+import type { PresenceApi, SyncStatus } from './types'
 
 /**
  * The client's sync status as React state — re-renders on every transition:

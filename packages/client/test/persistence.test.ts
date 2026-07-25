@@ -1,6 +1,7 @@
 import type { Cursor } from '@cf-sync/protocol'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { SyncClient, type TableWriteOp } from '../src/client'
+import { SyncClient } from '../src/client'
+import type { TableWriteOp } from '../src/types'
 import { MemorySyncStore } from '../src/store'
 import { testApp } from './test-schema'
 import { FakeSocket, flushMicrotasks } from './fake-socket'

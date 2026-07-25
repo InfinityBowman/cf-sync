@@ -1,5 +1,5 @@
 import type { ClientMsg, ServerMsg } from '@cf-sync/protocol/internal'
-import type { WebSocketLike } from '../src/client'
+import type { WebSocketLike } from '../src/types'
 
 type Listener = (event: any) => void
 

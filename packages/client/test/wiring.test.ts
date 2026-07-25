@@ -1,6 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SyncClient, type TableWriteOp } from '../src/client'
+import { SyncClient } from '../src/client'
+import type { TableWriteOp } from '../src/types'
 import { testApp } from './test-schema'
 import { FakeSocket } from './fake-socket'
 

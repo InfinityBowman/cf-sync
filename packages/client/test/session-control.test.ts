@@ -1,7 +1,8 @@
 import { createCollection } from '@tanstack/db'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { SyncClient, SyncFatalError } from '../src/client'
+import { SyncClient } from '../src/client'
+import { SyncFatalError } from '../src/errors'
 import { workspaceCollectionOptions } from '../src/collection'
 import {
   AppError,

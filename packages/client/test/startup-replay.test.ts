@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { SyncClient, type MutationError } from '../src/client'
+import { SyncClient } from '../src/client'
+import type { MutationError } from '../src/errors'
 import { createCollections } from '../src/collection'
 import { AppError, crudMutators, defineApp, defineMutators, defineSchema } from '../src/index'
 import { MemorySyncStore } from '../src/store'

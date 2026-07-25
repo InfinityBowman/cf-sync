@@ -1,5 +1,5 @@
 import { CLOSE_UNAUTHORIZED } from '@cf-sync/protocol'
-import { AUTH_HEADER, WORKSPACE_HEADER, encodeAuthStamps, rejectUpgrade } from './do'
+import { AUTH_HEADER, WORKSPACE_HEADER, encodeAuthStamps, rejectUpgrade } from './upgrade'
 
 /**
  * An `authorize` hook that checks `Authorization: Bearer <token>` against a

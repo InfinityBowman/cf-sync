@@ -1,21 +1,22 @@
+export { SyncClient } from './client'
 export {
   MutationError,
-  SyncClient,
   SyncFatalError,
-  type IntentTransactionRunner,
-  type Mutate,
-  type MutateNamespace,
   type MutationErrorCode,
+  type SyncFatalCode,
+} from './errors'
+export { type Mutate, type MutateNamespace } from './mutate'
+export {
+  type IntentTransactionRunner,
   type PresenceApi,
   type SyncClientOptions,
-  type SyncFatalCode,
   type SyncLogger,
   type SyncStatus,
   type TableApplier,
   type TableHooks,
   type TableWriteOp,
   type WebSocketLike,
-} from './client'
+} from './types'
 export {
   createCollections,
   createWorkspace,

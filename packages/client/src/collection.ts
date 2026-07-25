@@ -1,14 +1,14 @@
 import type { AnyMutators, AnySyncSchema, RowInputOf, RowOf, StandardSchemaV1, TableName, TableSchema } from '@cf-sync/protocol'
 import { createCollection, createTransaction, type Collection, type CollectionConfig } from '@tanstack/db'
+import { SyncClient } from './client'
 import {
   RAW_MUTATE,
-  SyncClient,
   type IntentTransactionRunner,
   type SyncClientOptions,
   type TableApplier,
   type TableHooks,
   type TableWriteOp,
-} from './client'
+} from './types'
 
 /**
  * DESIGN.md §7.2: one atomic optimistic transaction per intent mutation.

@@ -1,20 +1,21 @@
 export {
-  AUTH_HEADER,
-  createWorkspaceDO,
-  decodeAuthStamps,
-  encodeAuthStamps,
-  rejectUpgrade,
-  WORKSPACE_HEADER,
-  type AuthStamps,
   type CompactionConfig,
   type EngineExtension,
   type EngineExtensionContext,
   type EngineExtensionMessageContext,
   type EngineLogger,
   type ExportConfig,
-  type WorkspaceDOClass,
   type WorkspaceEngineConfig,
-} from './do'
+} from './config'
+export { createWorkspaceDO, type WorkspaceDOClass } from './do'
+export {
+  AUTH_HEADER,
+  decodeAuthStamps,
+  encodeAuthStamps,
+  rejectUpgrade,
+  WORKSPACE_HEADER,
+  type AuthStamps,
+} from './upgrade'
 export {
   bearerTokenAuth,
   createAdminFetch,
