@@ -363,8 +363,9 @@ export interface SyncClientOptions<
    * Durable storage for synced rows, the cursor, and the outbox. When set,
    * start() hydrates registered tables from the store (collections show
    * cached data before the socket connects), hello resumes from the
-   * persisted cursor, and unconfirmed mutations survive reloads. A schema
-   * version mismatch discards the cache and bootstraps fresh.
+   * persisted cursor, and unconfirmed mutations survive reloads — re-shown
+   * as optimistic overlays at hydration and replayed to the server exactly
+   * once. A schema version mismatch discards the cache and bootstraps fresh.
    */
   store?: SyncStore
   /**
@@ -938,8 +939,11 @@ export class SyncClient<
    * Restores persisted state before the first connection: outbox entries
    * re-queue under their original ids (LMID makes replay exactly-once), and
    * cached rows feed registered tables so collections are ready with data
-   * before any network I/O. Restored mutations have no awaiting caller, so
-   * they carry no confirm timeout — they stay queued until the server
+   * before any network I/O. Restored entries then replay locally — their
+   * mutators re-run against the hydrated base and their writes land as
+   * optimistic overlays (DESIGN.md §7.2), so the reloaded UI matches the
+   * pre-reload optimistic view. Restored mutations have no awaiting caller,
+   * so they carry no confirm timeout — they stay queued until the server
    * settles them.
    */
   async #hydrate(store: SyncStore): Promise<void> {
@@ -979,23 +983,103 @@ export class SyncClient<
     // Mutations queued while hydration was in flight sort after restored ones.
     this.#outbox = [...restored, ...this.#outbox]
 
-    if (state.cursor === null) return // outbox-only state: nothing to show yet
-    const byTable = new Map<string, PersistedState['rows']>()
-    for (const row of state.rows) {
-      let rows = byTable.get(row.tbl)
-      if (!rows) byTable.set(row.tbl, (rows = []))
-      rows.push(row)
-    }
-    for (const [tbl, hooks] of this.#tables) {
-      hooks.begin()
-      for (const row of byTable.get(tbl) ?? []) {
-        hooks.write({ type: 'put', id: row.id, value: row.value })
+    if (state.cursor !== null) {
+      const byTable = new Map<string, PersistedState['rows']>()
+      for (const row of state.rows) {
+        let rows = byTable.get(row.tbl)
+        if (!rows) byTable.set(row.tbl, (rows = []))
+        rows.push(row)
       }
-      hooks.commit()
-      hooks.markReady()
-      byTable.delete(tbl)
+      for (const [tbl, hooks] of this.#tables) {
+        hooks.begin()
+        for (const row of byTable.get(tbl) ?? []) {
+          hooks.write({ type: 'put', id: row.id, value: row.value })
+        }
+        hooks.commit()
+        byTable.delete(tbl)
+      }
+      for (const tbl of byTable.keys()) this.#warnUnregistered(tbl)
     }
-    for (const tbl of byTable.keys()) this.#warnUnregistered(tbl)
+    // Startup replay (DESIGN.md §7.2): rows commit first so the replayed
+    // mutators read the hydrated base (outbox-only state replays against
+    // empty collections — offline-created rows still reappear), markReady
+    // comes last so the first paint is base-plus-overlays, never a flash of
+    // pre-mutation state. Sequential on purpose: each laid overlay is
+    // visible to the next entry's reads, the same read-your-predecessor
+    // property back-to-back live intents have.
+    for (const entry of restored) this.#replayEntry(entry)
+    if (state.cursor !== null) {
+      for (const hooks of this.#tables.values()) hooks.markReady()
+    }
+  }
+
+  /**
+   * Re-lays one restored outbox entry's optimistic overlay at hydration
+   * (DESIGN.md §7.2): re-runs the mutator's `apply` against the hydrated
+   * collections and flushes the writes through the intent runner, with the
+   * persist step tied to the entry's existing settlement — confirm swaps
+   * the overlay for the authoritative patch, rejection rolls it back (and
+   * still reaches `onMutationRejected` through the entry's reject). The
+   * error policy inverts the live fail-fast: degrade, never drop. A local
+   * throw here proves nothing about the server's verdict, so any failure
+   * skips the overlay and leaves the entry queued.
+   */
+  #replayEntry(entry: OutboxEntry): void {
+    const runner = this.#intentRunner
+    if (!runner || this.#appliers.size === 0) return
+    const def = (this.#opts.app.mutators as AnyMutators)[entry.name]
+    if (!def) return // the server rejects UnknownMutator authoritatively
+    let applyArgs: unknown = entry.args
+    if (def.args) {
+      const result = def.args['~standard'].validate(entry.args)
+      if (result instanceof Promise) {
+        // Async validators can't gate a synchronous local run; the server
+        // rejects them authoritatively (same policy as mutate time).
+        void result.catch(() => {})
+        return
+      }
+      if (result.issues) return // the server's parse is authoritative
+      applyArgs = result.value
+    }
+    const writes = new LocalWriteSet(this.schema, this.#appliers)
+    try {
+      def.apply(writes.tx, applyArgs, { clientId: this.#clientId, auth: this.#auth, authoritative: false })
+    } catch (err) {
+      if (err instanceof MissingApplierError) {
+        this.#warnNoApplier(entry.name, err.tbl)
+      } else {
+        this.#log('warn',
+          `[cf-sync] startup replay of "${entry.name}" threw locally — it stays queued without an optimistic overlay`,
+          err,
+        )
+      }
+      return
+    }
+    if (writes.isEmpty()) return // already queued; nothing to show
+
+    // The overlay's lifetime is the entry's settlement: the entry's
+    // resolve/reject become the runner's persist outcome, so the LMID
+    // contract that settles the entry also completes (or rolls back) the
+    // transaction — while the original reject still routes the error into
+    // onMutationRejected.
+    const notify = entry.reject
+    const settled = new Promise<void>((resolve, reject) => {
+      entry.resolve = resolve
+      entry.reject = (err) => {
+        reject(err)
+        notify(err)
+      }
+    })
+    try {
+      // No awaiting caller: rejection reaches the app via onMutationRejected.
+      void runner(entry.name, () => this.#flushLocalWrites(writes), () => settled).catch(() => {})
+    } catch (err) {
+      // A synchronous throw from the overlay flush must not kill hydration —
+      // restore the entry's original settlement so `settled` never leaks.
+      entry.resolve = () => {}
+      entry.reject = notify
+      this.#log('warn', `[cf-sync] failed to lay the replay overlay for "${entry.name}"`, err)
+    }
   }
 
   /**

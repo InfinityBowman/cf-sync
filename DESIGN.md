@@ -361,10 +361,12 @@ subsumed by what a newer writer already stored and is skipped (the subsumption
 guard in `applyPoke`).
 
 **Semantics locked in:**
-- After a reload, replayed-but-unconfirmed mutations do not show optimistically —
-  the UI shows last-synced state until the server confirms. (§7.2's local apply
-  makes Replicache-style startup replay *possible*; it is deliberately deferred —
-  see the phase-2 note there — so this rule stands.)
+- After a reload, restored-but-unconfirmed mutations show optimistically again
+  (revised 2026-07-25; originally the UI showed last-synced state until the
+  server confirmed): hydration re-runs each restored outbox entry's shared
+  `apply` against the hydrated collections and lays its writes as the same
+  atomic overlay a live `mutate` produces — see §7.2's startup-replay decision
+  for the mechanism and the degrade-never-drop error policy.
 - With a store, there is **no confirm timeout** (revised 2026-07-23): the
   caller's promise stays pending until a connection confirms — the durable
   intent *will* apply, so a `Timeout` rejection would report a failure that
@@ -492,12 +494,33 @@ recursively spawn a second transaction.
   commit *without calling `mutationFn`* (`transactions.ts:512`), which would
   silently drop the mutation from the wire. A no-op-locally intent (stale
   local view) must still reach the server: empty buffer → enqueue directly.
-- **Offline/reload semantics unchanged (phase 2).** §7.1's rules stand:
-  no optimistic display of replayed-but-unconfirmed mutations after reload;
-  durably queued mutations stay pending rather than timing out. Startup
-  replay of queued intents (Replicache does this) is now *possible* and
-  deliberately deferred — it needs its own pass on ordering and error
-  handling before `markReady`.
+- **Startup replay of queued intents (shipped 2026-07-25; closes the
+  phase-2 deferral).** Hydration re-runs each restored outbox entry's
+  `apply` — crud and intent alike, in outbox order, sequentially so
+  overlapping intents read each other — and lays the writes through the
+  intent runner with `persist` tied to the entry's existing settlement
+  instead of a new enqueue: confirm swaps the overlay for the authoritative
+  patch (the buffered-while-persisting atomic swap carries over untouched),
+  rejection rolls it back and still reports through `onMutationRejected`.
+  This is re-execution, but not a rebase: the frozen-diff rule governs an
+  overlay *after* it is laid, and startup replay is a fresh speculative run
+  against a fresh base — exactly what live `mutate` does — so "TanStack owns
+  rebase" stands, and the determinism-in-args convention makes the re-run
+  reproduce the pre-reload guess. The error policy inverts the live
+  fail-fast: **degrade, never drop.** An `AppError`, any other throw, a
+  missing applier, args that no longer parse, or an unknown mutator skips
+  the overlay (warn) but keeps the entry queued — a local replay throw
+  proves nothing about the server's verdict, and discarding a durably queued
+  mutation would break §7.1's "a rejection always means the mutation will
+  not apply". Replay runs after cached rows commit and before `markReady`
+  (the ordering question the deferral named), so the first paint is
+  base-plus-overlays, never a flash of pre-mutation state; outbox-only state
+  (mutations queued before the first-ever sync, cursor still null) replays
+  too, so offline-created rows reappear. Lazy collections
+  (`startSync: false`) hydrate into the hook gate's buffer, so replay reads
+  see an emptier collection there — the same known trade-off live intents
+  have before a first subscriber; `createCollections`' eager default avoids
+  it.
 - **Timeout only exists without a store** (revised 2026-07-23; supersedes the
   original "reject but keep queued" behavior — see the §7.1 rule). With a
   durable store the promise stays pending while offline, so the overlay
@@ -705,8 +728,9 @@ first milestone, not an afterthought:
    collection hooks register at creation behind a compacting gate (no
    late-registration resync). Collaborative text shipped per §14's tiered
    strategy: tier 1 (LWW rows + field-level presence, §16) and tier 2 (Yjs
-   fields in the workspace DO, §17) are both implemented. Remaining: startup
-   replay of queued intents (§7.2's deferred phase).
+   fields in the workspace DO, §17) are both implemented. Startup replay of
+   queued intents *(done, 2026-07-25)*: hydration re-lays restored outbox
+   entries as optimistic overlays (§7.2's startup-replay decision).
 
 ## 13. Open questions (deliberately deferred)
 

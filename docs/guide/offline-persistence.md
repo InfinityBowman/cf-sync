@@ -10,6 +10,7 @@ const client = new SyncClient({ url, workspaceId, app, persist: true })
 
 - **Instant reloads** — the UI hydrates from cache immediately, then resumes from the server *by cursor*: only what changed since the last sync crosses the wire, not a re-bootstrap.
 - **A durable outbox** — mutations made offline survive reloads and replay **exactly once** when connectivity returns. The idempotency contract (per-client `lastMutationId`) makes replay safe: the server skips what it has already processed, no matter how many times a reconnect retries it.
+- **Reloads keep your pending edits visible** — at hydration, each queued mutation's mutator re-runs locally against the cached rows and its optimistic overlay comes back, so what you saw before the reload is what you see after it. The server's verdict still settles each one: a confirm swaps the overlay for the authoritative rows, a rejection rolls it back and reports through [`onMutationRejected`](/guide/mutations#one-handler-instead-of-a-catch-per-call-site).
 - **Honest pending promises** — while offline, `mutate` promises simply stay pending; they resolve when the queued mutation finally confirms. Memory-only clients instead reject with `Timeout` (default 30s), because without a store the mutation wouldn't survive a reload anyway. See [Mutations](/guide/mutations#the-one-semantic-to-internalize).
 
 ## What's managed for you

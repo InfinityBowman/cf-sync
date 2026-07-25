@@ -42,6 +42,8 @@ What resolution looks like depends on whether the client has a durable store:
 
 The memory-only timeout is honest: without a store, a queued mutation would not survive a reload anyway, so the client refuses to pretend otherwise.
 
+A reload doesn't hide queued work either: at hydration each queued mutation's mutator re-runs locally and its optimistic overlay comes back, so pending edits stay visible until the server settles them. (The `mutate` promise itself doesn't survive the reload — [`onMutationRejected`](#one-handler-instead-of-a-catch-per-call-site) is how a post-reload rejection reaches your app.)
+
 Beyond server rejection, a pending mutation can also reject with `Stopped` (`client.destroy()` was called) or `Fatal` (the connection hit a permanent failure — see [Auth & sessions](/guide/auth#close-codes)).
 
 ## Rejection codes
