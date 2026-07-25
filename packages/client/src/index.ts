@@ -9,6 +9,7 @@ export {
   type PresenceApi,
   type SyncClientOptions,
   type SyncFatalCode,
+  type SyncLogger,
   type SyncStatus,
   type TableApplier,
   type TableHooks,
@@ -17,7 +18,9 @@ export {
 } from './client'
 export {
   createCollections,
+  createWorkspace,
   workspaceCollectionOptions,
+  type Workspace,
   type WorkspaceCollectionConfig,
   type WorkspaceCollections,
 } from './collection'
@@ -26,7 +29,6 @@ export {
 // here for browser-only code.
 export {
   AppError,
-  AUTH_CONTEXT,
   CLOSE_AUTH_CONTEXT_INVALID,
   CLOSE_PERMANENT_MAX,
   CLOSE_PERMANENT_MIN,

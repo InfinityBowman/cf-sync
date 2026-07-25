@@ -34,7 +34,7 @@ import type { PersistedOutboxEntry, PersistedRowOp, PersistedState, SyncStore } 
 /**
  * The client's connection lifecycle — one value describing the pipe, not any
  * individual mutation (those settle through `mutate`'s promise and
- * `onMutationRejected`). `idle` is before `start()` and after `stop()`;
+ * `onMutationRejected`). `idle` is before `start()` and after `destroy()`;
  * `connecting` covers hydration and the first socket attempt; `syncing` means
  * the socket is open and catch-up is in flight; `synced` means this
  * connection has caught up (the status holds there between pokes);
@@ -123,7 +123,7 @@ export const RAW_MUTATE = Symbol('cf-sync.rawMutate')
  * rejections ({@link EngineErrorCode}) plus the client-local outcomes:
  *
  * - `Timeout` — memory-only client, unconfirmed past `confirmTimeoutMs`.
- * - `Stopped` — `stop()` was called with the mutation still unconfirmed.
+ * - `Stopped` — `destroy()` was called with the mutation still unconfirmed.
  * - `Fatal` — the client is in (or entered) the fatal state.
  * - `LocalApplyFailed` — the optimistic apply threw a non-`AppError`; nothing
  *   was sent.
@@ -141,12 +141,15 @@ export type MutationErrorCode = EngineErrorCode | 'Timeout' | 'Stopped' | 'Fatal
  * `UnknownMutator`), the client-local outcomes (`Timeout`, `Stopped`,
  * `Fatal`, `LocalApplyFailed`), and app-defined `AppError` codes passed
  * through verbatim — {@link MutationErrorCode} is the full vocabulary.
- * `message` is diagnostic prose; branch on `code`, not on it.
+ * `message` is diagnostic prose; branch on `code`, not on it. `mutation`
+ * carries the rejected mutation's name and args when the client knows them —
+ * an awaiting `catch` gets the same context `onMutationRejected` receives.
  */
 export class MutationError extends Error {
   constructor(
     readonly code: MutationErrorCode | (string & {}),
     message: string,
+    readonly mutation?: { name: string; args: unknown },
   ) {
     super(message)
     this.name = 'MutationError'
@@ -159,6 +162,15 @@ export class MutationError extends Error {
  * server code — only `VersionNotSupported` and `Unauthorized` are ever fatal.
  */
 export type SyncFatalCode = number | 'VersionNotSupported' | 'Unauthorized'
+
+/**
+ * The sink for the client's diagnostics. `message` arrives fully formatted
+ * (including the `[cf-sync]` prefix); `detail` carries any associated error
+ * or payload. The default writes to `console[level]`.
+ */
+export type SyncLogger = (level: 'warn' | 'error', message: string, ...detail: unknown[]) => void
+
+const consoleLogger: SyncLogger = (level, message, ...detail) => console[level](message, ...detail)
 
 // Permanent-rejection protocol: DESIGN.md §15.2.
 /**
@@ -214,7 +226,7 @@ export interface PresenceApi<TIn = unknown, TOut = unknown> {
   readonly self: TOut | null
   /** Synchronous snapshot of peers, self excluded. Stable identity between changes. */
   readonly peers: ReadonlyArray<PresencePeer<TOut>>
-  /** Notifies on any peer change; returns an unsubscribe function. Plugs into `useSyncExternalStore`. */
+  /** Notifies on any peer change and on local `set`/`update`/`clear` (so `self` is reactive too); returns an unsubscribe function. Plugs into `useSyncExternalStore`. */
   subscribe(listener: () => void): () => void
 }
 
@@ -371,13 +383,20 @@ export interface SyncClientOptions<
   autoStart?: boolean
   createSocket?: (url: string) => WebSocketLike
   /**
+   * Where the client's diagnostics go — reconnect/backoff decisions, dropped
+   * frames, persistence failures. Default: the console. Inject to route them
+   * into your own logging (the first place you'll want this is a bug report
+   * whose reconnect behavior you can no longer reproduce).
+   */
+  logger?: SyncLogger
+  /**
    * Memory-only clients (no `store`/`persist`): reject unconfirmed mutations
    * after this long — the mutation is discarded and TanStack DB rolls the
    * optimistic overlay back, which is honest because nothing would survive a
    * reload anyway. Ignored when a durable store is present: a queued mutation
    * survives reloads and still applies when connectivity returns, so the
    * promise stays pending until a connection confirms it (it settles early
-   * only on permanent app error, `stop()`, or a fatal). Default: 30s.
+   * only on permanent app error, `destroy()`, or a fatal). Default: 30s.
    */
   confirmTimeoutMs?: number
   maxBackoffMs?: number
@@ -534,6 +553,11 @@ export class SyncClient<
   readonly #warnedNoApplier = new Set<string>()
   readonly #statusListeners = new Set<(status: SyncStatus) => void>()
   readonly #binaryListeners = new Set<(bytes: Uint8Array) => void>()
+  readonly #rejectionListeners = new Set<(error: MutationError, mutation: { name: string; args: unknown }) => void>()
+
+  #log(level: 'warn' | 'error', message: string, ...detail: unknown[]): void {
+    ;(this.#opts.logger ?? consoleLogger)(level, message, ...detail)
+  }
   #warnedBinaryType = false
   #intentRunner: IntentTransactionRunner | null = null
 
@@ -611,7 +635,7 @@ export class SyncClient<
    * (`persist`/`store`) the promise stays *pending* while offline — the
    * mutation is queued durably and applies when connectivity returns, so a
    * rejection always means the mutation will not apply (permanent app error,
-   * `stop()`, or fatal). Only memory-only clients reject with `Timeout` after
+   * `destroy()`, or fatal). Only memory-only clients reject with `Timeout` after
    * `confirmTimeoutMs`, discarding the mutation along with its overlay.
    */
   readonly mutate: Mutate<M>
@@ -641,7 +665,7 @@ export class SyncClient<
     }
     this.#clientId = opts.clientId ?? defaultClientId(opts.workspaceId)
     this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, this.#clientId)
-    this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId) : undefined)
+    this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId, opts.logger ?? consoleLogger) : undefined)
     this.mutate = buildMutate(Object.keys(opts.app.mutators), (name, args) =>
       this.#guardMutation(name, args, this.#mutateByName(name, args)),
     )
@@ -693,7 +717,7 @@ export class SyncClient<
   }
 
   /** The app definition this client was constructed with. */
-  get app(): AppDefinition<S, M> {
+  get app(): AppDefinition<S, M, P> {
     return this.#opts.app
   }
 
@@ -730,7 +754,7 @@ export class SyncClient<
       this.#startNudgeTimer = setTimeout(() => {
         this.#startNudgeTimer = null
         if (!this.#started && !this.#stopped) {
-          console.warn('[cf-sync] tables are registered but start() was never called — nothing will sync')
+          this.#log('warn', '[cf-sync] tables are registered but start() was never called — nothing will sync')
         }
       }, 5_000)
     }
@@ -789,6 +813,7 @@ export class SyncClient<
     if (this.#started) return
     this.#started = true
     this.#clearStartNudge()
+    this.#listenForWake(true)
     this.#setStatus('connecting')
     const store = this.#store
     if (store) {
@@ -806,16 +831,15 @@ export class SyncClient<
   }
 
   /**
-   * Stops syncing: closes the socket, cancels timers, and rejects every
-   * unconfirmed `mutate` promise with `Stopped`. The durable outbox is NOT
-   * discarded — queued mutations survive and replay when a future client for
-   * this workspace hydrates the same store. Terminal: a stopped client cannot
-   * be restarted; for full teardown (collections, the store connection) use
-   * {@link destroy}, and construct a new SyncClient to reconnect.
+   * The synchronous half of {@link destroy}: closes the socket, cancels
+   * timers, and rejects every unconfirmed `mutate` promise with `Stopped`.
+   * The durable outbox is NOT discarded — queued mutations survive and
+   * replay when a future client for this workspace hydrates the same store.
    */
-  stop(): void {
+  #shutdown(): void {
     this.#stopped = true
     this.#clearStartNudge()
+    this.#listenForWake(false)
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer)
     if (this.#retryPushTimer) clearTimeout(this.#retryPushTimer)
     this.#stopHeartbeat()
@@ -828,10 +852,39 @@ export class SyncClient<
       // already closed
     }
     for (const entry of [...this.#outbox]) {
-      this.#settleEntry(entry, new MutationError('Stopped', 'sync client stopped'))
+      this.#settleEntry(entry, new MutationError('Stopped', 'sync client stopped', { name: entry.name, args: entry.args }))
     }
     this.#outbox = []
     this.#setStatus('idle')
+  }
+
+  /**
+   * Reconnect the moment the environment says connectivity is back: without
+   * this, a capped-backoff timer can sit out ~30s on a fine network after a
+   * laptop reopens. Listens to `online` and `visibilitychange` where a
+   * browser environment provides them; a no-op elsewhere.
+   */
+  readonly #wake = (): void => {
+    if (this.#stopped || this.#status !== 'reconnecting') return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    if (typeof navigator !== 'undefined' && 'onLine' in navigator && navigator.onLine === false) return
+    if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer)
+    this.#reconnectTimer = null
+    this.#connect()
+  }
+
+  #listenForWake(on: boolean): void {
+    const g = globalThis as {
+      addEventListener?: (type: string, cb: () => void) => void
+      removeEventListener?: (type: string, cb: () => void) => void
+    }
+    if (on) {
+      g.addEventListener?.('online', this.#wake)
+      if (typeof document !== 'undefined') document.addEventListener?.('visibilitychange', this.#wake)
+    } else {
+      g.removeEventListener?.('online', this.#wake)
+      if (typeof document !== 'undefined') document.removeEventListener?.('visibilitychange', this.#wake)
+    }
   }
 
   /**
@@ -848,33 +901,36 @@ export class SyncClient<
   }
 
   /**
-   * Full teardown, idempotent: {@link stop}s syncing, runs every
-   * {@link onDestroy} callback (collections from `createCollections` clean up
-   * here), and closes the store's connection when it has a `close`. The
-   * instance is inert afterwards — `start()` throws, `mutate` rejects with
-   * `Stopped` — and constructing a fresh SyncClient (plus fresh collections)
-   * for the same or another workspace is the supported way to (re)connect:
-   * the pattern for workspace-per-project apps switching projects. State is
-   * not lost: the durable store keeps its rows and outbox for the next
-   * client, and this tab's managed clientId is reused, so mutations queued
-   * offline still replay exactly once.
+   * The one teardown, idempotent. Synchronously: closes the socket, cancels
+   * timers, and rejects every unconfirmed `mutate` promise with `Stopped`
+   * (all before the first await, so fire-and-forget `void client.destroy()`
+   * is safe in unload paths). Then: runs every {@link onDestroy} callback
+   * (collections from `createCollections` clean up here) and closes the
+   * store's connection when it has a `close`. The instance is inert
+   * afterwards — `start()` throws, `mutate` rejects with `Stopped` — and
+   * constructing a fresh SyncClient (plus fresh collections) for the same or
+   * another workspace is the supported way to (re)connect: the pattern for
+   * workspace-per-project apps switching projects. State is not lost: the
+   * durable store keeps its rows and outbox for the next client, and this
+   * tab's managed clientId is reused, so mutations queued offline still
+   * replay exactly once.
    */
   async destroy(): Promise<void> {
     if (this.#destroyed) return
     this.#destroyed = true
-    this.stop()
+    this.#shutdown()
     for (const callback of [...this.#teardown]) {
       try {
         await callback()
       } catch (err) {
-        console.warn('[cf-sync] a destroy callback failed', err)
+        this.#log('warn', '[cf-sync] a destroy callback failed', err)
       }
     }
     this.#teardown.clear()
     try {
       await this.#store?.close?.()
     } catch (err) {
-      console.warn('[cf-sync] failed to close the sync store', err)
+      this.#log('warn', '[cf-sync] failed to close the sync store', err)
     }
   }
 
@@ -891,7 +947,7 @@ export class SyncClient<
     try {
       state = await store.load()
     } catch (err) {
-      console.warn('[cf-sync] failed to load persisted state; bootstrapping fresh', err)
+      this.#log('warn', '[cf-sync] failed to load persisted state; bootstrapping fresh', err)
       return
     }
     if (!state || this.#stopped) return
@@ -901,7 +957,7 @@ export class SyncClient<
       try {
         await store.reset()
       } catch (err) {
-        console.warn('[cf-sync] failed to reset persisted state', err)
+        this.#log('warn', '[cf-sync] failed to reset persisted state', err)
       }
       return
     }
@@ -949,31 +1005,51 @@ export class SyncClient<
    * callers observe the identical rejection.
    */
   #guardMutation(name: string, args: unknown, promise: Promise<void>): Promise<void> {
-    if (this.#opts.onMutationRejected) {
+    if (this.#opts.onMutationRejected || this.#rejectionListeners.size > 0) {
       promise.catch((err: unknown) => this.#notifyRejected(err, name, args))
     }
     return promise
   }
 
+  /**
+   * Subscribes to permanent mutation rejections — the attach-later
+   * counterpart to the `onMutationRejected` constructor option, for layers
+   * that mount after the client exists (a toast system, an error boundary).
+   * Same payload and same "considered handled" semantics: a mutation issued
+   * while at least one listener (or the constructor option) is attached has
+   * its rejection routed here instead of tripping unhandled-rejection
+   * reporting. Both surfaces fire when both are set. Returns an unsubscribe
+   * function.
+   */
+  onMutationRejected(listener: (error: MutationError, mutation: { name: string; args: unknown }) => void): () => void {
+    this.#rejectionListeners.add(listener)
+    return () => {
+      this.#rejectionListeners.delete(listener)
+    }
+  }
+
   #notifyRejected(err: unknown, name: string, args: unknown): void {
-    const hook = this.#opts.onMutationRejected
-    if (!hook || !(err instanceof MutationError)) return
-    try {
-      hook(err, { name, args })
-    } catch (hookErr) {
-      console.error('[cf-sync] onMutationRejected threw', hookErr)
+    if (!(err instanceof MutationError)) return
+    const mutation = { name, args }
+    const option = this.#opts.onMutationRejected
+    for (const hook of option ? [option, ...this.#rejectionListeners] : [...this.#rejectionListeners]) {
+      try {
+        hook(err, mutation)
+      } catch (hookErr) {
+        this.#log('error', '[cf-sync] onMutationRejected threw', hookErr)
+      }
     }
   }
 
   /** The runtime behind both forms of `mutate` (see the property's docs). */
   #mutateByName(name: string, args: unknown): Promise<void> {
     if (this.#status === 'fatal') {
-      return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
+      return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state', { name, args }))
     }
     const def = (this.#opts.app.mutators as AnyMutators)[name]
     if (!def) {
       return Promise.reject(
-        new MutationError('UnknownMutator', `no mutator named "${name}" in the app passed to SyncClient`),
+        new MutationError('UnknownMutator', `no mutator named "${name}" in the app passed to SyncClient`, { name, args }),
       )
     }
     let applyArgs: unknown = args
@@ -987,7 +1063,7 @@ export class SyncClient<
       }
       if (result.issues) {
         return Promise.reject(
-          new MutationError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`),
+          new MutationError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`, { name, args }),
         )
       }
       // The local run mirrors the server: apply sees the parsed args.
@@ -1016,11 +1092,11 @@ export class SyncClient<
       // server rejection too (mutators must reserve throws for genuine
       // invariant violations, not "row not synced yet" races).
       if (err instanceof AppError) {
-        return Promise.reject(new MutationError(err.code, err.message))
+        return Promise.reject(new MutationError(err.code, err.message, { name, args }))
       }
       const detail = err instanceof Error ? err.message : String(err)
       return Promise.reject(
-        new MutationError('LocalApplyFailed', `mutator "${name}" threw during local apply: ${detail}`),
+        new MutationError('LocalApplyFailed', `mutator "${name}" threw during local apply: ${detail}`, { name, args }),
       )
     }
     if (writes.isEmpty()) return this.#enqueue(name, args)
@@ -1042,12 +1118,12 @@ export class SyncClient<
 
   #rawMutate(name: string, args: unknown): Promise<void> {
     if (this.#status === 'fatal') {
-      return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
+      return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state', { name, args }))
     }
     const def = (this.#opts.app.mutators as AnyMutators)[name]
     if (!def) {
       return Promise.reject(
-        new MutationError('UnknownMutator', `no mutator named "${name}" in the app passed to SyncClient`),
+        new MutationError('UnknownMutator', `no mutator named "${name}" in the app passed to SyncClient`, { name, args }),
       )
     }
     if (def.args) {
@@ -1056,7 +1132,7 @@ export class SyncClient<
         void result.catch(() => {})
       } else if (result.issues) {
         return Promise.reject(
-          new MutationError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`),
+          new MutationError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`, { name, args }),
         )
       }
     }
@@ -1080,7 +1156,7 @@ export class SyncClient<
   #warnNoApplier(mutator: string, tbl: string): void {
     if (this.#warnedNoApplier.has(tbl)) return
     this.#warnedNoApplier.add(tbl)
-    console.warn(
+    this.#log('warn', 
       `[cf-sync] mutator "${mutator}" touched table "${tbl}" which has no attached collection — ` +
         `the mutation still applies on the server, but without a local optimistic effect. ` +
         `Create the table's collection (createCollections covers every schema table) to restore it.`,
@@ -1090,12 +1166,12 @@ export class SyncClient<
   /** Queues a validated mutation; resolves/rejects on server confirm (the LMID contract). */
   #enqueue(name: string, args: unknown): Promise<void> {
     if (this.#status === 'fatal') {
-      return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state'))
+      return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state', { name, args }))
     }
     if (this.#stopped) {
       // Post-stop mutations would queue forever with no connection to drain
       // them; reject honestly instead (TanStack rolls back the optimistic write).
-      return Promise.reject(new MutationError('Stopped', 'sync client stopped'))
+      return Promise.reject(new MutationError('Stopped', 'sync client stopped', { name, args }))
     }
     return new Promise<void>((resolve, reject) => {
       const entry: OutboxEntry = { id: null, name, args, resolve, reject, timer: null, settled: false }
@@ -1107,7 +1183,10 @@ export class SyncClient<
         // failure that isn't one, so the promise stays pending instead.
         const timeoutMs = this.#opts.confirmTimeoutMs ?? 30_000
         entry.timer = setTimeout(() => {
-          this.#settleEntry(entry, new MutationError('Timeout', `mutation "${name}" unconfirmed after ${timeoutMs}ms`))
+          this.#settleEntry(
+            entry,
+            new MutationError('Timeout', `mutation "${name}" unconfirmed after ${timeoutMs}ms`, { name, args }),
+          )
         }, timeoutMs)
       }
       this.#outbox.push(entry)
@@ -1147,7 +1226,7 @@ export class SyncClient<
         },
         (err) => {
           if (this.#stopped || epoch !== this.#connectEpoch) return
-          console.warn('[cf-sync] authToken provider failed; retrying', err)
+          this.#log('warn', '[cf-sync] authToken provider failed; retrying', err)
           this.#socket = null
           this.#scheduleReconnect()
         },
@@ -1171,7 +1250,7 @@ export class SyncClient<
       // and some CSP blocks. Treat it as an instant disconnect — an uncaught
       // throw here (especially from the reconnect timer) would kill the
       // reconnect loop permanently.
-      console.warn('[cf-sync] failed to create socket; retrying', err)
+      this.#log('warn', '[cf-sync] failed to create socket; retrying', err)
       this.#socket = null
       this.#scheduleReconnect()
       return
@@ -1332,7 +1411,7 @@ export class SyncClient<
       // async Blob reads would break frame ordering, so surface the fix.
       if (!this.#warnedBinaryType) {
         this.#warnedBinaryType = true
-        console.warn(
+        this.#log('warn', 
           "[cf-sync] dropped a binary frame that was not an ArrayBuffer — set binaryType = 'arraybuffer' on the socket your createSocket returns",
         )
       }
@@ -1344,7 +1423,7 @@ export class SyncClient<
       try {
         listener(bytes)
       } catch (err) {
-        console.error('[cf-sync] onBinary listener threw', err)
+        this.#log('error', '[cf-sync] onBinary listener threw', err)
       }
     }
   }
@@ -1522,7 +1601,7 @@ export class SyncClient<
           confirmedLmid: this.#confirmedLmid,
           outbox: this.#outboxSnapshot(),
         })
-        .catch((err) => console.warn('[cf-sync] failed to persist poke', err))
+        .catch((err) => this.#log('warn', '[cf-sync] failed to persist poke', err))
     }
   }
 
@@ -1545,7 +1624,7 @@ export class SyncClient<
         // Local validation should have caught this — reaching here means
         // client/server schema skew (mid-deploy) or a bug. Not worth a
         // reconnect: presence self-heals on the next set.
-        console.warn(`[cf-sync] server rejected presence state: ${msg.message ?? 'PresenceInvalid'}`)
+        this.#log('warn', `[cf-sync] server rejected presence state: ${msg.message ?? 'PresenceInvalid'}`)
         break
       case 'BadMessage':
       case 'Internal':
@@ -1587,7 +1666,12 @@ export class SyncClient<
     for (const entry of [...this.#outbox]) {
       if (entry.id !== null && entry.id <= this.#confirmedLmid) {
         const error = errorById.get(entry.id)
-        this.#settleEntry(entry, error ? new MutationError(error.code, error.message) : undefined)
+        this.#settleEntry(
+          entry,
+          error
+            ? new MutationError(error.code, error.message, { name: entry.name, args: entry.args })
+            : undefined,
+        )
       }
     }
   }
@@ -1633,7 +1717,7 @@ export class SyncClient<
       if (this.#stopped) return
       void store
         .saveOutbox(this.#outboxSnapshot(), this.#confirmedLmid)
-        .catch((err) => console.warn('[cf-sync] failed to persist outbox', err))
+        .catch((err) => this.#log('warn', '[cf-sync] failed to persist outbox', err))
     })
   }
 
@@ -1698,6 +1782,9 @@ export class SyncClient<
     }
     this.#presenceState = state
     this.#schedulePresenceSend()
+    // Local changes notify too: a component rendering `presence.self` must
+    // re-render when another component calls set/update/clear.
+    this.#notifyPresence()
   }
 
   #presenceUpdate(partial: unknown): void {
@@ -1817,13 +1904,13 @@ export class SyncClient<
     }
     this.#socket = null
     if (this.#opts.onFatal) this.#opts.onFatal(error)
-    else defaultFatalRecovery(this.#opts.workspaceId, error)
+    else defaultFatalRecovery(this.#opts.workspaceId, error, this.#opts.logger ?? consoleLogger)
   }
 
   #warnUnregistered(tbl: string): void {
     if (this.#warnedTables.has(tbl)) return
     this.#warnedTables.add(tbl)
-    console.warn(`[cf-sync] dropping synced data for unregistered table "${tbl}"`)
+    this.#log('warn', `[cf-sync] dropping synced data for unregistered table "${tbl}"`)
   }
 }
 
@@ -1987,9 +2074,9 @@ const FATAL_RELOAD_MIN_INTERVAL_MS = 60_000
  * of a reload loop. Outside the browser there is nothing to reload; the
  * client just stays stopped in 'fatal'.
  */
-function defaultFatalRecovery(workspaceId: string, error: Error): void {
+function defaultFatalRecovery(workspaceId: string, error: Error, log: SyncLogger): void {
   if (typeof location === 'undefined') {
-    console.warn('[cf-sync] fatal, and no onFatal handler to recover:', error)
+    log('warn', '[cf-sync] fatal, and no onFatal handler to recover:', error)
     return
   }
   const key = `cf-sync:fatal-reload:${encodeURIComponent(workspaceId)}`
@@ -2000,7 +2087,7 @@ function defaultFatalRecovery(workspaceId: string, error: Error): void {
     // storage blocked: fall through with 0 — reloading is still the best move
   }
   if (Date.now() - lastReloadAt < FATAL_RELOAD_MIN_INTERVAL_MS) {
-    console.warn(
+    log('warn', 
       '[cf-sync] fatal again within a minute of reloading — waiting instead of looping (deploy skew?):',
       error,
     )
@@ -2011,15 +2098,15 @@ function defaultFatalRecovery(workspaceId: string, error: Error): void {
   } catch {
     // best effort; without storage the throttle just resets per load
   }
-  console.warn('[cf-sync] fatal; reloading to pick up the current bundle:', error)
+  log('warn', '[cf-sync] fatal; reloading to pick up the current bundle:', error)
   location.reload()
 }
 
-function createDefaultStore(workspaceId: string, clientId: string): SyncStore | undefined {
+function createDefaultStore(workspaceId: string, clientId: string, log: SyncLogger): SyncStore | undefined {
   try {
     return new IndexedDBSyncStore({ workspaceId, clientId })
   } catch (err) {
-    console.warn('[cf-sync] persist: true, but IndexedDB is unavailable — continuing without local persistence', err)
+    log('warn', '[cf-sync] persist: true, but IndexedDB is unavailable — continuing without local persistence', err)
     return undefined
   }
 }

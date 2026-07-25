@@ -71,13 +71,13 @@ describe('definition traps surfaced early', () => {
     expect(() => (client.presence as { set(s: unknown): void }).set({ name: 'ada' })).toThrow(
       /parse its own output.*no transform/s,
     )
-    client.stop()
+    void client.destroy()
   })
 
   it('update() before any presence exists names the mount-order cause and the initialPresence fix', () => {
     const { client } = makeClient() // presenceApp requires `name`
     expect(() => client.presence.update({ cursor: { x: 1, y: 2 } })).toThrow(/mount-order.*initialPresence/s)
-    client.stop()
+    void client.destroy()
   })
 })
 
@@ -86,14 +86,14 @@ describe('presence.set', () => {
     const { client } = makeClient(testApp)
     expect(() => (client.presence as { set(s: unknown): void }).set({ name: 'a' })).toThrow(/no presence schema/)
     expect(() => client.presence.clear()).toThrow(/no presence schema/)
-    client.stop()
+    void client.destroy()
   })
 
   it('fails fast on state that fails the schema, and on oversized state', () => {
     const { client } = makeClient()
     expect(() => (client.presence as { set(s: unknown): void }).set({ name: 42 })).toThrow(/presence schema/)
     expect(() => client.presence.set({ name: 'x'.repeat(9_000) })).toThrow(/exceeds/)
-    client.stop()
+    void client.destroy()
   })
 
   it('state set before the connection is live is announced on presencePeers receipt', () => {
@@ -101,7 +101,7 @@ describe('presence.set', () => {
     client.presence.set({ name: 'early' })
     const socket = goLive(client, latest)
     expect(sentPresence(socket)).toEqual([{ name: 'early' }])
-    client.stop()
+    void client.destroy()
   })
 
   it('throttles trailing-edge: rapid sets produce one immediate and one trailing frame with the latest state', () => {
@@ -122,7 +122,7 @@ describe('presence.set', () => {
     vi.advanceTimersByTime(100)
     client.presence.set({ name: 'd' })
     expect(sentPresence(socket)).toEqual([{ name: 'a' }, { name: 'c' }, { name: 'd' }])
-    client.stop()
+    void client.destroy()
   })
 
   it('clear sends null', () => {
@@ -133,7 +133,7 @@ describe('presence.set', () => {
     client.presence.clear()
     vi.advanceTimersByTime(100)
     expect(sentPresence(socket)).toEqual([{ name: 'a' }, null])
-    client.stop()
+    void client.destroy()
   })
 
   it('update shallow-merges into the current state and validates the merged result', () => {
@@ -155,7 +155,7 @@ describe('presence.set', () => {
       { name: 'ada', cursor: { x: 1, y: 2 } },
       { name: 'ada' },
     ])
-    client.stop()
+    void client.destroy()
   })
 
   it('self exposes the parsed last-set state, and null when unset or cleared', () => {
@@ -169,7 +169,7 @@ describe('presence.set', () => {
     expect(client.presence.self).toEqual({ name: 'ada', cursor: { x: 3, y: 4 } })
     client.presence.clear()
     expect(client.presence.self).toBeNull()
-    client.stop()
+    void client.destroy()
   })
 
   it('re-sends the current state on presencePoll', () => {
@@ -179,7 +179,7 @@ describe('presence.set', () => {
     socket.sent = []
     socket.receive({ type: 'presencePoll' })
     expect(sentPresence(socket)).toEqual([{ name: 'a' }])
-    client.stop()
+    void client.destroy()
   })
 })
 
@@ -189,7 +189,7 @@ describe('initialPresence', () => {
     expect(client.presence.self).toEqual({ name: 'ada' })
     const socket = goLive(client, latest)
     expect(sentPresence(socket)).toEqual([{ name: 'ada' }])
-    client.stop()
+    void client.destroy()
   })
 
   it('makes update-before-set a non-event instead of a mount-order race', () => {
@@ -199,7 +199,7 @@ describe('initialPresence', () => {
     client.presence.update({ cursor: { x: 1, y: 2 } })
     const socket = goLive(client, latest)
     expect(sentPresence(socket)).toEqual([{ name: 'ada', cursor: { x: 1, y: 2 } }])
-    client.stop()
+    void client.destroy()
   })
 
   it('is validated at construction, like authContext', () => {
@@ -239,7 +239,7 @@ describe('presence.peers', () => {
     socket.receive({ type: 'presence', clientId: 'peer-9', state: null })
     expect(seen).toEqual([2, 1])
     unsubscribe()
-    client.stop()
+    void client.destroy()
   })
 
   it('resets to empty on disconnect and re-announces own state on the next connection', async () => {
@@ -263,6 +263,26 @@ describe('presence.peers', () => {
     next.receive({ type: 'presencePeers', peers: [] })
     expect(sentPresence(next)).toEqual([{ name: 'me' }])
     await flushMicrotasks()
-    client.stop()
+    void client.destroy()
+  })
+})
+
+describe('presence.self reactivity', () => {
+  it('local set/update/clear notify subscribers, so self is renderable reactively', () => {
+    const { client, latest } = makeClient(presenceApp)
+    client.start()
+    goLive(client, latest)
+    let notified = 0
+    client.presence.subscribe(() => notified++)
+
+    client.presence.set({ name: 'ada' })
+    expect(notified).toBe(1)
+    expect(client.presence.self).toMatchObject({ name: 'ada' })
+    client.presence.update({ cursor: { x: 1, y: 2 } })
+    expect(notified).toBe(2)
+    client.presence.clear()
+    expect(notified).toBe(3)
+    expect(client.presence.self).toBeNull()
+    void client.destroy()
   })
 })

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type * as Y from 'yjs'
-import type { YjsFieldHandle, YjsFields } from './client'
+import type { WriteBlockedReason, YjsFieldHandle, YjsFields } from './client'
 
 /**
  * What {@link useYjsField} returns — discriminated on `synced` so the
@@ -10,7 +10,9 @@ import type { YjsFieldHandle, YjsFields } from './client'
  *   just switched fields). Render a placeholder; `doc`/`text` are null.
  * - `synced: true` — `doc`, `text`, and `canWrite` are live. `canWrite`
  *   updates reactively (the server's writable flag, or a REJECT flipping it
- *   off); bind `text` (or `doc`) to your editor.
+ *   off), and `writeBlocked` says why it is false — render "document is
+ *   full" (`TooLarge`/`LocalTooLarge`) differently from "no edit access"
+ *   (`NotWritable`/`Frozen`). Bind `text` (or `doc`) to your editor.
  */
 export type YjsFieldState =
   | {
@@ -19,6 +21,7 @@ export type YjsFieldState =
       readonly doc: null
       readonly text: null
       readonly canWrite: false
+      readonly writeBlocked: null
     }
   | {
       readonly synced: true
@@ -26,9 +29,17 @@ export type YjsFieldState =
       readonly doc: Y.Doc
       readonly text: Y.Text
       readonly canWrite: boolean
+      readonly writeBlocked: WriteBlockedReason | null
     }
 
-const UNSYNCED: YjsFieldState = { synced: false, handle: null, doc: null, text: null, canWrite: false }
+const UNSYNCED: YjsFieldState = {
+  synced: false,
+  handle: null,
+  doc: null,
+  text: null,
+  canWrite: false,
+  writeBlocked: null,
+}
 
 /** What one mounted hook instance last published, keyed by what it was for. */
 interface Snap {
@@ -76,14 +87,22 @@ export function useYjsField(fields: YjsFields, fieldId: string): YjsFieldState {
           prev.fieldId === fieldId &&
           prev.state.synced &&
           prev.state.handle === handle &&
-          prev.state.canWrite === handle.canWrite
+          prev.state.canWrite === handle.canWrite &&
+          prev.state.writeBlocked === handle.writeBlocked
         ) {
           return prev
         }
         return {
           fields,
           fieldId,
-          state: { synced: true, handle, doc: handle.doc, text: handle.text, canWrite: handle.canWrite },
+          state: {
+            synced: true,
+            handle,
+            doc: handle.doc,
+            text: handle.text,
+            canWrite: handle.canWrite,
+            writeBlocked: handle.writeBlocked,
+          },
         }
       })
     }

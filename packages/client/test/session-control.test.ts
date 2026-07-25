@@ -305,3 +305,32 @@ describe('the authToken option', () => {
     expect(() => tokenClient(undefined, 'ws://test?token=abc')).toThrow(/authToken/)
   })
 })
+
+describe('wake-on-online', () => {
+  it("the 'online' event cancels the backoff timer and reconnects immediately", async () => {
+    vi.useFakeTimers()
+    const wakeTarget = new EventTarget()
+    vi.stubGlobal('addEventListener', wakeTarget.addEventListener.bind(wakeTarget))
+    vi.stubGlobal('removeEventListener', wakeTarget.removeEventListener.bind(wakeTarget))
+    try {
+      const { client, sockets, latest } = makeClient()
+      client.start()
+      latest().open()
+      bootstrap(latest())
+      latest().serverClose(1006, 'network gone') // transient: schedules backoff
+      expect(client.status).toBe('reconnecting')
+      const socketsBefore = sockets.length
+
+      wakeTarget.dispatchEvent(new Event('online'))
+      expect(sockets.length).toBe(socketsBefore + 1) // reconnected without waiting out the timer
+      void client.destroy()
+
+      // After destroy, the listener is removed: no zombie reconnects.
+      wakeTarget.dispatchEvent(new Event('online'))
+      expect(sockets.length).toBe(socketsBefore + 1)
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+})

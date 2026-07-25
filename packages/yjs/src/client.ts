@@ -6,10 +6,24 @@ import {
   MAX_FIELD_ID_BYTES,
   MAX_FIELD_UPDATE_BYTES,
   decodeFieldFrame,
+  decodeFieldReject,
   decodeFieldState,
   encodeFieldFrame,
+  type FieldRejectReason,
 } from '@cf-sync/protocol/internal'
 import * as Y from 'yjs'
+
+/**
+ * Why a field is not writable right now — `null` while writable (or before
+ * the first `STATE`, when nothing is known yet). The server-sent reasons:
+ * `NotWritable` (this client lacks write access), `Frozen` (the field is
+ * administratively frozen), `TooLarge` (the server refused an oversized
+ * update). `LocalTooLarge` is the client-side frame guard: an update
+ * exceeded `MAX_FIELD_UPDATE_BYTES` before ever being sent. Render the
+ * difference — "you can't edit this" and "this document is full" deserve
+ * different UI.
+ */
+export type WriteBlockedReason = FieldRejectReason | 'LocalTooLarge'
 
 /**
  * Maximum size in bytes of a single field update frame — an update larger
@@ -66,6 +80,12 @@ export interface YjsFieldHandle {
    */
   readonly canWrite: boolean
   /**
+   * Why `canWrite` is false — see {@link WriteBlockedReason}. `null` while
+   * writable or before the first `STATE`. Sticky rejections keep their
+   * reason for the handle's lifetime.
+   */
+  readonly writeBlocked: WriteBlockedReason | null
+  /**
    * Resolves on the first `STATE` and stays resolved — it answers "can I
    * render this field", not "am I currently live"; liveness is the client's
    * sync status.
@@ -103,6 +123,7 @@ interface Entry {
   canWrite: boolean
   /** Sticky refusal: a REJECT (or local frame-guard trip) outlives later STATEs. */
   rejected: boolean
+  writeBlocked: WriteBlockedReason | null
   synced: boolean
   resolveSynced: () => void
   whenSynced: Promise<void>
@@ -145,10 +166,11 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
       // paved place to prevent this is the editor binding's own paste/length
       // guard (MAX_FIELD_UPDATE_BYTES is exported for exactly that).
       entry.rejected = true
+      entry.writeBlocked = 'LocalTooLarge'
       if (entry.canWrite) {
         entry.canWrite = false
-        notify(entry)
       }
+      notify(entry)
       console.warn(
         `[cf-sync/yjs] field "${entry.fieldId}" produced an update over ${MAX_FIELD_UPDATE_BYTES} bytes ` +
           `(a paste, or an offline backlog merged by the push-back) — the field is now read-only ` +
@@ -185,8 +207,12 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
       }
       const wasWritable = entry.canWrite
       const wasSynced = entry.synced
+      const wasBlocked = entry.writeBlocked
       // Sticky rejection wins over the server's writable flag (see canWrite docs).
       entry.canWrite = state.writable && !entry.rejected
+      // A sticky rejection keeps its reason; otherwise the STATE's writable
+      // flag is the source of truth (`NotWritable` = no write access).
+      if (!entry.rejected) entry.writeBlocked = state.writable ? null : 'NotWritable'
       entry.synced = true
       if (entry.canWrite) {
         // The push-back leg (§17.3): everything the server's state vector is
@@ -202,17 +228,20 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
           console.warn(`[cf-sync/yjs] failed to compute push-back for field "${frame.fieldId}"`, err)
         }
       }
-      if (entry.canWrite !== wasWritable || !wasSynced) notify(entry)
+      if (entry.canWrite !== wasWritable || entry.writeBlocked !== wasBlocked || !wasSynced) notify(entry)
       entry.resolveSynced()
       return
     }
 
     if (frame.msgType === FIELD_MSG_REJECT) {
       entry.rejected = true
+      // The server says why (NotWritable / Frozen / TooLarge); surface it so
+      // the app can render "document is full" differently from "no access".
+      entry.writeBlocked = decodeFieldReject(frame.payload) ?? 'NotWritable'
       if (entry.canWrite) {
         entry.canWrite = false
-        notify(entry)
       }
+      notify(entry)
     }
   }
 
@@ -258,6 +287,7 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
           refs: 0,
           canWrite: false,
           rejected: false,
+          writeBlocked: null,
           synced: false,
           resolveSynced,
           whenSynced,
@@ -284,6 +314,9 @@ export function createYjsFields(client: YjsFieldsClient): YjsFields {
         text: held.doc.getText(TEXT_KEY),
         get canWrite() {
           return held.canWrite
+        },
+        get writeBlocked() {
+          return held.writeBlocked
         },
         whenSynced: held.whenSynced,
         subscribe(listener: () => void): () => void {

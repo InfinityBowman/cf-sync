@@ -69,12 +69,13 @@ describe('onMutationRejected', () => {
     const pending = client.mutate('sync.put', args)
     await flushMicrotasks()
     rejectMutation(socket, 1, 'Nope', 'server said no')
+    await flushMicrotasks()
 
     await expect(pending).rejects.toThrow(MutationError)
     expect(rejections).toHaveLength(1)
     expect(rejections[0]).toMatchObject({ name: 'sync.put', args })
     expect(rejections[0]!.error.code).toBe('Nope')
-    client.stop()
+    void client.destroy()
   })
 
   it('makes fire-and-forget safe: an uncaught mutate call reports here, not as an unhandled rejection', async () => {
@@ -93,7 +94,7 @@ describe('onMutationRejected', () => {
 
     expect(rejections).toHaveLength(1)
     expect(rejections[0]!.error.code).toBe('ReadOnly')
-    client.stop()
+    void client.destroy()
     await flushMicrotasks()
   })
 
@@ -141,7 +142,7 @@ describe('onMutationRejected', () => {
       args: { tbl: 'todos', id: 't1', data: { title: 'offline' } },
     })
     expect(second.rejections[0]!.error.code).toBe('Conflict')
-    second.client.stop()
+    void second.client.destroy()
   })
 
   it('a throwing hook is contained: the caller still gets the rejection', async () => {
@@ -162,6 +163,64 @@ describe('onMutationRejected', () => {
 
     await expect(pending).rejects.toThrow(MutationError)
     expect(consoleError).toHaveBeenCalledWith('[cf-sync] onMutationRejected threw', expect.any(Error))
-    client.stop()
+    void client.destroy()
+  })
+})
+
+describe('client.onMutationRejected (subscription form)', () => {
+  it('a listener attached after construction receives rejections, with unsubscribe', async () => {
+    const { client, latest } = makeClient({ onMutationRejected: undefined })
+    const seen: Rejection[] = []
+    const unsubscribe = client.onMutationRejected((error, { name, args }) => seen.push({ error, name, args }))
+    client.start()
+    const socket = latest()
+    socket.open()
+    bootstrap(socket)
+
+    const args = { tbl: 'todos', id: 't1', data: { title: 'x' } }
+    void client.mutate('sync.put', args).catch(() => {})
+    await flushMicrotasks()
+    rejectMutation(socket, 1, 'Nope', 'server said no')
+    await flushMicrotasks()
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ name: 'sync.put', args })
+    expect(seen[0]!.error.mutation).toEqual({ name: 'sync.put', args })
+
+    unsubscribe()
+    void client.mutate('sync.put', args).catch(() => {})
+    await flushMicrotasks()
+    rejectMutation(socket, 2, 'Nope', 'again')
+    await flushMicrotasks()
+    expect(seen).toHaveLength(1) // unsubscribed: no second delivery
+    void client.destroy()
+  })
+
+  it('constructor option and subscription both fire when both are set', async () => {
+    const { client, rejections, latest } = makeClient()
+    const seen: Rejection[] = []
+    client.onMutationRejected((error, { name, args }) => seen.push({ error, name, args }))
+    client.start()
+    const socket = latest()
+    socket.open()
+    bootstrap(socket)
+
+    void client.mutate('sync.put', { tbl: 'todos', id: 't1', data: {} }).catch(() => {})
+    await flushMicrotasks()
+    rejectMutation(socket, 1, 'Nope', 'no')
+    await flushMicrotasks()
+    expect(rejections).toHaveLength(1)
+    expect(seen).toHaveLength(1)
+    void client.destroy()
+  })
+})
+
+describe('MutationError.mutation', () => {
+  it('an awaiting caller gets the mutation name and args on the error itself', async () => {
+    const { client } = makeClient({ onMutationRejected: undefined })
+    const err = await client.mutate('no.such.mutator' as never).catch((e: MutationError) => e)
+    expect(err).toBeInstanceOf(MutationError)
+    expect((err as MutationError).mutation?.name).toBe('no.such.mutator')
+    void client.destroy()
   })
 })

@@ -319,7 +319,7 @@ describe('destroy and teardown', () => {
     const socket = latest()
     socket.open()
     bootstrap(socket)
-    client.stop()
+    void client.destroy()
     await expect(
       client.mutate('sync.put', { tbl: 'todos', id: 't1', data: { id: 't1' } }),
     ).rejects.toMatchObject({ code: 'Stopped' })

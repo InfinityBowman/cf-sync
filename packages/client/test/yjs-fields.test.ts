@@ -1,9 +1,11 @@
 import {
   FIELD_MSG_GET,
+  FIELD_MSG_REJECT,
   FIELD_MSG_STATE,
   FIELD_MSG_UPDATE,
   decodeFieldFrame,
   encodeFieldFrame,
+  encodeFieldReject,
   encodeFieldState,
 } from '@cf-sync/protocol/internal'
 import { createYjsFields } from '@cf-sync/yjs/client'
@@ -95,6 +97,120 @@ describe('createYjsFields over a real SyncClient', () => {
 
     handle.release()
     yfields.destroy()
-    client.stop()
+    void client.destroy()
+  })
+
+  it('surfaces the rejection reason: writeBlocked distinguishes "full" from "no access"', async () => {
+    const sockets: FakeSocket[] = []
+    const client = new SyncClient({
+      url: 'ws://test',
+      workspaceId: 'w1',
+      clientId: 'client-a',
+      autoStart: false,
+      app: testApp,
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    const latest = () => sockets[sockets.length - 1]!
+    const yfields = createYjsFields(client)
+    const handle = yfields.getDoc('notes:q3')
+    expect(handle.writeBlocked).toBeNull() // nothing known pre-STATE
+
+    client.start()
+    latest().open()
+    const pokeId = 'poke-1'
+    latest().receive({ type: 'pokeStart', pokeId, baseCursor: null })
+    latest().receive({ type: 'pokePart', pokeId, patch: [{ op: 'clear' }], lastMutationIdChanges: { 'client-a': 0 } })
+    latest().receive({ type: 'pokeEnd', pokeId, cursor: { backendId: 'b1', version: 1 }, pageInfo: { more: false } })
+
+    const serverDoc = new Y.Doc()
+    latest().receiveBinary(
+      encodeFieldFrame(
+        FIELD_MSG_STATE,
+        'notes:q3',
+        encodeFieldState({
+          writable: true,
+          stateVector: Y.encodeStateVector(serverDoc),
+          diff: Y.encodeStateAsUpdate(serverDoc),
+        }),
+      ),
+    )
+    await handle.whenSynced
+    expect(handle.canWrite).toBe(true)
+    expect(handle.writeBlocked).toBeNull()
+
+    let notified = 0
+    handle.subscribe(() => notified++)
+    latest().receiveBinary(encodeFieldFrame(FIELD_MSG_REJECT, 'notes:q3', encodeFieldReject('TooLarge')))
+    expect(handle.canWrite).toBe(false)
+    expect(handle.writeBlocked).toBe('TooLarge')
+    expect(notified).toBe(1)
+
+    // Sticky: a later STATE claiming writable keeps the rejection and its reason.
+    latest().receiveBinary(
+      encodeFieldFrame(
+        FIELD_MSG_STATE,
+        'notes:q3',
+        encodeFieldState({
+          writable: true,
+          stateVector: Y.encodeStateVector(serverDoc),
+          diff: Y.encodeStateAsUpdate(serverDoc),
+        }),
+      ),
+    )
+    expect(handle.canWrite).toBe(false)
+    expect(handle.writeBlocked).toBe('TooLarge')
+
+    handle.release()
+    yfields.destroy()
+    void client.destroy()
+  })
+
+  it('a non-writable STATE reads as NotWritable', async () => {
+    const sockets: FakeSocket[] = []
+    const client = new SyncClient({
+      url: 'ws://test',
+      workspaceId: 'w1',
+      clientId: 'client-a',
+      autoStart: false,
+      app: testApp,
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    const latest = () => sockets[sockets.length - 1]!
+    const yfields = createYjsFields(client)
+    const handle = yfields.getDoc('notes:q3')
+    client.start()
+    latest().open()
+    const pokeId = 'poke-1'
+    latest().receive({ type: 'pokeStart', pokeId, baseCursor: null })
+    latest().receive({ type: 'pokePart', pokeId, patch: [{ op: 'clear' }], lastMutationIdChanges: { 'client-a': 0 } })
+    latest().receive({ type: 'pokeEnd', pokeId, cursor: { backendId: 'b1', version: 1 }, pageInfo: { more: false } })
+
+    const serverDoc = new Y.Doc()
+    latest().receiveBinary(
+      encodeFieldFrame(
+        FIELD_MSG_STATE,
+        'notes:q3',
+        encodeFieldState({
+          writable: false,
+          stateVector: Y.encodeStateVector(serverDoc),
+          diff: Y.encodeStateAsUpdate(serverDoc),
+        }),
+      ),
+    )
+    await handle.whenSynced
+    expect(handle.canWrite).toBe(false)
+    expect(handle.writeBlocked).toBe('NotWritable')
+
+    handle.release()
+    yfields.destroy()
+    void client.destroy()
   })
 })

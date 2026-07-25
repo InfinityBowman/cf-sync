@@ -34,7 +34,7 @@ describe('useSyncStatus', () => {
 
     client.start()
     expect(renderToString(createElement(StatusProbe, { client }))).toBe('<span>connecting</span>')
-    client.stop()
+    void client.destroy()
   })
 
   it('subscribes through the unbound subscribeStatus property', () => {
@@ -47,7 +47,7 @@ describe('useSyncStatus', () => {
     sockets[0]!.open()
     expect(seen).toEqual(['syncing'])
     unsubscribe()
-    client.stop()
+    void client.destroy()
   })
 })
 
@@ -83,6 +83,6 @@ describe('usePresence', () => {
       ],
     })
     expect(renderToString(createElement(PeersProbe))).toBe('<span>ada,lin</span>')
-    client.stop()
+    void client.destroy()
   })
 })

@@ -1,9 +1,10 @@
-import type { AnySyncSchema, RowInputOf, RowOf, StandardSchemaV1, TableName, TableSchema } from '@cf-sync/protocol'
+import type { AnyMutators, AnySyncSchema, RowInputOf, RowOf, StandardSchemaV1, TableName, TableSchema } from '@cf-sync/protocol'
 import { createCollection, createTransaction, type Collection, type CollectionConfig } from '@tanstack/db'
 import {
   RAW_MUTATE,
+  SyncClient,
   type IntentTransactionRunner,
-  type SyncClient,
+  type SyncClientOptions,
   type TableApplier,
   type TableHooks,
   type TableWriteOp,
@@ -345,4 +346,43 @@ export function createCollections<S extends AnySyncSchema>(
     collections[table] = collection
   }
   return collections as WorkspaceCollections<S>
+}
+
+/** What {@link createWorkspace} returns: the client, its collections, and the one teardown — held and threaded as a unit. */
+export interface Workspace<
+  S extends AnySyncSchema,
+  M extends AnyMutators = AnyMutators,
+  P extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined,
+> {
+  client: SyncClient<S, M, P>
+  collections: WorkspaceCollections<S>
+  /** Tears down the client, every collection, and the store connection — `client.destroy()` under one roof. */
+  destroy: () => Promise<void>
+}
+
+/**
+ * The one-call bootstrap: constructs the `SyncClient` and every collection,
+ * and returns them with their shared teardown —
+ *
+ * ```ts
+ * const ws = createWorkspace({ url: SYNC_URL, workspaceId, app, persist: true })
+ * ws.collections.todos.insert({ id, title: 'ship it' })
+ * await ws.client.mutate.todos.clearCompleted()
+ * ```
+ *
+ * The unit shape is the point for workspace-per-project apps: switching
+ * projects is `await ws.destroy()` then `createWorkspace({ ...same, workspaceId: next })`
+ * — nothing to individually rebuild or re-thread. Takes every
+ * `SyncClientOptions` field, plus `startSync` forwarded to
+ * {@link createCollections}.
+ */
+export function createWorkspace<
+  S extends AnySyncSchema,
+  M extends AnyMutators,
+  P extends StandardSchemaV1 | undefined = undefined,
+>(options: SyncClientOptions<S, M, P> & { startSync?: boolean }): Workspace<S, M, P> {
+  const { startSync, ...clientOptions } = options
+  const client = new SyncClient(clientOptions as SyncClientOptions<S, M, P>)
+  const collections = createCollections(client, startSync === undefined ? undefined : { startSync })
+  return { client, collections, destroy: () => client.destroy() }
 }

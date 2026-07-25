@@ -177,7 +177,7 @@ describe('SyncClient persistence', () => {
     await flushMicrotasks()
     first.client.mutate('sync.put', { tbl: 'todos', id: 't1', data: { title: 'offline' } }).catch(() => {})
     await flushMicrotasks()
-    first.client.stop()
+    void first.client.destroy()
     await flushMicrotasks()
 
     const persisted = await store.load()
@@ -306,7 +306,7 @@ describe('SyncClient persistence', () => {
     client.mutate('sync.put', { tbl: 'todos', id: 't1', data: {} }).catch(() => {})
     await flushMicrotasks()
 
-    client.stop()
+    void client.destroy()
     await flushMicrotasks()
     expect((await store.load())?.outbox).toHaveLength(1)
   })

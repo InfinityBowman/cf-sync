@@ -195,12 +195,12 @@ describe('persist option', () => {
           await vi.waitFor(() => expect(recorder.ready).toBe(true), { timeout: 300 })
           expect(recorder.rows.get('t1')).toEqual({ title: 'persisted' })
         } finally {
-          second.client.stop()
+          void second.client.destroy()
         }
       },
       { timeout: 5_000, interval: 50 },
     )
-    first.client.stop()
+    void first.client.destroy()
   })
 })
 
@@ -235,7 +235,7 @@ describe('autoStart', () => {
     expect(sockets).toHaveLength(1) // no second connection
     latest().open()
     expect(client.status).toBe('syncing')
-    client.stop()
+    void client.destroy()
   })
 
   it('autoStart: false waits for an explicit start()', () => {
@@ -244,6 +244,6 @@ describe('autoStart', () => {
     expect(client.status).toBe('idle')
     client.start()
     expect(sockets).toHaveLength(1)
-    client.stop()
+    void client.destroy()
   })
 })

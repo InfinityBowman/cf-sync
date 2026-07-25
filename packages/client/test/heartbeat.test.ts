@@ -69,7 +69,7 @@ describe('connection resilience', () => {
     sockets[0]!.open()
     bootstrap(sockets[0]!)
     expect(client.status).toBe('synced')
-    client.stop()
+    void client.destroy()
   })
 
   it('a persistently-throwing createSocket keeps retrying with backoff', async () => {
@@ -85,7 +85,7 @@ describe('connection resilience', () => {
     await sleep(900) // enough for the initial call + at least one retry
     expect(attempts).toBeGreaterThanOrEqual(2)
     expect(client.status).toBe('reconnecting')
-    client.stop()
+    void client.destroy()
   })
 
   it('sends keepalive pings on the configured cadence', async () => {
@@ -104,7 +104,7 @@ describe('connection resilience', () => {
     const pings = socket.takeSent().filter((m) => (m as { type: string }).type === 'ping')
     expect(pings.length).toBeGreaterThanOrEqual(2)
     expect(sockets.length).toBe(1) // liveness satisfied: no reconnect
-    client.stop()
+    void client.destroy()
   })
 
   it('declares a silent socket dead and reconnects — without any close event', async () => {
@@ -124,7 +124,7 @@ describe('connection resilience', () => {
     const [hello] = second.takeSent()
     // resume by cursor: the dead connection cost nothing
     expect(hello).toMatchObject({ type: 'hello', cursor: cursor(7) })
-    client.stop()
+    void client.destroy()
   })
 
   it('pingIntervalMs 0 disables the heartbeat', async () => {
@@ -138,6 +138,6 @@ describe('connection resilience', () => {
     await sleep(150)
     expect(socket.takeSent()).toEqual([]) // no pings
     expect(sockets.length).toBe(1) // no forced reconnect
-    client.stop()
+    void client.destroy()
   })
 })
