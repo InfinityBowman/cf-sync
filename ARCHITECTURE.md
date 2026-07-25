@@ -437,6 +437,18 @@ migration chains in plain node with the engine invariants intact.
 the instance); `evictDurableObject(stub)` from `cloudflare:test` preserves
 hibernatable sockets like production. Both shapes are locked in tests.
 
+**Third-party DO wrappers.** `test/sentry/` is a separate vitest project — its
+own worker and wrangler fixture, because `@sentry/cloudflare` needs
+`nodejs_compat` and the engine's own fixture must stay free of it so an
+accidental Node import still fails. It drives a real
+`instrumentDurableObjectWithSentry(createWorkspaceDO(app))` over a real socket.
+The wrapper reassigns `fetch`/`alarm`/`webSocketMessage`/`webSocketClose` as own
+properties shadowing our prototype methods, and swaps `ctx.storage` (and
+`sql.exec`) for span-instrumenting proxies — so the drill asserts every handler
+still dispatches, that a wake re-shadows them on the surviving socket, and that
+a mutation reaches SQL *before the handler yields*: invariant 3 would be off by
+a turn if the wrapper ever awaited ahead of its `Reflect.apply`.
+
 ## Collaborative text tiers
 
 The engine's target workload (form-heavy collaborative record apps) is

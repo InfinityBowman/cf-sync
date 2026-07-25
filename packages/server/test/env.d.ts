@@ -6,5 +6,8 @@ declare namespace Cloudflare {
     COMPACT: DurableObjectNamespace
     ROLLOUT: DurableObjectNamespace
     EXPORT_BUCKET: R2Bucket
+    // From test/sentry/wrangler.jsonc — that project's own fixture (the
+    // Sentry wrapper needs nodejs_compat), sharing this one Env declaration.
+    SENTRY_WORKSPACE: DurableObjectNamespace
   }
 }

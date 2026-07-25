@@ -1,0 +1,14 @@
+{
+  "name": "cf-sync-sentry-fixture",
+  "main": "./worker.ts",
+  "compatibility_date": "2025-08-01",
+  // @sentry/cloudflare reaches for node:async_hooks (AsyncLocalStorage) the
+  // moment a wrapped DO is constructed. Kept in this fixture rather than the
+  // main one on purpose: the engine itself must keep compiling and running
+  // without nodejs_compat, and a shared flag would hide a Node API creeping in.
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "SENTRY_WORKSPACE", "class_name": "SentryWorkspaceDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SentryWorkspaceDO"] }]
+}

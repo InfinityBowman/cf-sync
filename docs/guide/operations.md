@@ -71,3 +71,27 @@ Objects land at `cf-sync/<workspaceId>/mutation-log/<from>-<to>.ndjson`. DO SQLi
 ## What to monitor
 
 `stats` is designed to be scraped: row counts, schema version, live connections, and database size per workspace. The engine also logs actionable warnings worth alerting on — most notably the [schema-drift warning](/guide/schema-evolution#drift-detection), which means a deploy changed table schemas without a version bump.
+
+## Error reporting (Sentry) {#sentry}
+
+`createWorkspaceDO` returns an ordinary Durable Object class, so Sentry's Durable Object wrapper composes with it directly:
+
+```ts
+import { instrumentDurableObjectWithSentry } from '@sentry/cloudflare'
+import { createWorkspaceDO } from '@cf-sync/server'
+import { app } from '../src/schema'
+
+export const WorkspaceDO = instrumentDurableObjectWithSentry(
+  // Annotate the env parameter even if you don't use it — Sentry infers its
+  // `Env` type from this callback, and a bare `() => ({…})` widens it to
+  // `unknown`, which then rejects the engine class.
+  (env: Env) => ({ dsn: env.SENTRY_DSN, tracesSampleRate: 1 }),
+  createWorkspaceDO({ app }),
+)
+```
+
+Add `nodejs_compat` to `compatibility_flags` — `@sentry/cloudflare` needs `AsyncLocalStorage`. The engine itself does not require the flag.
+
+This combination is covered by a test in the engine's own suite: a real wrap driven through a real socket, asserting that the upgrade, `webSocketMessage`, `webSocketClose`, and the maintenance alarm all still dispatch, that handlers are re-wrapped when the object wakes, and that a mutation is committed to SQL before the handler yields — Sentry wraps the handlers in scope and span machinery, but never defers the call, so the engine's synchronous commit-then-send is intact.
+
+Note that Sentry replaces `ctx.storage` with a span-instrumenting proxy, which means every `sql.exec` the engine runs becomes a `db.query` span. That is a lot of spans per poke on a busy workspace — sample with `tracesSampleRate` accordingly.
