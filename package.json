@@ -10,7 +10,9 @@
     "typecheck": "pnpm -r typecheck",
     "docs:dev": "pnpm --filter docs dev",
     "docs:build": "pnpm --filter docs build",
-    "docs:preview": "pnpm --filter docs preview"
+    "docs:preview": "pnpm --filter docs preview",
+    "demo:web": "pnpm --filter @cf-sync/demo dev:web",
+    "demo:worker": "pnpm --filter @cf-sync/demo dev:worker"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",

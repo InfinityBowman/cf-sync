@@ -11,6 +11,9 @@ pnpm dev:worker   # wrangler dev on :8787 (the Workspace DO)
 pnpm dev:web      # vite on :5173, in a second terminal
 ```
 
+From the repo root, `pnpm demo:worker` and `pnpm demo:web` run the same two
+commands without cd'ing here.
+
 Open http://localhost:5173 in **two tabs**. To ship it: `pnpm run deploy`
 (builds the web UI and deploys the worker serving it; same-origin socket).
 
