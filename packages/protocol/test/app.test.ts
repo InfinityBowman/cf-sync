@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { crudMutators, defineApp, defineMutators, defineSchema, migrationPath } from '../src/index'
+import { crudMutators, defineApp, defineMutators, defineSchema } from '../src/index'
+import { migrationPath } from '../src/internal'
 
 const schema = defineSchema({ todos: z.record(z.string(), z.unknown()) })
 const mutators = crudMutators(schema)

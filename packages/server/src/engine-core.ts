@@ -1,13 +1,5 @@
-import {
-  AppError,
-  MAX_ID_LENGTH,
-  MAX_ROW_BYTES,
-  TABLE_NAME_RE,
-  type AnySyncSchema,
-  type MutatorTx,
-  type StandardSchemaV1,
-} from '@cf-sync/protocol'
-import { formatIssues, jsonByteSize } from '@cf-sync/protocol/internal'
+import { AppError, MAX_ROW_BYTES, type AnySyncSchema, type MutatorTx, type StandardSchemaV1 } from '@cf-sync/protocol'
+import { MAX_ID_LENGTH, TABLE_NAME_RE, formatIssues, jsonByteSize } from '@cf-sync/protocol/internal'
 
 /**
  * The storage-agnostic core of the workspace engine: row validation and the

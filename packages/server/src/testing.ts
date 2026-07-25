@@ -1,6 +1,5 @@
 import {
   AppError,
-  migrationPath,
   type AnyMutators,
   type AnySyncSchema,
   type AppDefinition,
@@ -11,7 +10,7 @@ import {
   type RowOf,
   type TableName,
 } from '@cf-sync/protocol'
-import { formatIssues } from '@cf-sync/protocol/internal'
+import { formatIssues, migrationPath } from '@cf-sync/protocol/internal'
 import { WriteSet, rowKey, validateRow, type EngineRowStore } from './engine-core'
 import { schemaFingerprint, unfingerprintableTables } from './fingerprint'
 

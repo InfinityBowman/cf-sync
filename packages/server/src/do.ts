@@ -5,11 +5,8 @@ import {
   CLOSE_SUPERSEDED,
   CLOSE_UNAUTHORIZED,
   CLOSE_VERSION_NOT_SUPPORTED,
-  MAX_ID_LENGTH,
   MAX_PRESENCE_BYTES,
   MAX_ROW_BYTES,
-  TABLE_NAME_RE,
-  migrationPath,
   type AnySyncSchema,
   type AppDefinition,
   type Cursor,
@@ -18,6 +15,9 @@ import {
 } from '@cf-sync/protocol'
 import {
   KEEPALIVE_PING,
+  MAX_ID_LENGTH,
+  TABLE_NAME_RE,
+  migrationPath,
   KEEPALIVE_PONG,
   MAX_PART_PATCH_BYTES,
   PROTOCOL_VERSION,
@@ -266,7 +266,20 @@ export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, 
    * {@link EngineExtension}.
    */
   extension?: () => EngineExtension
+  /**
+   * Where the engine's diagnostics go — init failures, schema-drift
+   * warnings, internal errors. Default: the console (visible in `wrangler
+   * tail`). Inject to route them into your own logging pipeline.
+   */
+  logger?: EngineLogger
 }
+
+/**
+ * The sink for the engine's diagnostics. `message` arrives fully formatted
+ * (including the `[cf-sync]` prefix); `detail` carries any associated error.
+ * The default writes to `console[level]`.
+ */
+export type EngineLogger = (level: 'warn' | 'error', message: string, ...detail: unknown[]) => void
 
 const DEFAULT_TOMBSTONE_RETENTION = 10_000
 const DEFAULT_COMPACTION_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -453,6 +466,9 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     config.compaction?.intervalMs ?? DEFAULT_COMPACTION_INTERVAL_MS,
     config.export ? (config.export.intervalMs ?? DEFAULT_EXPORT_INTERVAL_MS) : Number.POSITIVE_INFINITY,
   )
+  // config.logger is read at call time, like every other config property.
+  const log: EngineLogger = (level, message, ...detail) =>
+    config.logger ? config.logger(level, message, ...detail) : console[level](message, ...detail)
 
   class WorkspaceDO extends DurableObject<Env> {
     #sql: SqlStorage
@@ -520,7 +536,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           await this.#initialize()
         } catch (err) {
           this.#initError = err instanceof Error ? err : new Error(String(err))
-          console.error('[cf-sync] workspace initialization failed; only admin reset is served', err)
+          log('error', '[cf-sync] workspace initialization failed; only admin reset is served', err)
         }
       })
     }
@@ -541,7 +557,8 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         // should stay on the radar) and restamp. '' means the presence schema
         // is new (or the row predates the column): silent.
         if (this.#meta.presenceHash !== '') {
-          console.warn(
+          log(
+            'warn',
             `[cf-sync] presence schema changed under schema version ${config.app.version}. ` +
               `Presence is ephemeral (never stored), so no version bump or migration is needed — ` +
               `but until every tab reloads, old and new bundles share this workspace: prefer ` +
@@ -559,7 +576,8 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         // false positive (the fingerprint can shift with a zod upgrade).
         // '' predates the fingerprint column; backfill quietly.
         if (this.#meta.schemaHash !== '') {
-          console.warn(
+          log(
+            'warn',
             `[cf-sync] table schemas changed under schema version ${config.app.version} ` +
               `(fingerprint ${this.#meta.schemaHash} -> ${fingerprint}). Every schema change ` +
               `requires a version bump: set version: ${config.app.version + 1} in defineApp and add ` +
@@ -903,7 +921,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         else if (parsed.data.type === 'presence') this.#handlePresence(ws, attachment, parsed.data)
         else this.#handlePush(ws, attachment, parsed.data)
       } catch (err) {
-        console.error('cf-sync-engine internal error', err)
+        log('error', 'cf-sync-engine internal error', err)
         this.#sendError(ws, 'Internal')
       }
     }

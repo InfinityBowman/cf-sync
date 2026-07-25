@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import {
-  AUTH_CONTEXT,
   defineApp,
   defineMutators,
   defineSchema,
   isPermanentCloseCode,
   type MutatorContext,
 } from '../src/index'
-import { truncateCloseReason } from '../src/internal'
+import { AUTH_CONTEXT, truncateCloseReason } from '../src/internal'
 
 // Session-control plumbing (DESIGN.md §15): the authContext schema is
 // declared with the mutators, carried on the registry, and lifted onto the

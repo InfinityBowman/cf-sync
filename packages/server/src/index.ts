@@ -3,12 +3,14 @@ export {
   createWorkspaceDO,
   decodeAuthStamps,
   encodeAuthStamps,
+  rejectUpgrade,
   WORKSPACE_HEADER,
   type AuthStamps,
   type CompactionConfig,
   type EngineExtension,
   type EngineExtensionContext,
   type EngineExtensionMessageContext,
+  type EngineLogger,
   type ExportConfig,
   type WorkspaceDOClass,
   type WorkspaceEngineConfig,
@@ -32,7 +34,6 @@ export {
 // cloudflare:workers; re-exported here for server-only code.
 export {
   AppError,
-  AUTH_CONTEXT,
   CLOSE_AUTH_CONTEXT_INVALID,
   CLOSE_PERMANENT_MAX,
   CLOSE_PERMANENT_MIN,

@@ -7,3 +7,8 @@ export * from './messages'
 export * from './chunk'
 export * from './field-frames'
 export { formatIssues } from './standard-schema'
+// Engine plumbing deliberately kept off the app-author root: the engine
+// packages consume these; app code has no use for them.
+export { migrationPath } from './app'
+export { AUTH_CONTEXT } from './mutators'
+export { MAX_ID_LENGTH, TABLE_NAME_RE } from './schema'
