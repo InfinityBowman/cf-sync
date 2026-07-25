@@ -1,4 +1,4 @@
-import { usePresence, useSyncStatus } from '@cf-sync/client/react'
+import { useHydrated, usePresence, useSyncStatus } from '@cf-sync/client/react'
 import { useLiveQuery } from '@tanstack/react-db'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { ulid } from 'ulidx'
@@ -85,6 +85,14 @@ function Workspace({ session }: { session: Session }) {
   // handle underneath is acquired/released as the panel mounts/unmounts.
   const [openNotes, setOpenNotes] = useState<ReadonlySet<string>>(new Set())
   const status = useSyncStatus(syncClient)
+  // Offline-first first paint: true once the IndexedDB cache is restored, so
+  // a reload with the toggle off shows the real list instead of claiming the
+  // workspace is empty. Reload while offline to see it carry the whole list
+  // with the socket never opening.
+  const hydrated = useHydrated(syncClient)
+  // "We know what's here": either the cache answered or the server did.
+  // Anything short of that must not render as an empty workspace.
+  const settled = hydrated || status === 'synced'
   const peers = usePresence(syncClient)
   // The latest rejection (sync.ts feeds onMutationRejected into this store),
   // rendered as a dismissible banner below the header.
@@ -234,7 +242,13 @@ function Workspace({ session }: { session: Session }) {
       <ul className="border-line divide-line mt-4 divide-y rounded-xl border bg-white shadow-[0_1px_3px_rgb(0_0_0/0.04)]">
         {items.length === 0 && (
           <li className="text-ink-soft px-4 py-8 text-center text-sm">
-            Nothing here yet. Add the first todo, then open this page in a second tab.
+            {settled ? (
+              'Nothing here yet. Add the first todo, then open this page in a second tab.'
+            ) : (
+              // An unsettled empty list is not an empty workspace — saying so
+              // is the bug useHydrated exists to prevent.
+              <span className="motion-safe:animate-pulse">Restoring…</span>
+            )}
           </li>
         )}
         {items.map((todo) => {

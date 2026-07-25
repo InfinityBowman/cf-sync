@@ -173,6 +173,26 @@ Ephemeral peer state on the existing socket — see [Presence](/guide/presence) 
 - `presence.peers` — the current peers, each `{ clientId, principal?, state, receivedAt }` with identity stamped by the server.
 - `presence.subscribe(listener)` — change notifications (peer changes *and* local `set`/`update`/`clear`, so `self` renders reactively); returns an unsubscribe function.
 
+### hydrated
+
+`boolean`
+
+Whether locally cached data has been restored and collections are ready to render — the signal an offline-first UI gates its first paint on. [`SyncStatus`](#syncstatus) cannot answer this: `connecting` covers hydration, so it reads the same before and after, and an empty collection mid-hydration is indistinguishable from a genuinely empty workspace.
+
+`true` only when there was a cached snapshot to paint. It stays `false` when no store is configured, when the store is empty (a first launch), when the cache was discarded because it targets a different app version, and when the store failed to load — in each case there is nothing cached to show, and the UI should wait for the first sync. It settles once and survives reconnects: it describes local state, not the socket. React apps use [`useHydrated`](#react-hooks).
+
+### whenHydrated
+
+`Promise<boolean>`
+
+The imperative form of [`hydrated`](#hydrated) — resolves when hydration settles, with the value `hydrated` takes:
+
+```ts
+if (await client.whenHydrated) renderFromCache()
+```
+
+It never hangs for the client's life: a client with no store settles it immediately, and one destroyed mid-hydration settles it `false`.
+
 ### status · cursor · workspaceId · clientId · app · schema
 
 Read-only getters: the current [`SyncStatus`](#syncstatus), the last confirmed server cursor (`null` before the first sync), and the constructor's identity values.
@@ -184,6 +204,12 @@ Read-only getters: the current [`SyncStatus`](#syncstatus), the last confirmed s
 `(listener: (status: SyncStatus) => void) => () => void`
 
 Subscribe to [`SyncStatus`](#syncstatus) transitions; returns an unsubscribe function. React apps use [`useSyncStatus`](#react-hooks) instead.
+
+### subscribeHydrated
+
+`(listener: (hydrated: boolean) => void) => () => void`
+
+Subscribe to the [`hydrated`](#hydrated) transition; returns an unsubscribe function. Fires at most once per client, and only when a cache was actually restored. React apps use [`useHydrated`](#react-hooks) instead.
 
 ### start
 
@@ -262,6 +288,7 @@ The persistence contract behind `persist`/`store` — implement it to substitute
 From `@cf-sync/client/react` (React is an optional peer):
 
 - `useSyncStatus(client)` — the current [`SyncStatus`](#syncstatus), reactively.
+- `useHydrated(client)` — [`hydrated`](#hydrated), reactively; gate an offline-first first paint on this.
 - `usePresence(client)` — the typed peers array, self excluded; re-renders on presence changes.
 
 Collections are read with `useLiveQuery` from `@tanstack/react-db` — see [Collections](/reference/collections).

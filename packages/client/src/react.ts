@@ -23,6 +23,30 @@ export function useSyncStatus(client: SyncClient<any, any>): SyncStatus {
 }
 
 /**
+ * Whether locally cached data has been restored and collections are ready to
+ * render — the gate an offline-first UI opens its first paint on:
+ *
+ * ```tsx
+ * const status = useSyncStatus(syncClient)
+ * const hydrated = useHydrated(syncClient)
+ * if (status !== 'synced' && !hydrated) return <Spinner />
+ * return <Workspace />
+ * ```
+ *
+ * False until hydration settles, and false forever when there was nothing to
+ * restore (no store, an empty or discarded cache) — see `client.hydrated`.
+ * The server pre-render sees the same `false` a fresh client does, so
+ * SSR/hydration match.
+ */
+export function useHydrated(client: SyncClient<any, any>): boolean {
+  return useSyncExternalStore(
+    client.subscribeHydrated,
+    () => client.hydrated,
+    () => false,
+  )
+}
+
+/**
  * Peers' presence as React state, typed by the app's presence schema and
  * excluding self — render your own state from `presence.self`, not here:
  *

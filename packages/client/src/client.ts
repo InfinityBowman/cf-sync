@@ -157,6 +157,18 @@ export class SyncClient<
   #flushScheduled = false
   #persistScheduled = false
   #hydrating = false
+  /**
+   * The cache-ready latch (ARCHITECTURE.md#offline-first-render). True once hydration restored a
+   * cached snapshot and marked collections ready — the signal an offline
+   * launch renders on, since `status` is `connecting` on both sides of that
+   * edge and an empty collection can't be told from an unhydrated one.
+   */
+  #hydrated = false
+  #settleHydration: ((restored: boolean) => void) | null = null
+  readonly #hydratedListeners = new Set<(hydrated: boolean) => void>()
+  readonly #whenHydrated = new Promise<boolean>((resolve) => {
+    this.#settleHydration = resolve
+  })
   #heartbeatTimer: ReturnType<typeof setInterval> | null = null
   #startNudgeTimer: ReturnType<typeof setTimeout> | null = null
   #lastFrameAt = 0
@@ -268,6 +280,53 @@ export class SyncClient<
     return this.#status
   }
 
+  /**
+   * Whether locally cached data has been restored and collections are ready
+   * to render — the signal offline-first UIs gate their first paint on.
+   *
+   * `status` cannot answer this: it reads `connecting` both before and after
+   * hydration, so an offline launch holding a full cache looks exactly like
+   * one holding nothing. Nor can collection contents — an empty collection
+   * mid-hydration is indistinguishable from a genuinely empty workspace.
+   *
+   * True only when there was a cached snapshot to restore. It stays false
+   * when no store is configured, when the store is empty (a first launch),
+   * when the cache was discarded because it targets a different app version,
+   * and when the store failed to load — in each of those cases there is
+   * nothing cached to paint, and the UI should wait for the first sync:
+   *
+   * ```tsx
+   * // Render cached rows immediately when offline, otherwise wait for sync.
+   * const status = useSyncStatus(client)
+   * const hydrated = useHydrated(client)
+   * if (status !== 'synced' && !hydrated) return <Spinner />
+   * ```
+   *
+   * Subscribe to the transition via {@link subscribeHydrated}, or await
+   * {@link whenHydrated} outside React.
+   */
+  get hydrated(): boolean {
+    return this.#hydrated
+  }
+
+  /**
+   * Resolves when hydration settles, with the value {@link hydrated} takes —
+   * true if a cached snapshot was restored, false if there was nothing to
+   * restore. The imperative form of the same signal, for gating a first
+   * render outside React:
+   *
+   * ```ts
+   * if (await client.whenHydrated) renderFromCache()
+   * ```
+   *
+   * A client constructed with `autoStart: false` settles this when `start()`
+   * runs, or with false if it is destroyed first — it never hangs past the
+   * client's life.
+   */
+  get whenHydrated(): Promise<boolean> {
+    return this.#whenHydrated
+  }
+
   /** The last server cursor this client applied, or null before the first sync. */
   get cursor(): Cursor | null {
     return this.#cursor
@@ -302,6 +361,19 @@ export class SyncClient<
     this.#statusListeners.add(listener)
     return () => {
       this.#statusListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Subscribes to {@link hydrated} changes; returns an unsubscribe function.
+   * Fires at most once per client — hydration settles one way and stays
+   * settled. An arrow property, so it plugs straight into React:
+   * `useSyncExternalStore(client.subscribeHydrated, () => client.hydrated)`.
+   */
+  readonly subscribeHydrated = (listener: (hydrated: boolean) => void): (() => void) => {
+    this.#hydratedListeners.add(listener)
+    return () => {
+      this.#hydratedListeners.delete(listener)
     }
   }
 
@@ -385,16 +457,39 @@ export class SyncClient<
     const store = this.#store
     if (store) {
       this.#hydrating = true
-      void this.#hydrate(store).finally(() => {
-        this.#hydrating = false
-        // Flush mutations queued while hydrating; skip when empty so a
-        // discarded cache (schema mismatch) stays discarded.
-        if (this.#outbox.length > 0) this.#persistOutbox()
-        if (!this.#stopped) this.#connect()
-      })
+      void this.#hydrate(store)
+        // A load failure is a settled hydration with nothing restored, not a
+        // pending one — #hydrate already logged it.
+        .catch(() => false)
+        .then((restored) => {
+          this.#hydrating = false
+          // Flush mutations queued while hydrating; skip when empty so a
+          // discarded cache (schema mismatch) stays discarded.
+          if (this.#outbox.length > 0) this.#persistOutbox()
+          // Before #connect: the latch describes local state, and a listener
+          // must not see 'syncing' arrive ahead of the cache it gates on.
+          this.#settleHydrated(restored)
+          if (!this.#stopped) this.#connect()
+        })
     } else {
+      // No store, so nothing to restore — settle false rather than leave
+      // awaiters of whenHydrated pending for the client's lifetime.
+      this.#settleHydrated(false)
       this.#connect()
     }
+  }
+
+  /**
+   * Closes the hydration latch exactly once, at whichever of the three ends
+   * comes first: hydration settling, a storeless start, or teardown.
+   */
+  #settleHydrated(restored: boolean): void {
+    const settle = this.#settleHydration
+    if (!settle) return
+    this.#settleHydration = null
+    this.#hydrated = restored
+    settle(restored)
+    if (restored) for (const listener of [...this.#hydratedListeners]) listener(true)
   }
 
   /**
@@ -422,6 +517,9 @@ export class SyncClient<
       this.#settleEntry(entry, new MutationError('Stopped', 'sync client stopped', { name: entry.name, args: entry.args }))
     }
     this.#outbox = []
+    // A teardown mid-hydration (or before start()) restores nothing, and an
+    // awaiter of whenHydrated must not outlive the client.
+    this.#settleHydrated(false)
     this.#setStatus('idle')
   }
 
@@ -511,16 +609,21 @@ export class SyncClient<
    * pre-reload optimistic view. Restored mutations have no awaiting caller,
    * so they carry no confirm timeout — they stay queued until the server
    * settles them.
+   *
+   * Resolves true when a cached snapshot was restored and collections were
+   * marked ready — false on every path that leaves nothing to paint (no
+   * cache, a discarded one, a load failure, teardown mid-hydration). That
+   * answer is what `hydrated` reports (ARCHITECTURE.md#offline-first-render).
    */
-  async #hydrate(store: SyncStore): Promise<void> {
+  async #hydrate(store: SyncStore): Promise<boolean> {
     let state: PersistedState | null = null
     try {
       state = await store.load()
     } catch (err) {
       this.#log('warn', '[cf-sync] failed to load persisted state; bootstrapping fresh', err)
-      return
+      return false
     }
-    if (!state || this.#stopped) return
+    if (!state || this.#stopped) return false
     if (state.schemaVersion !== null && state.schemaVersion !== this.#opts.app.version) {
       // The cache (and any queued mutations) target a different app schema.
       // Safest is to drop both and bootstrap from the server.
@@ -529,7 +632,7 @@ export class SyncClient<
       } catch (err) {
         this.#log('warn', '[cf-sync] failed to reset persisted state', err)
       }
-      return
+      return false
     }
 
     this.#cursor = state.cursor
@@ -574,9 +677,9 @@ export class SyncClient<
     // visible to the next entry's reads, the same read-your-predecessor
     // property back-to-back live intents have.
     for (const entry of restored) this.#replayEntry(entry)
-    if (state.cursor !== null) {
-      for (const hooks of this.#tables.values()) hooks.markReady()
-    }
+    if (state.cursor === null) return false
+    for (const hooks of this.#tables.values()) hooks.markReady()
+    return true
   }
 
   /**

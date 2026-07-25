@@ -250,6 +250,30 @@ outbox entries restored after a reload (whose promises died with the previous
 session); without it, a replayed mutation the server refuses rolls back
 invisibly.
 
+### Offline-first render
+
+Hydration needs an observable end, or an offline launch cannot tell a full
+cache from an empty one. `status` can't carry it: `connecting` is set before
+hydration starts and still holds when it finishes, so it reads identically on
+both sides of the edge. Collection contents can't either — a collection with no
+rows mid-hydration looks exactly like a genuinely empty workspace, which is the
+first-launch case a render gate has to get right.
+
+So the latch is explicit: `client.hydrated` (boolean), `client.whenHydrated`
+(promise of the same value), `client.subscribeHydrated`, and `useHydrated`. It
+closes **true only when there was a snapshot to paint** — the same condition
+that calls `markReady`, a persisted cursor. Every other end settles it false:
+no store, an empty store, a cache discarded on schema mismatch, a store that
+failed to load, and teardown mid-hydration (so no awaiter outlives the client).
+False therefore means "nothing cached to show, wait for the first sync", which
+is the only thing a gate can act on; the two ways of having nothing are not
+worth distinguishing to a caller.
+
+It settles once and stays settled — it describes local state, not the socket,
+so a later reconnect leaves it alone. Subscribers fire only on a true
+transition: notifying "still false" would re-render every memory-only and
+first-launch client for no change.
+
 ## Optimistic intents
 
 Intent mutations (`client.mutate.todos.clearCompleted()`) run the shared

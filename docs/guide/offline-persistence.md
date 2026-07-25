@@ -20,6 +20,30 @@ const client = new SyncClient({ url, workspaceId, app, persist: true })
 - **Fatal handling** — a permanent connection failure (e.g. `VersionNotSupported` after a deploy) reloads the page, throttled to once per minute so a bad deploy window can't reload-loop. Pass `onFatal` to customize — see [Auth & sessions](/guide/auth#close-codes).
 - **Connection timing** — the client connects on construction. Pass `autoStart: false` (SSR, auth gating) and call `client.start()` yourself.
 
+## Rendering before the network answers {#first-paint}
+
+An offline launch has everything it needs on disk, but it has to know that before it paints. `useSyncStatus` won't tell you: `connecting` covers hydration, so it reads the same whether the cache is full or empty. Neither will the collection — no rows mid-hydration looks exactly like a workspace that genuinely has none, which is precisely the first-launch case you must not paint as "empty".
+
+`useHydrated` is that signal. It flips true once cached rows are restored and collections are ready:
+
+```tsx
+import { useSyncStatus, useHydrated } from '@cf-sync/client/react'
+
+function WorkspaceGate({ client, children }) {
+  const status = useSyncStatus(client)
+  const hydrated = useHydrated(client)
+
+  // Cache restored → paint now, offline or not. Otherwise wait for the server.
+  if (hydrated || status === 'synced') return children
+  if (status === 'fatal') return <Reconnect />
+  return <Spinner />
+}
+```
+
+It stays `false` when there is nothing cached to paint — no store, a first launch, a cache discarded by a version bump, or a store that failed to open. That's deliberate: those all mean "wait for the first sync", which is the branch above. It settles once and survives reconnects, so a dropped socket never sends you back to the spinner.
+
+Outside React, `await client.whenHydrated` resolves to the same boolean.
+
 ## Closing a workspace {#closing-a-workspace}
 
 `client.destroy()` is the one-call teardown: stops syncing, cleans up every collection from `createCollections`, detaches add-ons (yjs fields), and closes the store connection.
