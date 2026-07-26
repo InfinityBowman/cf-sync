@@ -37,7 +37,7 @@ handle.canWrite                  // reactive — readers render read-only from f
 handle.release()                 // handles are ref-counted; release on unmount
 ```
 
-`handle.text` plugs directly into the Yjs editor ecosystem — y-codemirror, y-prosemirror, or a minimal textarea binding like the demo's [`NotesField.tsx`](https://github.com/InfinityBowman/cf-sync-engine/blob/main/apps/demo/src/NotesField.tsx). Offline edits merge on resume instead of overwriting — that's the CRDT earning its keep.
+`handle.text` plugs directly into the Yjs editor ecosystem — y-codemirror, y-prosemirror, or a minimal textarea binding like the demo's [`NotesField.tsx`](https://github.com/InfinityBowman/cf-sync/blob/main/apps/demo/src/NotesField.tsx). Offline edits merge on resume instead of overwriting — that's the CRDT earning its keep.
 
 ## React: `useYjsField`
 

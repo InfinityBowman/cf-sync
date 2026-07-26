@@ -651,7 +651,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         else if (parsed.data.type === 'presence') this.#handlePresence(ws, attachment, parsed.data)
         else this.#handlePush(ws, attachment, parsed.data)
       } catch (err) {
-        log('error', 'cf-sync-engine internal error', err)
+        log('error', 'cf-sync internal error', err)
         this.#sendError(ws, 'Internal')
       }
     }

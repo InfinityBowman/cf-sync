@@ -1,4 +1,4 @@
-# cf-sync-engine
+# cf-sync
 
 Server-authoritative sync engine on Cloudflare Durable Objects. Read `ARCHITECTURE.md` before
 changing protocol, storage schema, or sync semantics — it records the locked decisions

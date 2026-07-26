@@ -1,6 +1,6 @@
 # @cf-sync/client
 
-The browser half of [cf-sync](https://github.com/InfinityBowman/cf-sync-engine) — a server-authoritative sync engine on Cloudflare Durable Objects, with TanStack DB as the client store.
+The browser half of [cf-sync](https://github.com/InfinityBowman/cf-sync) — a server-authoritative sync engine on Cloudflare Durable Objects, with TanStack DB as the client store.
 
 `SyncClient` owns the socket, the offline outbox, optimistic mutation replay, and presence; `createWorkspace` bootstraps it together with one typed TanStack DB collection per schema table.
 
@@ -27,6 +27,6 @@ Mutations are optimistic out of the box: the shared mutator runs locally as one 
 
 React hooks ship at `@cf-sync/client/react`: `useSyncStatus` and `usePresence`. Read collections with `useLiveQuery` from `@tanstack/react-db` (both React and `@tanstack/react-db` are optional peers).
 
-**Docs:** [Getting started](https://github.com/InfinityBowman/cf-sync-engine/blob/main/docs/guide/getting-started.md) · [Mutations](https://github.com/InfinityBowman/cf-sync-engine/blob/main/docs/guide/mutations.md) · [Offline & persistence](https://github.com/InfinityBowman/cf-sync-engine/blob/main/docs/guide/offline-persistence.md) · [Presence](https://github.com/InfinityBowman/cf-sync-engine/blob/main/docs/guide/presence.md) · [Repository](https://github.com/InfinityBowman/cf-sync-engine)
+**Docs:** [Getting started](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/getting-started.md) · [Mutations](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/mutations.md) · [Offline & persistence](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/offline-persistence.md) · [Presence](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/presence.md) · [Repository](https://github.com/InfinityBowman/cf-sync)
 
 MIT

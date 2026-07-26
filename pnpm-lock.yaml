@@ -94,7 +94,7 @@ importers:
   packages/client:
     dependencies:
       '@cf-sync/protocol':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../protocol
       '@tanstack/react-db':
         specifier: ^0.1.94
@@ -155,7 +155,7 @@ importers:
   packages/server:
     dependencies:
       '@cf-sync/protocol':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../protocol
     devDependencies:
       '@cloudflare/vitest-pool-workers':
@@ -189,7 +189,7 @@ importers:
   packages/yjs:
     dependencies:
       '@cf-sync/protocol':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../protocol
     devDependencies:
       '@cf-sync/server':

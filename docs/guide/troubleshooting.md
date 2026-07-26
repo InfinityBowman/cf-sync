@@ -65,4 +65,4 @@ Peers are per connection by design. Group by `principal` (server-attested) for o
 
 ## Still stuck?
 
-[Open an issue](https://github.com/InfinityBowman/cf-sync-engine/issues) — include the full error text; the messages are written to be quoted.
+[Open an issue](https://github.com/InfinityBowman/cf-sync/issues) — include the full error text; the messages are written to be quoted.

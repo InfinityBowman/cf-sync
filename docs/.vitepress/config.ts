@@ -57,7 +57,7 @@ export default defineConfig({
           items: [
             {
               text: 'Architecture',
-              link: 'https://github.com/InfinityBowman/cf-sync-engine/blob/main/ARCHITECTURE.md',
+              link: 'https://github.com/InfinityBowman/cf-sync/blob/main/ARCHITECTURE.md',
             },
           ],
         },
@@ -78,12 +78,12 @@ export default defineConfig({
       ],
     },
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/InfinityBowman/cf-sync-engine' },
+      { icon: 'github', link: 'https://github.com/InfinityBowman/cf-sync' },
     ],
     search: { provider: 'local' },
     editLink: {
       pattern:
-        'https://github.com/InfinityBowman/cf-sync-engine/edit/main/docs/:path',
+        'https://github.com/InfinityBowman/cf-sync/edit/main/docs/:path',
       text: 'Suggest changes to this page',
     },
     outline: [2, 3],

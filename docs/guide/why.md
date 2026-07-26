@@ -27,7 +27,7 @@ These are design decisions, not roadmap gaps. If you need one of them, cf-sync i
 
 ## How it compares
 
-The sync space is crowded, and most of these tools are excellent. cf-sync exists in a specific gap: *server-authoritative semantics, on Cloudflare primitives, with no separate backend to operate*. Its design borrows deliberately from prior art — the [architecture document](https://github.com/InfinityBowman/cf-sync-engine/blob/main/ARCHITECTURE.md) cites Replicache, Zero, LiveStore, tldraw sync, and partyserver at file:line granularity.
+The sync space is crowded, and most of these tools are excellent. cf-sync exists in a specific gap: *server-authoritative semantics, on Cloudflare primitives, with no separate backend to operate*. Its design borrows deliberately from prior art — the [architecture document](https://github.com/InfinityBowman/cf-sync/blob/main/ARCHITECTURE.md) cites Replicache, Zero, LiveStore, tldraw sync, and partyserver at file:line granularity.
 
 | | Authority model | Backend you operate | Client store |
 |---|---|---|---|

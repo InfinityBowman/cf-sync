@@ -1,15 +1,14 @@
 {
   "name": "@cf-sync/yjs",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Collaborative-text add-on for cf-sync: Yjs fields living in the same Workspace Durable Object, exposed as an engine extension (server) and field handles (client)",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/InfinityBowman/cf-sync-engine.git",
+    "url": "git+https://github.com/InfinityBowman/cf-sync.git",
     "directory": "packages/yjs"
   },
-  "homepage": "https://github.com/InfinityBowman/cf-sync-engine#readme",
+  "homepage": "https://github.com/InfinityBowman/cf-sync#readme",
   "keywords": [
     "yjs",
     "crdt",
@@ -30,6 +29,7 @@
     "dist"
   ],
   "publishConfig": {
+    "access": "public",
     "exports": {
       "./server": {
         "types": "./dist/server.d.ts",
@@ -52,10 +52,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cf-sync/protocol": "workspace:*"
+    "@cf-sync/protocol": "workspace:^"
   },
   "peerDependencies": {
-    "@cf-sync/server": "workspace:*",
+    "@cf-sync/server": "workspace:^",
     "react": ">=18",
     "yjs": "^13.6.0"
   },

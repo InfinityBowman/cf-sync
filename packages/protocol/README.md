@@ -1,6 +1,6 @@
 # @cf-sync/protocol
 
-The shared definition kit for [cf-sync](https://github.com/InfinityBowman/cf-sync-engine) — a server-authoritative sync engine on Cloudflare Durable Objects.
+The shared definition kit for [cf-sync](https://github.com/InfinityBowman/cf-sync) — a server-authoritative sync engine on Cloudflare Durable Objects.
 
 One definition file, imported by **both** the worker and the browser, drives everything: server-side validation, collection row types, typed `mutate` calls, and the schema-version rollout. This package is the only one importable from both sides, and its only runtime dependency is `zod` (a peer).
 
@@ -39,6 +39,6 @@ Hand `app` to `createWorkspaceDO` ([@cf-sync/server](https://www.npmjs.com/packa
 
 Also exported: `crudMutators`, presence typing, and migration-chain validation. The wire-level frame schemas and chunking used by the engine packages live behind `@cf-sync/protocol/internal` — available to advanced integrations, but that surface tracks the wire protocol and carries no compatibility promise.
 
-**Docs:** [Defining your app](https://github.com/InfinityBowman/cf-sync-engine/blob/main/docs/guide/defining-your-app.md) · [Schema evolution](https://github.com/InfinityBowman/cf-sync-engine/blob/main/docs/guide/schema-evolution.md) · [Repository](https://github.com/InfinityBowman/cf-sync-engine)
+**Docs:** [Defining your app](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/defining-your-app.md) · [Schema evolution](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/schema-evolution.md) · [Repository](https://github.com/InfinityBowman/cf-sync)
 
 MIT

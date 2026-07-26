@@ -1,15 +1,14 @@
 {
   "name": "@cf-sync/server",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Server-authoritative sync engine on Cloudflare Durable Objects: createWorkspaceDO, worker routers, admin surface, and an in-memory test engine",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/InfinityBowman/cf-sync-engine.git",
+    "url": "git+https://github.com/InfinityBowman/cf-sync.git",
     "directory": "packages/server"
   },
-  "homepage": "https://github.com/InfinityBowman/cf-sync-engine#readme",
+  "homepage": "https://github.com/InfinityBowman/cf-sync#readme",
   "keywords": [
     "sync",
     "sync-engine",
@@ -30,6 +29,7 @@
     "dist"
   ],
   "publishConfig": {
+    "access": "public",
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
@@ -48,7 +48,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cf-sync/protocol": "workspace:*"
+    "@cf-sync/protocol": "workspace:^"
   },
   "peerDependencies": {
     "zod": "^4.0.0"

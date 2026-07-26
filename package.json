@@ -1,5 +1,5 @@
 {
-  "name": "cf-sync-engine",
+  "name": "cf-sync",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.8.0",

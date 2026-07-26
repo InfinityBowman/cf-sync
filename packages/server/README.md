@@ -1,6 +1,6 @@
 # @cf-sync/server
 
-The server half of [cf-sync](https://github.com/InfinityBowman/cf-sync-engine) — a server-authoritative sync engine on Cloudflare Durable Objects. One Durable Object per workspace, DO SQLite as the system of record, hibernating WebSockets, and a push/poke protocol with per-client idempotency.
+The server half of [cf-sync](https://github.com/InfinityBowman/cf-sync) — a server-authoritative sync engine on Cloudflare Durable Objects. One Durable Object per workspace, DO SQLite as the system of record, hibernating WebSockets, and a push/poke protocol with per-client idempotency.
 
 ```sh
 npm install @cf-sync/server @cf-sync/protocol zod
@@ -43,6 +43,6 @@ Also here:
 
 The main entry imports `cloudflare:workers` — import only `@cf-sync/server/testing` from node. It re-exports the definition kit (`defineApp`, `defineSchema`, `defineMutators`, `crudMutators`, `AppError`), so node test files need exactly one import source.
 
-**Docs:** [Getting started](https://github.com/InfinityBowman/cf-sync-engine/blob/main/docs/guide/getting-started.md) · [Testing your app](https://github.com/InfinityBowman/cf-sync-engine/blob/main/docs/guide/testing.md) · [Operations](https://github.com/InfinityBowman/cf-sync-engine/blob/main/docs/guide/operations.md) · [Repository](https://github.com/InfinityBowman/cf-sync-engine)
+**Docs:** [Getting started](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/getting-started.md) · [Testing your app](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/testing.md) · [Operations](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/operations.md) · [Repository](https://github.com/InfinityBowman/cf-sync)
 
 MIT

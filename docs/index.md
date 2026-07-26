@@ -14,7 +14,7 @@ hero:
       link: /guide/why
     - theme: alt
       text: GitHub
-      link: https://github.com/InfinityBowman/cf-sync-engine
+      link: https://github.com/InfinityBowman/cf-sync
 
 features:
   - icon: 🏛️

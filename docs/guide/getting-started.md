@@ -3,7 +3,7 @@
 This walks a fresh project from zero to two browser tabs converging through a Durable Object. Time budget: about ten minutes.
 
 ::: tip Not published to npm yet
-The `@cf-sync/*` packages are not on the public registry yet. Until they are, the fastest way to try the engine is to clone the [repository](https://github.com/InfinityBowman/cf-sync-engine) and run the [demo app](https://github.com/InfinityBowman/cf-sync-engine/tree/main/apps/demo) (`pnpm dev:worker` + `pnpm dev:web`). The steps below are what a consuming project looks like.
+The `@cf-sync/*` packages are not on the public registry yet. Until they are, the fastest way to try the engine is to clone the [repository](https://github.com/InfinityBowman/cf-sync) and run the [demo app](https://github.com/InfinityBowman/cf-sync/tree/main/apps/demo) (`pnpm dev:worker` + `pnpm dev:web`). The steps below are what a consuming project looks like.
 :::
 
 ## Prerequisites
