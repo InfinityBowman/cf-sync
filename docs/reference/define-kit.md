@@ -140,3 +140,4 @@ Helper types exported for building on the kit — most apps never name them, but
 - `EngineErrorCode` — `'InvalidArgs' | 'UnknownMutator' | 'RowTooLarge'`, the reserved rejection codes.
 - `MutationArgs<Def>` — the argument tuple `mutate` accepts for one mutator definition.
 - `AnySyncSchema` / `AnyMutators` — the bounds to constrain on when writing your own generics over a schema or registry (concrete results are assignable to these, not to the parameterized types).
+- `AUTH_CONTEXT` — the symbol `defineMutators` stamps a registry's `authContext` schema under. Root-exported only so a package that re-exports its registry with declaration emit on can name the inferred type; read the context type through `AuthContextOf`, never the symbol.

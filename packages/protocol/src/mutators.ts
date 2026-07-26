@@ -84,8 +84,21 @@ export interface MutatorContext<A = unknown> {
  */
 export const AUTH_CONTEXT: unique symbol = Symbol.for('cf-sync.authContext')
 
+/**
+ * The authContext stamp as a *named* type. Declaration emit references this
+ * alias by name instead of expanding the symbol-keyed object literal — a bare
+ * literal would force every package that re-exports its registry with
+ * `declaration: true` to import the symbol itself or fail with TS4023. A type
+ * alias, not an interface, on purpose: interfaces get no implicit index
+ * signature, which would stop stamped registries from satisfying
+ * `MutatorsFor<S>` in defineApp's overloads.
+ */
+export type AuthContextCarrier<AC> = {
+  [AUTH_CONTEXT]: StandardSchemaV1<any, AC>
+}
+
 /** Extracts the validated auth-context type a mutator registry declares, `unknown` when it declares none. */
-export type AuthContextOf<M> = M extends { [AUTH_CONTEXT]: StandardSchemaV1<any, infer AC> } ? AC : unknown
+export type AuthContextOf<M> = M extends AuthContextCarrier<infer AC> ? AC : unknown
 
 /**
  * The authoritative view a mutator runs against. Reads see the mutation's own
@@ -201,7 +214,7 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
     }
   } & D,
   opts: { authContext: StandardSchemaV1<any, AC> },
-): D & { [AUTH_CONTEXT]: StandardSchemaV1<any, AC> }
+): D & AuthContextCarrier<AC>
 export function defineMutators<S extends AnySyncSchema, A extends Record<string, unknown>, D>(
   schema: S,
   defs: {

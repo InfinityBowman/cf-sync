@@ -4,6 +4,7 @@ import {
   AUTH_CONTEXT,
   crudMutators,
   type AnyMutators,
+  type AuthContextCarrier,
   type CrudMutators,
   type MutatorContext,
   type MutatorsFor,
@@ -221,7 +222,7 @@ export function defineApp<
 }): AppDefinition<S, D & CrudMutators<S>, P>
 export function defineApp<
   S extends AnySyncSchema,
-  M extends MutatorsFor<S> & { [AUTH_CONTEXT]: StandardSchemaV1<any, any> },
+  M extends MutatorsFor<S> & AuthContextCarrier<any>,
   P extends StandardSchemaV1 | undefined = undefined,
 >(def: {
   version: number
@@ -233,7 +234,7 @@ export function defineApp<
 }): AppDefinition<S, M, P>
 export function defineApp<
   S extends AnySyncSchema,
-  M extends MutatorsFor<S> & { [AUTH_CONTEXT]: StandardSchemaV1<any, any> },
+  M extends MutatorsFor<S> & AuthContextCarrier<any>,
   P extends StandardSchemaV1 | undefined = undefined,
 >(def: {
   version: number

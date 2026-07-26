@@ -1,7 +1,7 @@
 {
   "name": "@cf-sync/protocol",
-  "version": "0.1.0",
-  "description": "Shared app-definition kit and wire protocol for cf-sync: defineApp, defineSchema, defineMutators, zod-validated frames — importable from both worker and browser",
+  "version": "0.1.1",
+  "description": "Shared app-definition kit and wire protocol for cf-sync: defineApp, defineSchema, defineMutators, zod-validated frames \u2014 importable from both worker and browser",
   "license": "MIT",
   "repository": {
     "type": "git",
