@@ -3,11 +3,11 @@ import { useYjsField } from '@cf-sync/yjs/react'
 import { useEffect, useState } from 'react'
 import type { Session } from './sync'
 
-/** Field ids are an app convention the engine never interprets (§17.1). */
+/** Field ids are an app convention the engine never interprets (ARCHITECTURE.md#yjs-fields). */
 export const notesFieldId = (todoId: string) => `todo-notes:${todoId}`
 
 /**
- * Collaborative notes for one todo — the reference Tier 2 field integration:
+ * Collaborative notes for one todo — the reference Yjs field integration:
  *
  * - `useYjsField` owns the whole handle lifecycle: acquire on mount, release
  *   on unmount, re-acquire on field change, StrictMode-safe. `synced` gates
@@ -71,13 +71,15 @@ export function NotesField({ session, todoId }: { session: Session; todoId: stri
         value={value}
         readOnly={!field.canWrite}
         onChange={(e) => onChange(e.target.value)}
-        // Field-level presence (§16) beside field-level text (§17): focus
+        // Field-level presence (ARCHITECTURE.md#presence) beside field-level
+        // text (ARCHITECTURE.md#yjs-fields): focus
         // announces which field this tab is in; blur retracts just that key.
         onFocus={() => syncClient.presence.update({ editing: fieldId })}
         onBlur={() => syncClient.presence.update({ editing: undefined })}
         placeholder="Notes: open this todo in another tab and type in both at once"
         rows={3}
-        // The editor-side length guard is the paved path (§17.3): the user
+        // The editor-side length guard is the paved path
+        // (ARCHITECTURE.md#yjs-fields): the user
         // sees the limit here, with native undo, long before the transport
         // frame guard (MAX_FIELD_UPDATE_BYTES) or the 700KB field ceiling
         // could ever refuse anything.

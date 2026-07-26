@@ -48,7 +48,7 @@ Deliberate non-goals, recorded so they are decisions and not accidents:
 
 - Row-level read permissions / partial sync — see [Permissions](#permissions).
 - Character-level text merging through the row-sync mutation log — see
-  [Collaborative text tiers](#collaborative-text-tiers).
+  [Collaborative text](#collaborative-text).
 - Cross-workspace transactions (application-level sagas).
 - General-purpose infrastructure: one partition scheme, one conflict strategy,
   one client (TanStack DB).
@@ -449,15 +449,15 @@ still dispatches, that a wake re-shadows them on the surviving socket, and that
 a mutation reaches SQL *before the handler yields*: invariant 3 would be off by
 a turn if the wrapper ever awaited ahead of its `Reflect.apply`.
 
-## Collaborative text tiers
+## Collaborative text
 
 The engine's target workload (form-heavy collaborative record apps) is
 hundreds of small text fields per workspace, ≤~4 collaborators, low typing
 frequency — the opposite of the long-shared-page shape that motivates
 per-document CRDT servers. A record view showing 30 fields must not need 30
 sockets; DO granularity must match access granularity, and the unit of access
-is the workspace. Each tier is built only when the previous demonstrably falls
-short:
+is the workspace. Each step below is built only when the previous demonstrably
+falls short:
 
 1. **Default: text fields are ordinary rows (LWW).** The failure mode — a true
    simultaneous edit of one field loses one side's keystrokes — is rare at this
@@ -467,8 +467,8 @@ short:
    see [Yjs fields](#yjs-fields). One socket, one DO, one authorize hook. CRDT
    state stays out of the rows table and the mutation log.
 3. **Back pocket: per-document Yjs DOs** if a future feature reintroduces the
-   hot-shared-page shape. Composes alongside tiers 1–2 (a second DO class and
-   route); not built on speculation.
+   hot-shared-page shape. Composes alongside rows and Yjs fields (a second DO
+   class and route); not built on speculation.
 
 ## Session control
 
@@ -580,8 +580,9 @@ client-claimed, `clientId`/`principal` are not.
 ## Yjs fields
 
 Per-field Y.Docs hosted inside the workspace DO, on the existing socket
-([tier 2](#collaborative-text-tiers)). A fieldId is an opaque key; fields are
-created implicitly on first use; which fields are Tier 2 is a UI decision
+(the opt-in step of [Collaborative text](#collaborative-text)). A fieldId is
+an opaque key; fields are created implicitly on first use; which fields are
+Yjs-backed is a UI decision
 invisible to the sync schema. `handle.text` is a `Y.Text` at a fixed
 library-owned key so every reader/writer of a field agrees on type and key
 with nothing to coordinate; rich text drops to `handle.doc` and the app owns

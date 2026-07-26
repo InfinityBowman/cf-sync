@@ -1,5 +1,5 @@
 /**
- * Binary lane for Tier 2 Yjs fields (ARCHITECTURE.md#yjs-fields). Field traffic travels
+ * Binary lane for Yjs fields (ARCHITECTURE.md#yjs-fields). Field traffic travels
  * as binary WebSocket frames beside the JSON protocol — the frame type itself
  * is the mux, so there is no envelope inside the JSON protocol and no base64
  * inflation. These helpers are dependency-free (no zod: the payloads are

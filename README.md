@@ -81,7 +81,7 @@ Packages are ESM-only. In the monorepo, `exports` point at TypeScript source; `p
 
 ## Status
 
-The full roadmap is implemented and tested: protocol core, resilience, operability, client persistence with startup replay, optimistic intent mutators, session control, presence, and Tier 2 Yjs fields. Packages are not yet published to npm.
+The full roadmap is implemented and tested: protocol core, resilience, operability, client persistence with startup replay, optimistic intent mutators, session control, presence, and Yjs fields. Packages are not yet published to npm.
 
 ## License
 

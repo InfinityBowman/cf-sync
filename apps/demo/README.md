@@ -1,7 +1,7 @@
 # cf-sync demo
 
 A todo app exercising every plane of the sync engine — rows, intent
-mutations (including a visible server rejection), presence, and Tier 2
+mutations (including a visible server rejection), presence, and Yjs-backed
 collaborative text — in ~600 lines you can read top to bottom.
 
 ## Run it

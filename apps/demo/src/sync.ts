@@ -168,7 +168,7 @@ function createSession(workspaceId: string) {
     client: workspace.client,
     // Components read status via useSyncStatus(session.client).
     todos: workspace.collections.todos,
-    // Tier 2 fields: real-merge text (two people typing in one prose box) on
+    // Yjs fields: real-merge text (two people typing in one prose box) on
     // the same socket, attached through the client's binary seam. Handles are
     // ref-counted (`getDoc`/`release`) and re-sync themselves on every
     // reconnect — components write no reconnect glue. The add-on registers its
