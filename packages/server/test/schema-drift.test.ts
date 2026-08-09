@@ -105,6 +105,7 @@ describe('schema drift under an unchanged version', () => {
     const warned = driftWarnings(warn)
     expect(warned).toHaveLength(1)
     expect(String(warned[0]![0])).toContain('schema version 1')
+    expect(warned[0]![1]).toEqual({ workspaceId: workspace })
 
     // Fingerprint restamped: the same drifted schema does not warn again.
     await evict(workspace)

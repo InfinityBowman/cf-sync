@@ -113,11 +113,31 @@ export interface EngineExtension {
 }
 
 /**
+ * Which workspace a diagnostic came from. Instances of one DO class share an
+ * isolate, so without this a log line names no workspace and an operator
+ * cannot tell whose sync broke.
+ */
+export interface EngineLogContext {
+  /**
+   * The workspace id the DO was addressed by, as remembered from the first
+   * request it served. Falls back to the Durable Object id when the workspace
+   * has not served a request yet (construction-time diagnostics) or its meta
+   * row is unloadable — never empty.
+   */
+  workspaceId: string
+}
+
+/**
  * The sink for the engine's diagnostics. `message` arrives fully formatted
  * (including the `[cf-sync]` prefix); `detail` carries any associated error.
  * The default writes to `console[level]`.
  */
-export type EngineLogger = (level: 'warn' | 'error', message: string, ...detail: unknown[]) => void
+export type EngineLogger = (
+  level: 'warn' | 'error',
+  message: string,
+  context: EngineLogContext,
+  ...detail: unknown[]
+) => void
 
 /**
  * What {@link createWorkspaceDO} takes: the shared app definition, plus
@@ -162,7 +182,8 @@ export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, 
   /**
    * Where the engine's diagnostics go — init failures, schema-drift
    * warnings, internal errors. Default: the console (visible in `wrangler
-   * tail`). Inject to route them into your own logging pipeline.
+   * tail`). Inject to route them into your own logging pipeline. Every call
+   * carries an {@link EngineLogContext} naming the workspace it came from.
    */
   logger?: EngineLogger
 }

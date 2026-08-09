@@ -44,7 +44,7 @@ import { z } from 'zod'
 import {
   type EngineExtension,
   type EngineExtensionMessageContext,
-  type EngineLogger,
+  type EngineLogContext,
   type WorkspaceEngineConfig,
 } from './config'
 import { WriteSet, validateRow } from './engine-core'
@@ -196,9 +196,6 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
     config.compaction?.intervalMs ?? DEFAULT_COMPACTION_INTERVAL_MS,
     config.export ? (config.export.intervalMs ?? DEFAULT_EXPORT_INTERVAL_MS) : Number.POSITIVE_INFINITY,
   )
-  // config.logger is read at call time, like every other config property.
-  const log: EngineLogger = (level, message, ...detail) =>
-    config.logger ? config.logger(level, message, ...detail) : console[level](message, ...detail)
 
   class WorkspaceDO extends DurableObject<Env> {
     #sql: SqlStorage
@@ -266,9 +263,31 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           await this.#initialize()
         } catch (err) {
           this.#initError = err instanceof Error ? err : new Error(String(err))
-          log('error', '[cf-sync] workspace initialization failed; only admin reset is served', err)
+          this.#log('error', '[cf-sync] workspace initialization failed; only admin reset is served', err)
         }
       })
+    }
+
+    /**
+     * The engine's diagnostics sink, stamped with the workspace it came from:
+     * instances of one class share an isolate, so an unattributed line leaves
+     * an operator unable to tell whose sync broke. `config.logger` is read at
+     * call time, like every other config property.
+     */
+    #log(level: 'warn' | 'error', message: string, ...detail: unknown[]): void {
+      const context: EngineLogContext = { workspaceId: this.#workspaceLabel() }
+      if (config.logger) config.logger(level, message, context, ...detail)
+      else console[level](message, context, ...detail)
+    }
+
+    /**
+     * The workspace name for diagnostics. `#meta` is still unset while the
+     * constructor runs (and stays unset when initialization failed), and its
+     * workspace id is empty until the first request names it — fall back to
+     * the DO id so a log line is never unattributed.
+     */
+    #workspaceLabel(): string {
+      return (this.#meta as Meta | undefined)?.workspaceId || this.ctx.id.name || this.ctx.id.toString()
     }
 
     async #initialize(): Promise<void> {
@@ -287,7 +306,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         // should stay on the radar) and restamp. '' means the presence schema
         // is new (or the row predates the column): silent.
         if (this.#meta.presenceHash !== '') {
-          log(
+          this.#log(
             'warn',
             `[cf-sync] presence schema changed under schema version ${config.app.version}. ` +
               `Presence is ephemeral (never stored), so no version bump or migration is needed — ` +
@@ -306,7 +325,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         // false positive (the fingerprint can shift with a zod upgrade).
         // '' predates the fingerprint column; backfill quietly.
         if (this.#meta.schemaHash !== '') {
-          log(
+          this.#log(
             'warn',
             `[cf-sync] table schemas changed under schema version ${config.app.version} ` +
               `(fingerprint ${this.#meta.schemaHash} -> ${fingerprint}). Every schema change ` +
@@ -651,7 +670,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         else if (parsed.data.type === 'presence') this.#handlePresence(ws, attachment, parsed.data)
         else this.#handlePush(ws, attachment, parsed.data)
       } catch (err) {
-        log('error', 'cf-sync internal error', err)
+        this.#log('error', 'cf-sync internal error', err)
         this.#sendError(ws, 'Internal')
       }
     }

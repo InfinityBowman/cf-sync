@@ -3,6 +3,7 @@ export {
   type EngineExtension,
   type EngineExtensionContext,
   type EngineExtensionMessageContext,
+  type EngineLogContext,
   type EngineLogger,
   type ExportConfig,
   type WorkspaceEngineConfig,

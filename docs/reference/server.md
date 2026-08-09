@@ -73,9 +73,17 @@ Binary-lane extension factory — e.g. `yjsFields()` from [`@cf-sync/yjs/server`
 
 ### logger
 
-`EngineLogger` — `(level: 'warn' | 'error', message, ...detail) => void` · default: the console
+`EngineLogger` — `(level: 'warn' | 'error', message, context: EngineLogContext, ...detail) => void` · default: the console
 
 Where the engine's diagnostics go — init failures, [schema-drift warnings](/guide/schema-evolution#drift-detection), internal errors. The default is visible in `wrangler tail`; inject to route them into your own logging pipeline. Messages arrive fully formatted (including the `[cf-sync]` prefix).
+
+`context.workspaceId` names the workspace the diagnostic came from — instances of one DO class share an isolate, so without it a line cannot be traced back to a workspace. It is the id the workspace was addressed by, remembered from the first request it served, falling back to the Durable Object id for construction-time diagnostics and workspaces whose meta row is unloadable; never empty.
+
+```ts
+logger: (level, message, { workspaceId }, ...detail) => {
+  console[level](JSON.stringify({ level, message, workspaceId, detail }))
+}
+```
 
 ## createSyncFetch · createSyncRoute
 

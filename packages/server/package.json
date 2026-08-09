@@ -1,6 +1,6 @@
 {
   "name": "@cf-sync/server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Server-authoritative sync engine on Cloudflare Durable Objects: createWorkspaceDO, worker routers, admin surface, and an in-memory test engine",
   "license": "MIT",
   "repository": {
