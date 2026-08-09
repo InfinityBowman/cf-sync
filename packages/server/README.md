@@ -43,6 +43,8 @@ Also here:
 
 The main entry imports `cloudflare:workers` — import only `@cf-sync/server/testing` from node. It re-exports the definition kit (`defineApp`, `defineSchema`, `defineMutators`, `crudMutators`, `AppError`), so node test files need exactly one import source.
 
-**Docs:** [Getting started](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/getting-started.md) · [Testing your app](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/testing.md) · [Operations](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/operations.md) · [Repository](https://github.com/InfinityBowman/cf-sync)
+**Docs:** the full guide and API reference ship inside this package at `node_modules/@cf-sync/server/docs`, version-matched to what you installed — `docs/config.json` indexes every page.
+
+Online: [Getting started](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/getting-started.md) · [Testing your app](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/testing.md) · [Operations](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/operations.md) · [Repository](https://github.com/InfinityBowman/cf-sync)
 
 MIT

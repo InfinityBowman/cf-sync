@@ -39,6 +39,8 @@ Hand `app` to `createWorkspaceDO` ([@cf-sync/server](https://www.npmjs.com/packa
 
 Also exported: `crudMutators`, presence typing, and migration-chain validation. The wire-level frame schemas and chunking used by the engine packages live behind `@cf-sync/protocol/internal` — available to advanced integrations, but that surface tracks the wire protocol and carries no compatibility promise.
 
-**Docs:** [Defining your app](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/defining-your-app.md) · [Schema evolution](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/schema-evolution.md) · [Repository](https://github.com/InfinityBowman/cf-sync)
+**Docs:** the full guide and API reference ship inside this package at `node_modules/@cf-sync/protocol/docs`, version-matched to what you installed — `docs/config.json` indexes every page.
+
+Online: [Defining your app](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/defining-your-app.md) · [Schema evolution](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/schema-evolution.md) · [Repository](https://github.com/InfinityBowman/cf-sync)
 
 MIT

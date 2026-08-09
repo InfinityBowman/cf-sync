@@ -1,0 +1,75 @@
+{
+  "title": "cf-sync",
+  "description": "Server-authoritative sync engine on Cloudflare Durable Objects, with TanStack DB on the client",
+  "repository": "InfinityBowman/cf-sync",
+  "branch": "main",
+  "sections": [
+    {
+      "label": "Introduction",
+      "area": "guide",
+      "children": [
+        { "label": "Why cf-sync", "to": "guide/why" },
+        { "label": "Getting started", "to": "guide/getting-started" }
+      ]
+    },
+    {
+      "label": "Core concepts",
+      "area": "guide",
+      "children": [
+        { "label": "Defining your app", "to": "guide/defining-your-app" },
+        { "label": "Mutations & optimistic writes", "to": "guide/mutations" },
+        { "label": "Schema evolution", "to": "guide/schema-evolution" },
+        { "label": "Auth & sessions", "to": "guide/auth" }
+      ]
+    },
+    {
+      "label": "Collaboration",
+      "area": "guide",
+      "children": [
+        { "label": "Presence", "to": "guide/presence" },
+        { "label": "Collaborative text", "to": "guide/collaborative-text" }
+      ]
+    },
+    {
+      "label": "Client",
+      "area": "guide",
+      "children": [
+        { "label": "Reading data", "to": "guide/reading-data" },
+        { "label": "Offline & persistence", "to": "guide/offline-persistence" }
+      ]
+    },
+    {
+      "label": "Production",
+      "area": "guide",
+      "children": [
+        { "label": "Testing your app", "to": "guide/testing" },
+        { "label": "Operations", "to": "guide/operations" },
+        { "label": "Limits & costs", "to": "guide/limits-and-costs" },
+        { "label": "Troubleshooting", "to": "guide/troubleshooting" }
+      ]
+    },
+    {
+      "label": "Internals",
+      "area": "guide",
+      "children": [
+        {
+          "label": "Architecture",
+          "href": "https://github.com/InfinityBowman/cf-sync/blob/main/ARCHITECTURE.md"
+        }
+      ]
+    },
+    {
+      "label": "API reference",
+      "area": "reference",
+      "children": [
+        { "label": "Overview", "to": "reference/index" },
+        { "label": "SyncClient", "to": "reference/sync-client" },
+        { "label": "Collections", "to": "reference/collections" },
+        { "label": "defineApp & the definition kit", "to": "reference/define-kit" },
+        { "label": "Server", "to": "reference/server" },
+        { "label": "Test engine", "to": "reference/testing" },
+        { "label": "Yjs fields", "to": "reference/yjs" }
+      ]
+    }
+  ]
+}

@@ -27,7 +27,8 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs"
   ],
   "publishConfig": {
     "access": "public",
@@ -45,6 +46,7 @@
   },
   "scripts": {
     "build": "tsdown",
+    "prepack": "node ../../scripts/sync-docs.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

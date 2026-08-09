@@ -12,5 +12,9 @@ coverage/
 docs/.vitepress/dist
 docs/.vitepress/cache
 
+# docs copied into each package by prepack (scripts/sync-docs.mjs) so they ship
+# in the tarball; docs/ at the root is the source of truth
+packages/*/docs/
+
 # corates planning doc — local only, never published
 /CORATES-MAPPING.md

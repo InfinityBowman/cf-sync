@@ -40,6 +40,8 @@ return <Editor text={field.text} readOnly={!field.canWrite} />
 
 Field ids are an app convention; the engine never interprets them. Updates travel on a binary lane over the existing sync socket, and offline edits merge on resume instead of overwriting.
 
-**Docs:** [Collaborative text](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/collaborative-text.md) · [demo `NotesField.tsx`](https://github.com/InfinityBowman/cf-sync/blob/main/apps/demo/src/NotesField.tsx) · [Repository](https://github.com/InfinityBowman/cf-sync)
+**Docs:** the full guide and API reference ship inside this package at `node_modules/@cf-sync/yjs/docs`, version-matched to what you installed — `docs/config.json` indexes every page.
+
+Online: [Collaborative text](https://github.com/InfinityBowman/cf-sync/blob/main/docs/guide/collaborative-text.md) · [demo `NotesField.tsx`](https://github.com/InfinityBowman/cf-sync/blob/main/apps/demo/src/NotesField.tsx) · [Repository](https://github.com/InfinityBowman/cf-sync)
 
 MIT
