@@ -119,6 +119,7 @@ export class SyncClient<
   readonly #warnedTables = new Set<string>()
   readonly #warnedNoApplier = new Set<string>()
   readonly #statusListeners = new Set<(status: SyncStatus) => void>()
+  readonly #pendingListeners = new Set<(pending: number) => void>()
   readonly #binaryListeners = new Set<(bytes: Uint8Array) => void>()
   readonly #rejectionListeners = new Set<(error: MutationError, mutation: { name: string; args: unknown }) => void>()
 
@@ -143,6 +144,7 @@ export class SyncClient<
   #cursor: Cursor | null = null
   #confirmedLmid = 0
   #outbox: OutboxEntry[] = []
+  #notifiedPending = 0
   #poke: PokeBuffer | null = null
   #syncedThisConnection = false
   #awaitingCatchUp = false
@@ -332,6 +334,21 @@ export class SyncClient<
     return this.#cursor
   }
 
+  /**
+   * The number of mutations applied locally but not yet confirmed durable by
+   * the server — entries queued before the connection synced and pushed ones
+   * awaiting confirmation both count, as do entries restored from the store
+   * on startup. 0 means everything this client has issued is on the server.
+   *
+   * This is the one durability signal that survives a reload: restored
+   * entries have no promise to await ({@link mutate} promises do not outlive
+   * the client), but they still count here until confirmed. Subscribe to
+   * changes via {@link subscribePending}.
+   */
+  get pending(): number {
+    return this.#outbox.length
+  }
+
   /** The workspace this client syncs, as passed at construction. */
   get workspaceId(): string {
     return this.#opts.workspaceId
@@ -361,6 +378,19 @@ export class SyncClient<
     this.#statusListeners.add(listener)
     return () => {
       this.#statusListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Subscribes to {@link pending} changes; returns an unsubscribe function.
+   * Fires only when the count actually changes. An arrow property, so it
+   * plugs straight into React:
+   * `useSyncExternalStore(client.subscribePending, () => client.pending)`.
+   */
+  readonly subscribePending = (listener: (pending: number) => void): (() => void) => {
+    this.#pendingListeners.add(listener)
+    return () => {
+      this.#pendingListeners.delete(listener)
     }
   }
 
@@ -651,6 +681,7 @@ export class SyncClient<
     }))
     // Mutations queued while hydration was in flight sort after restored ones.
     this.#outbox = [...restored, ...this.#outbox]
+    this.#notifyPending()
 
     if (state.cursor !== null) {
       const byTable = new Map<string, PersistedState['rows']>()
@@ -943,6 +974,7 @@ export class SyncClient<
         }, timeoutMs)
       }
       this.#outbox.push(entry)
+      this.#notifyPending()
       if (this.#syncedThisConnection) {
         entry.id = this.#nextMutationId()
         this.#schedulePush()
@@ -1440,7 +1472,20 @@ export class SyncClient<
       else entry.resolve()
     }
     this.#outbox = this.#outbox.filter((e) => e !== entry)
+    this.#notifyPending()
     this.#persistOutbox()
+  }
+
+  /**
+   * Every outbox removal funnels through #settleEntry (the confirm sweep,
+   * shutdown, and fatal all settle entry by entry), so notifying there plus
+   * the two growth sites (mutate's push, hydration's prepend) is exhaustive.
+   */
+  #notifyPending(): void {
+    const pending = this.#outbox.length
+    if (pending === this.#notifiedPending) return
+    this.#notifiedPending = pending
+    for (const listener of this.#pendingListeners) listener(pending)
   }
 
   #schedulePush(): void {

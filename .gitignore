@@ -3,6 +3,7 @@ dist/
 .wrangler/
 /reference/
 coverage/
+*.tgz
 *.log
 .DS_Store
 .env
