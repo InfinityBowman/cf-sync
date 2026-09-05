@@ -15,7 +15,7 @@
     "@cf-sync/protocol": "workspace:*",
     "@cf-sync/server": "workspace:*",
     "@cf-sync/yjs": "workspace:*",
-    "@tanstack/react-db": "^0.1.94",
+    "@tanstack/react-db": "^0.3.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "ulidx": "^2.4.0",
