@@ -147,9 +147,20 @@ const verdictRoute = createSyncRoute<Env>({
   },
 })
 const compactRoute = createSyncRoute<Env>({ namespace: (env) => env.COMPACT, pathPrefix: '/compact', authorize: 'public' })
-const rolloutRoute = createSyncRoute<Env>({ namespace: (env) => env.ROLLOUT, pathPrefix: '/rollout', authorize: 'public' })
+// The rollout DO also hosts the post-commit hook drills (its config is the
+// mutable one), so its route stamps a principal when a test asks for one.
+const rolloutRoute = createSyncRoute<Env>({
+  namespace: (env) => env.ROLLOUT,
+  pathPrefix: '/rollout',
+  authorize: (request) => ({ ok: true, principal: request.headers.get('x-test-principal') ?? undefined }),
+})
 const adminRoute = createAdminRoute<Env>({
   namespace: (env) => env.WORKSPACE,
+  authorize: (request) => request.headers.get('x-test-admin') === 'yes',
+})
+const rolloutAdminRoute = createAdminRoute<Env>({
+  namespace: (env) => env.ROLLOUT,
+  pathPrefix: '/rollout-admin',
   authorize: (request) => request.headers.get('x-test-admin') === 'yes',
 })
 
@@ -158,6 +169,7 @@ const adminRoute = createAdminRoute<Env>({
 export default {
   fetch: async (request: Request, env: Env) =>
     (await adminRoute(request, env)) ??
+    (await rolloutAdminRoute(request, env)) ??
     (await verdictRoute(request, env)) ??
     (await compactRoute(request, env)) ??
     (await rolloutRoute(request, env)) ??

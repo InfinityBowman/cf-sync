@@ -110,3 +110,20 @@ const status = useSyncStatus(client)
 ```
 
 Status is about the *pipe*, not about individual mutations — individual outcomes arrive through each `mutate` promise.
+
+## Reacting after the commit
+
+Mutators are pure over the workspace's rows; anything that reaches outside them — a notification, a projection into your primary database, an activity log — belongs in [`onMutationCommitted`](/reference/server#onmutationcommitted) on the server config. It runs after the mutation's transaction committed with the net before/after image of every row it touched, plus the mutator name, its parsed args, and the connection's principal:
+
+```ts
+export class WorkspaceDO extends createWorkspaceDO({
+  app,
+  onMutationCommitted: async ({ workspaceId, name, principal, changes }, env) => {
+    await env.DB.prepare('UPDATE projects SET last_activity_at = ?, last_activity_by = ? WHERE id = ?')
+      .bind(Date.now(), principal, workspaceId)
+      .run()
+  },
+}) {}
+```
+
+The hook observes; it cannot reject or alter the mutation, and the client's confirmation never waits on it. It also never fires for a rejected mutation, a schema migration, or an admin import — only for a mutation that changed rows. Delivery is at-most-once, so a consumer that must not miss an event keys its effects on `version` and can rebuild from an admin export. The same change list comes back from the [test engine](/reference/testing#testmutationresult), so the logic you put behind the hook is unit-testable in node.

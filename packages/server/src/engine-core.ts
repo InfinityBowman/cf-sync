@@ -1,5 +1,6 @@
 import { AppError, MAX_ROW_BYTES, type AnySyncSchema, type MutatorTx, type StandardSchemaV1 } from '@cf-sync/protocol'
 import { MAX_ID_LENGTH, TABLE_NAME_RE, formatIssues, jsonByteSize } from '@cf-sync/protocol/internal'
+import type { RowChange } from './config'
 
 /**
  * The storage-agnostic core of the workspace engine: row validation and the
@@ -79,16 +80,30 @@ interface RowWrite {
  * the chain's net result must parse. Mutations keep validating at `put` so a
  * mutator reading back its own write sees the parsed output (defaults
  * applied), exactly what a poke will carry.
+ *
+ * `trackChanges` makes `flush` report each written row's before/after pair
+ * (the post-commit hook's payload). It costs one stored-row read per row the
+ * mutation writes blind — a `tx.get` that reached storage doubles as the
+ * image — so it stays off unless something consumes the list.
  */
 export class WriteSet {
   #puts = new Map<string, RowWrite>()
   #dels = new Map<string, { tbl: string; id: string }>()
+  // The stored row at the mutation's first touch of it, keyed like the
+  // buffers, so the change list reports the net effect (before -> after)
+  // rather than intermediate overlay states. Insertion order is touch order.
+  #before = new Map<string, Record<string, unknown> | null>()
+  readonly #validateAtFlush: boolean
+  readonly #trackChanges: boolean
 
   constructor(
     private readonly rows: EngineRowStore,
     private readonly schema: AnySyncSchema,
-    private readonly validateAtFlush = false,
-  ) {}
+    opts: { validateAtFlush?: boolean; trackChanges?: boolean } = {},
+  ) {
+    this.#validateAtFlush = opts.validateAtFlush ?? false
+    this.#trackChanges = opts.trackChanges ?? false
+  }
 
   readonly tx: MutatorTx = {
     get: (tbl, id) => {
@@ -97,7 +112,13 @@ export class WriteSet {
       if (this.#dels.has(k)) return null
       const buffered = this.#puts.get(k)
       if (buffered) return structuredClone(buffered.data)
-      return this.rows.get(tbl, id)
+      const stored = this.rows.get(tbl, id)
+      if (!this.#trackChanges || this.#before.has(k)) return stored
+      // Read-modify-write is the common mutator shape: keep this read as
+      // the before-image so `put` need not fetch the row a second time. The
+      // caller may mutate what it gets back, so the kept copy is private.
+      this.#before.set(k, structuredClone(stored))
+      return stored
     },
     list: (tbl) => {
       if (!TABLE_NAME_RE.test(tbl)) throw new AppError('InvalidArgs', `invalid table name "${tbl}"`)
@@ -109,7 +130,7 @@ export class WriteSet {
     },
     put: (tbl, id, data) => {
       validateTarget(tbl, id)
-      const stored = this.validateAtFlush
+      const stored = this.#validateAtFlush
         ? (data as Record<string, unknown>)
         : validateRow(this.schema, tbl, id, data)
       const bytes = jsonByteSize(stored)
@@ -117,36 +138,52 @@ export class WriteSet {
         throw new AppError('RowTooLarge', `row ${tbl}/${id} is ${bytes} bytes (max ${MAX_ROW_BYTES})`)
       }
       const k = rowKey(tbl, id)
+      this.#rememberBefore(k, tbl, id)
       this.#dels.delete(k)
       this.#puts.set(k, { tbl, id, data: structuredClone(stored) })
     },
     del: (tbl, id) => {
       validateTarget(tbl, id)
       const k = rowKey(tbl, id)
+      this.#rememberBefore(k, tbl, id)
       this.#puts.delete(k)
       this.#dels.set(k, { tbl, id })
     },
   }
 
-  /** Flushes buffered writes stamped with `version`. Returns rows actually written. */
-  flush(version: number): number {
-    let written = 0
+  #rememberBefore(k: string, tbl: string, id: string): void {
+    if (this.#trackChanges && !this.#before.has(k)) this.#before.set(k, this.rows.get(tbl, id))
+  }
+
+  /**
+   * Flushes buffered writes stamped with `version`. `written` counts rows
+   * actually written or deleted; `changes` lists them as before/after pairs
+   * in first-touch order when `trackChanges` is on, and is empty otherwise.
+   */
+  flush(version: number): { written: number; changes: RowChange[] } {
+    const after = new Map<string, Record<string, unknown> | null>()
     for (const { tbl, id, data } of this.#puts.values()) {
-      const stored = this.validateAtFlush ? validateRow(this.schema, tbl, id, data) : data
-      if (this.validateAtFlush) {
+      const stored = this.#validateAtFlush ? validateRow(this.schema, tbl, id, data) : data
+      if (this.#validateAtFlush) {
         const bytes = jsonByteSize(stored)
         if (bytes > MAX_ROW_BYTES) {
           throw new AppError('RowTooLarge', `row ${tbl}/${id} is ${bytes} bytes (max ${MAX_ROW_BYTES})`)
         }
       }
       this.rows.put(tbl, id, stored, version)
-      written++
+      after.set(rowKey(tbl, id), stored)
     }
     for (const { tbl, id } of this.#dels.values()) {
       // Deleting a row that never existed is a no-op, not a tombstone: no
       // client can hold a row the server never had.
-      written += this.rows.del(tbl, id, version)
+      if (this.rows.del(tbl, id, version) > 0) after.set(rowKey(tbl, id), null)
     }
-    return written
+    const changes: RowChange[] = []
+    for (const [k, before] of this.#before) {
+      if (!after.has(k)) continue
+      const target = this.#puts.get(k) ?? this.#dels.get(k)!
+      changes.push({ tbl: target.tbl, id: target.id, before, after: after.get(k) as Record<string, unknown> | null })
+    }
+    return { written: after.size, changes }
   }
 }

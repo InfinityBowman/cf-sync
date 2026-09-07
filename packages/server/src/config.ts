@@ -140,8 +140,39 @@ export type EngineLogger = (
 ) => void
 
 /**
+ * One row a committed mutation wrote or deleted. `before` is the row as
+ * stored when the mutation began (null for an insert); `after` is what the
+ * mutation left (null for a delete). A row the mutation touched more than
+ * once appears once, spanning its net effect.
+ */
+export interface RowChange {
+  tbl: string
+  id: string
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
+}
+
+/** What {@link WorkspaceEngineConfig.onMutationCommitted} receives: one committed mutation and its net row effects. */
+export interface MutationCommitted {
+  /** The workspace the mutation was applied to. */
+  workspaceId: string
+  /** The mutator name, as registered in the app definition. */
+  name: string
+  /** The args the mutator ran with — validated and parsed, defaults applied. */
+  args: unknown
+  /** The connection's principal stamp, when `authorize` set one. */
+  principal?: string
+  /** The client that pushed the mutation. */
+  clientId: string
+  /** The data version the mutation committed as; every `after` row is stamped with it. */
+  version: number
+  /** The rows the mutation wrote or deleted, in the order it first touched them. Never empty. */
+  changes: RowChange[]
+}
+
+/**
  * What {@link createWorkspaceDO} takes: the shared app definition, plus
- * optional compaction, R2-export, and extension settings.
+ * optional compaction, R2-export, extension, logging, and post-commit settings.
  */
 export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, Env = unknown> {
   /**
@@ -186,4 +217,22 @@ export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, 
    * carries an {@link EngineLogContext} naming the workspace it came from.
    */
   logger?: EngineLogger
+  /**
+   * Runs after a mutation's data effects commit, with the rows it wrote or
+   * deleted — the seam for notifications, projections into another store,
+   * and activity logging. Fires once per mutation that changed rows: a
+   * rejected mutation, one whose writes net to nothing, a schema migration,
+   * and an admin import or reset all emit nothing.
+   *
+   * The hook is an observer, never a participant: it cannot veto or amend
+   * the mutation, and the engine never waits for it — the client's
+   * confirmation is sent regardless. A returned promise is held with
+   * `waitUntil` so the object stays alive until it settles; a rejection or
+   * a synchronous throw goes to {@link WorkspaceEngineConfig.logger} and
+   * affects nothing else. Delivery is at-most-once: a workspace evicted with
+   * the promise in flight does not replay it, so consumers that must not
+   * miss an event make their effects idempotent on `version` and keep a way
+   * to rebuild from an admin `export`.
+   */
+  onMutationCommitted?: (event: MutationCommitted, env: Env) => void | Promise<void>
 }

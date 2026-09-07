@@ -45,6 +45,8 @@ import {
   type EngineExtension,
   type EngineExtensionMessageContext,
   type EngineLogContext,
+  type MutationCommitted,
+  type RowChange,
   type WorkspaceEngineConfig,
 } from './config'
 import { WriteSet, validateRow } from './engine-core'
@@ -365,10 +367,10 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         // One write buffer across the chain: later steps read earlier steps'
         // writes, and the net result is validated against the current schema
         // at flush (intermediate shapes are transient).
-        const writes = new WriteSet(this.#rows, config.app.schema, true)
+        const writes = new WriteSet(this.#rows, config.app.schema, { validateAtFlush: true })
         for (const step of steps) step.migrate?.(writes.tx)
         const candidate = this.#meta.currentVersion + 1
-        if (writes.flush(candidate) > 0) {
+        if (writes.flush(candidate).written > 0) {
           migratedVersion = candidate
           // Rewritten rows are a new data version, and no cursor issued
           // before the migration may catch up from it — force bootstrap.
@@ -1092,7 +1094,9 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      * Applies one mutation. Returns the permanent app error, if any. The LMID
      * advance, the mutation-log append, and the data effects commit in one
      * SQLite transaction; permanent errors advance the LMID with no data
-     * effects; transient errors throw and roll everything back.
+     * effects; transient errors throw and roll everything back. The
+     * post-commit hook runs after the transaction returned, so what it
+     * observes is what every client will be poked with.
      */
     #applyMutation(attachment: Attachment, mutation: Mutation): { code: string; message: string } | undefined {
       const { clientId } = attachment
@@ -1105,6 +1109,8 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       }
       let appError: { code: string; message: string } | undefined
       let committedVersion: number | null = null
+      let parsedArgs: unknown = mutation.args
+      let changes: RowChange[] = []
 
       this.ctx.storage.transactionSync(() => {
         let wroteVersion: number | null = null
@@ -1113,7 +1119,11 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           // hello, so this is a registry bug, and retrying can never succeed.
           appError = { code: 'UnknownMutator', message: `no mutator named "${mutation.name}"` }
         } else {
-          const writes = new WriteSet(this.#rows, config.app.schema)
+          // Before-images cost a read per blind write; only pay when a hook
+          // will see them.
+          const writes = new WriteSet(this.#rows, config.app.schema, {
+            trackChanges: config.onMutationCommitted !== undefined,
+          })
           try {
             // Args are validated (and parsed: defaults applied) before apply
             // runs; invalid args are permanent — retrying identical args can
@@ -1130,9 +1140,12 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
               }
               args = result.value
             }
+            parsedArgs = args
             mutator.apply(writes.tx, args, ctx)
             const candidate = this.#meta.currentVersion + 1
-            if (writes.flush(candidate) > 0) wroteVersion = candidate
+            const flushed = writes.flush(candidate)
+            changes = flushed.changes
+            if (flushed.written > 0) wroteVersion = candidate
           } catch (err) {
             if (err instanceof AppError) {
               appError = { code: err.code, message: err.message }
@@ -1166,8 +1179,41 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
 
       // In-memory meta updates only after the transaction commits, so a
       // rollback can never leave memory ahead of storage.
-      if (committedVersion !== null) this.#meta.currentVersion = committedVersion
+      if (committedVersion !== null) {
+        this.#meta.currentVersion = committedVersion
+        this.#notifyCommitted({
+          workspaceId: this.#meta.workspaceId,
+          name: mutation.name,
+          args: parsedArgs,
+          principal: attachment.principal,
+          clientId,
+          version: committedVersion,
+          changes,
+        })
+      }
       return appError
+    }
+
+    /**
+     * Post-commit fan-out (ARCHITECTURE.md#mutation-processing). Never awaited:
+     * the push handler stays synchronous (invariant 3 of ARCHITECTURE.md#invariants)
+     * and a slow or failing consumer cannot hold up confirmation. The promise
+     * goes to waitUntil so the runtime keeps the object alive until it settles.
+     */
+    #notifyCommitted(event: MutationCommitted): void {
+      const hook = config.onMutationCommitted
+      if (!hook) return
+      const detail = { name: event.name, version: event.version }
+      try {
+        const result = hook(event, this.env)
+        if (result instanceof Promise) {
+          this.ctx.waitUntil(
+            result.catch((err: unknown) => this.#log('error', '[cf-sync] onMutationCommitted rejected', err, detail)),
+          )
+        }
+      } catch (err) {
+        this.#log('error', '[cf-sync] onMutationCommitted threw', err, detail)
+      }
     }
 
     #touchClient(clientId: string): number {

@@ -85,6 +85,36 @@ logger: (level, message, { workspaceId }, ...detail) => {
 }
 ```
 
+### onMutationCommitted
+
+`(event: MutationCommitted, env: Env) => void | Promise<void>`
+
+Runs after a mutation's data effects commit, with the rows it wrote or deleted — the seam for notifications, projections into another store, and activity logging. Fires once per mutation that changed rows; a rejected mutation, one whose writes net to nothing, a schema migration, and an admin `import` or `reset` all emit nothing. The worker env rides along so the hook can reach its own bindings.
+
+```ts
+onMutationCommitted: async ({ workspaceId, name, principal, changes }, env) => {
+  for (const { tbl, before, after } of changes) {
+    if (tbl === 'tasks' && after?.assignee && after.assignee !== before?.assignee) {
+      await env.NOTIFY.send({ to: after.assignee, workspaceId, by: principal })
+    }
+  }
+}
+```
+
+The hook is an observer, never a participant: it cannot veto or amend the mutation, and the engine never waits for it — the client's confirmation is sent regardless. A returned promise is held with `waitUntil` so the object stays alive until it settles; a rejection or a synchronous throw goes to [`logger`](#logger) at `error` level and affects nothing else. Delivery is at-most-once: a workspace evicted with the promise in flight does not replay it, so a consumer that must not miss an event makes its effects idempotent on `version` and keeps a way to rebuild from an admin [`export`](#createadminfetch-createadminroute).
+
+`MutationCommitted` carries:
+
+- `workspaceId` — the workspace the mutation was applied to.
+- `name` — the mutator name, as registered in the app definition.
+- `args` — the args the mutator ran with: validated and parsed, defaults applied.
+- `principal` — the connection's principal stamp, when [`authorize`](#authorize) set one.
+- `clientId` — the client that pushed the mutation.
+- `version` — the data version the mutation committed as; every `after` row is stamped with it.
+- `changes` — `RowChange[]`, the rows the mutation wrote or deleted in the order it first touched them, never empty. Each is `{ tbl, id, before, after }`: `before` is the row as stored when the mutation began (`null` for an insert), `after` what it left (`null` for a delete). A row the mutation touched more than once appears once, spanning its net effect.
+
+The [test engine](/reference/testing#testmutationresult) returns the same `changes` from `mutate`, so the logic behind a hook can be unit-tested in node without a Durable Object.
+
 ## createSyncFetch · createSyncRoute
 
 `(opts: SyncFetchOptions) => (request, env) => Promise<Response>` · `…Promise<Response | null>`
