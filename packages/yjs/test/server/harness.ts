@@ -134,42 +134,39 @@ export class FieldTestClient {
 
   waitClose(timeoutMs = 2_000): Promise<{ code: number; reason: string }> {
     if (this.closeEvent) return Promise.resolve(this.closeEvent)
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`timed out waiting for close (${this.clientId})`)), timeoutMs)
-      this.#closeWaiters.push((event) => {
-        clearTimeout(timer)
-        resolve(event)
-      })
-    })
+    return this.#await(this.#closeWaiters, timeoutMs, `close (${this.clientId})`)
   }
 
   nextJson(timeoutMs = 2_000): Promise<ServerMsg> {
     const queued = this.#json.shift()
     if (queued) return Promise.resolve(queued)
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`timed out waiting for a JSON frame (${this.clientId})`)),
-        timeoutMs,
-      )
-      this.#jsonWaiters.push((msg) => {
-        clearTimeout(timer)
-        resolve(msg)
-      })
-    })
+    return this.#await(this.#jsonWaiters, timeoutMs, `a JSON frame (${this.clientId})`)
   }
 
   nextFrame(timeoutMs = 2_000): Promise<FieldFrame> {
     const queued = this.#frames.shift()
     if (queued) return Promise.resolve(queued)
+    return this.#await(this.#frameWaiters, timeoutMs, `a field frame (${this.clientId})`)
+  }
+
+  /**
+   * Parks a waiter and withdraws it on timeout. A timed-out waiter left in
+   * the queue would still be handed the next arrival — resolving a promise
+   * nobody awaits any more — and that frame would vanish instead of queueing
+   * for the next call. Tests that poll with short timeouts depend on this.
+   */
+  #await<T>(waiters: Array<(value: T) => void>, timeoutMs: number, what: string): Promise<T> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`timed out waiting for a field frame (${this.clientId})`)),
-        timeoutMs,
-      )
-      this.#frameWaiters.push((frame) => {
+      const waiter = (value: T): void => {
         clearTimeout(timer)
-        resolve(frame)
-      })
+        resolve(value)
+      }
+      const timer = setTimeout(() => {
+        const at = waiters.indexOf(waiter)
+        if (at !== -1) waiters.splice(at, 1)
+        reject(new Error(`timed out waiting for ${what}`))
+      }, timeoutMs)
+      waiters.push(waiter)
     })
   }
 

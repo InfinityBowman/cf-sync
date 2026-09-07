@@ -160,13 +160,27 @@ describe('field sync hot path (ARCHITECTURE.md#yjs-fields)', () => {
     const random = mulberry32(0xc0ffee)
     const words = ['sync', 'field', 'merge', 'crdt', 'note']
 
+    // Every update one side sends is relayed to the other exactly once, so
+    // each side knows how many frames it is owed and the final drain waits
+    // for that count rather than treating silence as "done" — on a slow
+    // runner silence just means the relay is late.
+    const sides = [
+      { client: a, doc: docA, sent: 0, applied: 0 },
+      { client: b, doc: docB, sent: 0, applied: 0 },
+    ]
+    const applyNext = async (side: (typeof sides)[number], timeoutMs?: number): Promise<void> => {
+      const frame = await side.client.nextFrame(timeoutMs)
+      if (frame.msgType === FIELD_MSG_UPDATE) applyRemote(side.doc, frame.payload)
+      side.applied++
+    }
+
     // Seeded interleaving: both sides type without waiting for each other;
     // relays queue and are drained in bursts (the ARCHITECTURE.md#testing convergence-sim
     // pattern applied to text).
     for (let i = 0; i < 30; i++) {
-      const [client, doc] = random() < 0.5 ? ([a, docA] as const) : ([b, docB] as const)
-      const text = doc.getText('t')
-      const update = edit(doc, () => {
+      const side = random() < 0.5 ? sides[0]! : sides[1]!
+      const text = side.doc.getText('t')
+      const update = edit(side.doc, () => {
         if (text.length > 0 && random() < 0.3) {
           const at = Math.floor(random() * text.length)
           text.delete(at, Math.min(2, text.length - at))
@@ -175,36 +189,26 @@ describe('field sync hot path (ARCHITECTURE.md#yjs-fields)', () => {
           text.insert(at, `${words[Math.floor(random() * words.length)]} `)
         }
       })
-      client.update('notes:1', update)
+      side.client.update('notes:1', update)
+      side.sent++
       if (random() < 0.25) {
         // occasionally drain a pending relay mid-stream
-        for (const [peer, peerDoc] of [
-          [a, docA],
-          [b, docB],
-        ] as const) {
+        for (const peer of sides) {
           try {
-            const frame = await peer.nextFrame(50)
-            if (frame.msgType === FIELD_MSG_UPDATE) applyRemote(peerDoc, frame.payload)
+            await applyNext(peer, 50)
           } catch {
-            // nothing pending
+            // nothing pending yet
           }
         }
       }
     }
 
-    // Drain everything still in flight.
-    for (const [peer, peerDoc] of [
-      [a, docA],
-      [b, docB],
+    // Drain what each side is still owed.
+    for (const [side, other] of [
+      [sides[0]!, sides[1]!],
+      [sides[1]!, sides[0]!],
     ] as const) {
-      for (;;) {
-        try {
-          const frame = await peer.nextFrame(200)
-          if (frame.msgType === FIELD_MSG_UPDATE) applyRemote(peerDoc, frame.payload)
-        } catch {
-          break
-        }
-      }
+      while (side.applied < other.sent) await applyNext(side)
     }
 
     expect(docA.getText('t').toString()).toBe(docB.getText('t').toString())
