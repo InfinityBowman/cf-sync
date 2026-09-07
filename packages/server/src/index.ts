@@ -6,6 +6,8 @@ export {
   type EngineLogContext,
   type EngineLogger,
   type ExportConfig,
+  type MutationCommitted,
+  type RowChange,
   type WorkspaceEngineConfig,
 } from './config'
 export { createWorkspaceDO, type WorkspaceDOClass } from './do'

@@ -11,6 +11,7 @@ import {
   type TableName,
 } from '@cf-sync/protocol'
 import { formatIssues, migrationPath } from '@cf-sync/protocol/internal'
+import type { RowChange } from './config'
 import { WriteSet, rowKey, validateRow, type EngineRowStore } from './engine-core'
 import { schemaFingerprint, unfingerprintableTables } from './fingerprint'
 
@@ -21,6 +22,7 @@ export { schemaFingerprint }
 // and dies outside workerd with an error that never names this fix.
 export { AppError, crudMutators, defineApp, defineMutators, defineSchema } from '@cf-sync/protocol'
 export type { AppDefinition, MigrationTx, MutatorContext, MutatorTx } from '@cf-sync/protocol'
+export type { RowChange } from './config'
 
 /** Options for {@link createTestEngine}: initial state, stored schema version, and the identity mutators observe. */
 export interface TestEngineOptions {
@@ -49,6 +51,12 @@ export interface TestEngineOptions {
 export interface TestMutationResult {
   /** `code` is an {@link EngineErrorCode} built-in or an app-defined `AppError` code. */
   error?: { code: EngineErrorCode | (string & {}); message: string }
+  /**
+   * The rows the mutation wrote or deleted as before/after pairs — what the
+   * Durable Object hands to `onMutationCommitted`. Empty on a permanent
+   * error and when the writes net to nothing.
+   */
+  changes: RowChange[]
 }
 
 interface StoredRow {
@@ -165,7 +173,7 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     for (const [tbl, byId] of Object.entries(opts.rows ?? {})) {
       for (const [id, data] of Object.entries(byId)) this.seedRaw(tbl, id, data)
     }
-    const writes = new WriteSet(this.#store, app.schema, true)
+    const writes = new WriteSet(this.#store, app.schema, { validateAtFlush: true })
     for (const step of steps) step.migrate?.(writes.tx)
     writes.flush(++this.#version)
   }
@@ -196,6 +204,7 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     const mutationId = (this.#lmids.get(clientId) ?? 0) + 1
     const mutator = (this.#app.mutators as AnyMutators)[name]
     let appError: { code: string; message: string } | undefined
+    let changes: RowChange[] = []
 
     if (!mutator) {
       appError = { code: 'UnknownMutator', message: `no mutator named "${name}"` }
@@ -206,7 +215,7 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
         auth: this.#auth,
         authoritative: true, // the test engine is the server's seat
       }
-      const writes = new WriteSet(this.#store, this.#app.schema)
+      const writes = new WriteSet(this.#store, this.#app.schema, { trackChanges: true })
       try {
         let args: unknown = rest[0]
         if (mutator.args) {
@@ -222,7 +231,9 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
         }
         mutator.apply(writes.tx, args, ctx)
         const candidate = this.#version + 1
-        if (writes.flush(candidate) > 0) this.#version = candidate
+        const flushed = writes.flush(candidate)
+        changes = flushed.changes
+        if (flushed.written > 0) this.#version = candidate
       } catch (err) {
         if (err instanceof AppError) {
           appError = { code: err.code, message: err.message }
@@ -233,7 +244,7 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     }
 
     this.#lmids.set(clientId, mutationId)
-    return appError ? { error: appError } : {}
+    return appError ? { error: appError, changes: [] } : { changes }
   }
 
   /** The last mutation id confirmed for a client — permanent errors advance it too. */

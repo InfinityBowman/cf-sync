@@ -189,6 +189,26 @@ storage — `tx.put`, shared by mutators, schema migrations, and admin import:
 - Validation must be synchronous (mutations commit inside `transactionSync`);
   a validator returning a Promise is rejected as a permanent error.
 
+**Post-commit hook.** `onMutationCommitted` on the engine config is the one
+seam for effects outside the workspace's rows (notifications, projections
+into D1, activity logs). With a hook configured — and only then — the
+`WriteSet` records each row's stored image at the mutation's first touch (a
+`tx.get` that reached storage doubles as the image, so read-modify-write
+mutators pay no extra read; blind puts pay one point lookup), and `flush`
+returns the net `{ tbl, id, before, after }` list — a row put twice reports
+once; a create-then-delete of a new row reports nothing. Migrations never
+track. The DO invokes the hook after `transactionSync` returns,
+once per mutation that wrote rows, with the parsed args, the principal stamp,
+and the committed version; it never awaits it (invariant 3: the push handler
+stays synchronous, and a slow consumer cannot delay the poke), hands a
+returned promise to `waitUntil`, and routes a throw or rejection to the
+engine logger. It is an observer, not a participant: no veto, no writes into
+the transaction. Delivery is at-most-once — an eviction with the promise in
+flight loses it — so consumers must be idempotent on `version` and
+rebuildable from `export`. Migrations, admin import, and reset bypass
+`#applyMutation` and therefore never fire it; rejected mutations and no-op
+writes do not either.
+
 ## Client adapter
 
 The adapter is a TanStack DB collection options creator implementing

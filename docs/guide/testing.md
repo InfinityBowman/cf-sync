@@ -60,6 +60,7 @@ The engine honors the [engine invariants](https://github.com/InfinityBowman/cf-s
 - An `AppError` from a mutator (or invalid args) reports as `result.error` — **permanent**, no data written, and `engine.lastMutationId()` still advances. Assert on both when testing rejection paths.
 - Any other throw is **transient**: rethrown, nothing committed.
 - Auth-dependent mutators can be exercised by passing a principal and auth context, so `ctx.authoritative` permission checks are testable without a socket in sight.
+- `result.changes` is the before/after row list the Durable Object would hand to [`onMutationCommitted`](/reference/server#onmutationcommitted), so a hook's logic — which changes warrant a notification, what a projection row should look like — is unit-testable here by feeding it a real mutation's changes.
 
 ## Testing the full stack
 

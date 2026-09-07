@@ -64,6 +64,8 @@ Applies a named mutation authoritatively as the engine's default client, with th
 - An `AppError` thrown by the mutator — or invalid args — is a **permanent** rejection: writes are discarded, the result carries [`error`](#testmutationresult), and [`lastMutationId`](#lastmutationid) still advances. Assert on both when testing rejection paths.
 - Any other throw is **transient**: it rethrows out of `mutate`, nothing commits, and the LMID does not advance — the real client would retry the push.
 
+A successful result also carries [`changes`](#testmutationresult) — the rows the mutation wrote or deleted as before/after pairs, exactly what the Durable Object hands to [`onMutationCommitted`](/reference/server#onmutationcommitted) — so the logic behind a hook is testable here too.
+
 ### mutateAs
 
 `(clientId, name, args?) => TestMutationResult`
@@ -102,9 +104,11 @@ Read-only getters: the default clientId, and the current data version — bumps 
 
 ### TestMutationResult
 
-`{ error?: { code: string; message: string } }`
+`{ error?: { code: string; message: string }; changes: RowChange[] }`
 
 The outcome of one authoritative mutation. `error` is present only for permanent rejections: `code` is an engine built-in (`InvalidArgs`, `UnknownMutator`, …) or an app-defined `AppError` code passed through verbatim — the same vocabulary the client's [`MutationError`](/reference/sync-client#mutationerror) carries. Transient failures never produce a result; they throw.
+
+`changes` lists the rows the mutation wrote or deleted, in the order it first touched them, as `{ tbl, id, before, after }` — `before` the stored row when the mutation began (`null` for an insert), `after` what it left (`null` for a delete); a row touched more than once appears once with its net effect. Empty on a permanent error and when the writes net to nothing (then `version` does not move either). This is the same list the Durable Object passes to [`onMutationCommitted`](/reference/server#onmutationcommitted).
 
 ## Schema-drift helpers
 
