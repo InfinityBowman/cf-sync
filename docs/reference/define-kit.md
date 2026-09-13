@@ -66,7 +66,7 @@ The server validates **every** row write against the table's schema before it co
 Declares the named, intent-based mutations for a schema — shared by the server (authoritative apply) and the client (typed `mutate`, fail-fast validation). Each entry is a `MutatorDef`:
 
 - `args` — optional standard schema for the mutation's arguments. The server validates before `apply` runs (invalid args are a permanent `InvalidArgs` error that still advances the LMID); a SyncClient built with the same registry validates at `mutate()` time as a fail-fast. Omit for mutators that take no args.
-- `apply(tx, args, ctx)` — the mutation itself, against a [`MutatorTx`](#mutatortx) with a [`MutatorContext`](#mutatorcontext). The same function runs twice — optimistically on the client the moment `mutate` is called, authoritatively on the server when the push arrives — so it must be deterministic: pass ids, timestamps, and random values in as args, never compute them inside, or the server's result will not match the local prediction. See [the two authoring rules](/guide/defining-your-app#the-two-authoring-rules).
+- `apply(tx, args, ctx)` — the mutation itself, against a [`MutatorTx`](#mutatortx) with a [`MutatorContext`](#mutatorcontext). The same function runs twice — optimistically on the client the moment `mutate` is called, authoritatively on the server when the push arrives — so it must be deterministic: pass timestamps and random values in as args, and take ids from args or [`ctx.nextId()`](#mutatorcontext), never compute them inside, or the server's result will not match the local prediction. See [the two authoring rules](/guide/defining-your-app#the-two-authoring-rules).
 
 Names are validated at definition time: non-empty, no empty dot-segments, and — because dots namespace the `client.mutate` call tree (`mutate.todos.clearCompleted`) — a name cannot be both a mutator and a namespace prefix of another (`todos` alongside `todos.clear` throws).
 
@@ -99,6 +99,8 @@ The third argument every `apply` receives — how a mutator tells its two runs a
 - `principal` — the identity the worker's `authorize` hook stamped on the connection; `undefined` when no hook stamped one, and always `undefined` in optimistic runs (the client has no server verdict).
 - `auth` — the verdict's context, validated against the `authContext` schema at connect; on the client, the value passed as the SyncClient [`auth`](/reference/sync-client#auth) option.
 - `authoritative` — `true` on the server's run, `false` optimistically. Permission checks written as `if (ctx.authoritative && !allowed) throw` enforce on the server while letting the optimistic apply proceed; a server rejection rolls back through the normal permanent-error path.
+- `seed` — the mutation's seed: minted once by the client at `mutate()` time, persisted with the queued mutation, carried on the wire, so every run of the mutation — optimistic, replayed after a reload, authoritative — sees the same value. Opaque; the reason it exists is `nextId`.
+- `nextId()` — mints an id both runs agree on: the n-th call returns the same UUID-shaped string in the optimistic run and the authoritative one, and the sequence restarts at the top of each `apply`. This is how a mutator creates rows it cannot name at `mutate()` time — a batch whose size depends on server state — while keeping ids opaque. Ids from different mutations never collide (each has its own seed), and a rejected mutation does not shift the next one's ids.
 
 ### AppError
 

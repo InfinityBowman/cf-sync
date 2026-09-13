@@ -182,7 +182,9 @@ describe('SyncClient persistence', () => {
     await flushMicrotasks()
 
     const persisted = await store.load()
-    expect(persisted?.outbox).toEqual([{ id: null, name: 'sync.put', args: { tbl: 'todos', id: 't1', data: { title: 'offline' } } }])
+    expect(persisted?.outbox).toEqual([
+      { id: null, name: 'sync.put', args: { tbl: 'todos', id: 't1', data: { title: 'offline' } }, seed: expect.any(String) },
+    ])
 
     // Session 2 ("after reload"): the entry re-queues and pushes once synced.
     const recorder2 = new RecordingHooks()

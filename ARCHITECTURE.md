@@ -103,6 +103,11 @@ promise). What the shapes don't say:
   server-side buffering, and it doubles as the chunked bootstrap. The
   `remaining`/`pageInfo` countdown is LiveStore's progress signal
   (`sync-backend.ts:143-155`).
+- **Every mutation carries a `seed`** (protocol 2): the client-minted value
+  behind `ctx.seed`/`ctx.nextId`, echoed to the authoritative run so both
+  mint the same ids (ARCHITECTURE.md#optimistic-intents). It is not logged
+  in `mutation_log` — nothing replays the log, and the column would need a
+  storage migration.
 - The **clientId is bound at upgrade** (URL param, stored in the socket
   attachment), never carried per-message — a connection cannot speak for
   another client mid-stream. A clientId names one contiguous mutation
@@ -333,6 +338,21 @@ Decisions:
   the call site and passed as args (the zbugs convention,
   `apps/zbugs/shared/mutators.ts:19-33`) — what makes the local guess
   byte-identical to the server echo. Documented convention, not enforced.
+- **One sanctioned exception: the per-mutation seed (2026-09-13).** A batched
+  mutator that creates rows it cannot enumerate at `mutate()` time has no
+  arg to carry ids in, and the wire `Mutation.id` is no substitute (null in
+  the outbox until the server baseline is known). So the client mints
+  `seed` (a random UUID) at `mutate()` time, persists it with the outbox
+  entry, and carries it in `mutationSchema`; `ctx.nextId()` is a pure
+  function of the seed (cyrb128 → sfc32 → UUID-v4 layout, `protocol/src/ids.ts`)
+  whose sequence restarts at the top of every `apply`. Convex seeds
+  `Math.random` per mutation execution for the same reason. Server-originated
+  applies (test engine) mint their own. The protocol bump (1 → 2) is for the
+  stale-bundle direction: one worker serves both bundle and DO, so the server
+  is never older than the client, but a cached old client would push seedless
+  mutations — it is turned away at hello and reloads. Outbox entries persisted
+  by that old bundle have no seed; hydration mints one, which is consistent
+  because the original prediction died with the tab.
 - **Local throw = fail fast.** An `AppError` from the speculative run rejects
   with its code; nothing queued, nothing shown. Mutator authors must guard or
   no-op on missing rows and reserve throws for true invariants.

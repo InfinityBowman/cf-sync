@@ -73,6 +73,21 @@ export interface MutatorContext<A = unknown> {
    * server rejection rolls back through the normal permanent-error path.
    */
   authoritative: boolean
+  /**
+   * The mutation's seed: minted once by the client at `mutate()` time,
+   * persisted with the queued mutation, and carried on the wire, so every
+   * run of this mutation — optimistic, replayed after a reload,
+   * authoritative — sees the same value. Opaque; use {@link nextId}.
+   */
+  seed: string
+  /**
+   * Mints a fresh id that both runs of this mutation agree on: the n-th call
+   * returns the same UUID-shaped string in the optimistic run and the
+   * authoritative one, and the sequence restarts at the top of each `apply`.
+   * This is how a mutator creates rows it cannot name at `mutate()` time
+   * (a batch whose size depends on server state) while keeping ids opaque.
+   */
+  nextId(): string
 }
 
 /**
@@ -151,9 +166,10 @@ export interface MutatorDef<S extends AnySyncSchema = AnySyncSchema, In = any, O
   /**
    * The mutation itself. The same function runs twice — optimistically on the
    * client the moment `mutate` is called, authoritatively on the server when
-   * the push arrives — so it must be deterministic: pass ids, timestamps, and
-   * random values in as args, never compute them inside, or the server's
-   * result will not match the local prediction. Throwing {@link AppError}
+   * the push arrives — so it must be deterministic: pass timestamps and
+   * random values in as args, and take ids from args or `ctx.nextId()`, never
+   * compute them inside, or the server's result will not match the local
+   * prediction. Throwing {@link AppError}
    * rejects the mutation permanently; any other throw is transient and the
    * mutation is retried.
    */

@@ -10,7 +10,7 @@ import {
   type RowOf,
   type TableName,
 } from '@cf-sync/protocol'
-import { formatIssues, migrationPath } from '@cf-sync/protocol/internal'
+import { createIdSource, formatIssues, migrationPath, mintSeed } from '@cf-sync/protocol/internal'
 import type { RowChange } from './config'
 import { WriteSet, rowKey, validateRow, type EngineRowStore } from './engine-core'
 import { schemaFingerprint, unfingerprintableTables } from './fingerprint'
@@ -45,6 +45,12 @@ export interface TestEngineOptions {
    * output is what mutators read), mirroring the DO's connect-time check.
    */
   auth?: unknown
+  /**
+   * Mints the seed each `mutate` runs under (`ctx.seed`, behind
+   * `ctx.nextId`). Defaults to a random UUID per mutation; supply a counter
+   * (`let n = 0; nextSeed: () => \`s${++n}\``) for reproducible ids in tests.
+   */
+  nextSeed?: () => string
 }
 
 /** The outcome of one authoritative mutation: `error` is the permanent app error, if any. */
@@ -139,6 +145,7 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   readonly #clientId: string
   readonly #principal: string | undefined
   readonly #auth: unknown
+  readonly #nextSeed: () => string
   #version = 0
 
   constructor(app: AppDefinition<S, M>, opts: TestEngineOptions = {}) {
@@ -146,6 +153,7 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     this.#clientId = opts.clientId ?? 'test'
     this.#principal = opts.principal
     this.#auth = opts.auth
+    this.#nextSeed = opts.nextSeed ?? mintSeed
     if (opts.auth !== undefined && app.authContext) {
       const result = app.authContext['~standard'].validate(opts.auth)
       if (result instanceof Promise) {
@@ -209,11 +217,14 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
     if (!mutator) {
       appError = { code: 'UnknownMutator', message: `no mutator named "${name}"` }
     } else {
+      const seed = this.#nextSeed()
       const ctx: MutatorContext = {
         clientId,
         principal: this.#principal,
         auth: this.#auth,
         authoritative: true, // the test engine is the server's seat
+        seed,
+        nextId: createIdSource(seed),
       }
       const writes = new WriteSet(this.#store, this.#app.schema, { trackChanges: true })
       try {

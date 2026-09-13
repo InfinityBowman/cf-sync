@@ -11,4 +11,5 @@ export { formatIssues } from './standard-schema'
 // packages consume these; app code has no use for them.
 export { migrationPath } from './app'
 export { AUTH_CONTEXT, compileWhere } from './mutators'
+export { createIdSource, mintSeed } from './ids'
 export { MAX_ID_LENGTH, TABLE_NAME_RE } from './schema'

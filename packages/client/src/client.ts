@@ -10,8 +10,10 @@ import {
   type PatchOp,
   type PresencePeer,
   type StandardSchemaV1,
+  type MutatorContext,
 } from '@cf-sync/protocol'
 import {
+  createIdSource,
   KEEPALIVE_PING,
   PROTOCOL_VERSION,
   cursorEquals,
@@ -22,6 +24,7 @@ import {
   type ErrorMsg,
   type MutationResult,
   type PokeEndMsg,
+  mintSeed,
 } from '@cf-sync/protocol/internal'
 import {
   buildSyncUrl,
@@ -52,6 +55,7 @@ interface OutboxEntry {
   id: number | null // assigned once the server baseline (LMID) is known
   name: string
   args: unknown
+  seed: string // ctx.seed for every run of this mutation (ARCHITECTURE.md#optimistic-intents)
   resolve: () => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout> | null
@@ -672,6 +676,9 @@ export class SyncClient<
       id: e.id,
       name: e.name,
       args: e.args,
+      // A pre-protocol-2 entry has no seed; its original prediction died with
+      // the old bundle, so a fresh one is consistent between replay and server.
+      seed: e.seed ?? mintSeed(),
       resolve: noop,
       // No awaiting caller survives a reload — onMutationRejected is the one
       // surface that can still report a replayed mutation the server refuses.
@@ -743,7 +750,7 @@ export class SyncClient<
     }
     const writes = new LocalWriteSet(this.schema, this.#appliers)
     try {
-      def.apply(writes.tx, applyArgs, { clientId: this.#clientId, auth: this.#auth, authoritative: false })
+      def.apply(writes.tx, applyArgs, this.#localContext(entry.seed))
     } catch (err) {
       if (err instanceof MissingApplierError) {
         this.#warnNoApplier(entry.name, err.tbl)
@@ -836,6 +843,7 @@ export class SyncClient<
         new MutationError('UnknownMutator', `no mutator named "${name}" in the app passed to SyncClient`, { name, args }),
       )
     }
+    const seed = mintSeed()
     let applyArgs: unknown = args
     if (def.args) {
       const result = def.args['~standard'].validate(args)
@@ -843,7 +851,7 @@ export class SyncClient<
         // Async validators can't gate a synchronous queue (or a synchronous
         // local run); the server rejects them authoritatively.
         void result.catch(() => {})
-        return this.#enqueue(name, args)
+        return this.#enqueue(name, args, seed)
       }
       if (result.issues) {
         return Promise.reject(
@@ -855,7 +863,7 @@ export class SyncClient<
     }
 
     const runner = this.#intentRunner
-    if (!runner || this.#appliers.size === 0) return this.#enqueue(name, args)
+    if (!runner || this.#appliers.size === 0) return this.#enqueue(name, args, seed)
 
     // Speculative run against a buffered write set (the client mirror of the
     // server's WriteSet): reads see the buffer first, then the collections'
@@ -864,13 +872,11 @@ export class SyncClient<
     // confirm poke will carry.
     const writes = new LocalWriteSet(this.schema, this.#appliers)
     try {
-      // No server verdict exists here: no principal, and `authoritative:
-      // false` is the honest signal permission checks key on (ARCHITECTURE.md#session-control).
-      def.apply(writes.tx, applyArgs, { clientId: this.#clientId, auth: this.#auth, authoritative: false })
+      def.apply(writes.tx, applyArgs, this.#localContext(seed))
     } catch (err) {
       if (err instanceof MissingApplierError) {
         this.#warnNoApplier(name, err.tbl)
-        return this.#enqueue(name, args)
+        return this.#enqueue(name, args, seed)
       }
       // Fail fast, nothing queued: an AppError here would be a permanent
       // server rejection too (mutators must reserve throws for genuine
@@ -883,12 +889,22 @@ export class SyncClient<
         new MutationError('LocalApplyFailed', `mutator "${name}" threw during local apply: ${detail}`, { name, args }),
       )
     }
-    if (writes.isEmpty()) return this.#enqueue(name, args)
+    if (writes.isEmpty()) return this.#enqueue(name, args, seed)
     return runner(
       name,
       () => this.#flushLocalWrites(writes),
-      () => this.#enqueue(name, args),
+      () => this.#enqueue(name, args, seed),
     )
+  }
+
+  /**
+   * The optimistic run's context: no server verdict exists here — no
+   * principal, and `authoritative: false` is the honest signal permission
+   * checks key on (ARCHITECTURE.md#session-control). The seed is the one the
+   * wire will carry, so `nextId` agrees with the authoritative run.
+   */
+  #localContext(seed: string): MutatorContext {
+    return { clientId: this.#clientId, auth: this.#auth, authoritative: false, seed, nextId: createIdSource(seed) }
   }
 
   /**
@@ -920,7 +936,7 @@ export class SyncClient<
         )
       }
     }
-    return this.#enqueue(name, args)
+    return this.#enqueue(name, args, mintSeed())
   }
 
   /** Translates an intent's net writes to collection ops (inside the runner's atomic scope). */
@@ -948,7 +964,7 @@ export class SyncClient<
   }
 
   /** Queues a validated mutation; resolves/rejects on server confirm (the LMID contract). */
-  #enqueue(name: string, args: unknown): Promise<void> {
+  #enqueue(name: string, args: unknown, seed: string): Promise<void> {
     if (this.#status === 'fatal') {
       return Promise.reject(new MutationError('Fatal', 'sync client is in a fatal state', { name, args }))
     }
@@ -958,7 +974,7 @@ export class SyncClient<
       return Promise.reject(new MutationError('Stopped', 'sync client stopped', { name, args }))
     }
     return new Promise<void>((resolve, reject) => {
-      const entry: OutboxEntry = { id: null, name, args, resolve, reject, timer: null, settled: false }
+      const entry: OutboxEntry = { id: null, name, args, seed, resolve, reject, timer: null, settled: false }
       if (this.#store === undefined) {
         // Memory-only: an unconfirmed mutation would not survive a reload, so
         // rejecting (and discarding it) after the timeout is honest. With a
@@ -1498,7 +1514,7 @@ export class SyncClient<
   }
 
   #outboxSnapshot(): PersistedOutboxEntry[] {
-    return this.#outbox.map((e) => ({ id: e.id, name: e.name, args: e.args }))
+    return this.#outbox.map((e) => ({ id: e.id, name: e.name, args: e.args, seed: e.seed }))
   }
 
   /**
@@ -1524,7 +1540,7 @@ export class SyncClient<
     const mutations = this.#outbox
       .filter((e) => e.id !== null && e.id > this.#confirmedLmid)
       .sort((a, b) => a.id! - b.id!)
-      .map((e) => ({ id: e.id!, name: e.name, args: e.args }))
+      .map((e) => ({ id: e.id!, name: e.name, args: e.args, seed: e.seed }))
     if (mutations.length > 0) this.#send({ type: 'push', mutations })
   }
 

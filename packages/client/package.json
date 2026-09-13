@@ -1,6 +1,6 @@
 {
   "name": "@cf-sync/client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Browser client for cf-sync: SyncClient (optimistic mutations, offline outbox, IndexedDB mirror, presence) and a TanStack DB collection adapter, with React hooks",
   "license": "MIT",
   "repository": {
@@ -67,6 +67,7 @@
     }
   },
   "devDependencies": {
+    "@cf-sync/server": "workspace:*",
     "@cf-sync/yjs": "workspace:*",
     "@tanstack/db": "^0.8.7",
     "@types/react": "^19.0.0",

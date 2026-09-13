@@ -107,8 +107,9 @@ export class TestClient {
     this.send({ type: 'hello', protocolVersion: PROTOCOL_VERSION, schemaVersion: this.schemaVersion, cursor: this.cursor })
   }
 
-  push(mutations: Mutation[]): void {
-    this.send({ type: 'push', mutations })
+  /** Seeds are minted here unless a test pins one (ARCHITECTURE.md#optimistic-intents). */
+  push(mutations: Array<Omit<Mutation, 'seed'> & { seed?: string }>): void {
+    this.send({ type: 'push', mutations: mutations.map((m) => ({ ...m, seed: m.seed ?? crypto.randomUUID() })) })
   }
 
   close(): void {

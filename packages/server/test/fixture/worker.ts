@@ -70,6 +70,14 @@ export const testMutators = defineMutators(testSchema, {
       tx.put('counters', into, { ids })
     },
   },
+  // Mints rows named by ctx.nextId, so tests can check the DO honors the
+  // wire seed (ARCHITECTURE.md#optimistic-intents).
+  'ids.mint': {
+    args: z.object({ count: z.number() }),
+    apply: (tx, { count }, ctx) => {
+      for (let i = 0; i < count; i++) tx.put('todos', ctx.nextId(), { seed: ctx.seed })
+    },
+  },
   // Permanent failure: must advance the LMID without data effects.
   'always.fails': {
     apply: () => {

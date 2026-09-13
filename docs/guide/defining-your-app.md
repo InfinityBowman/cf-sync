@@ -71,7 +71,7 @@ A local throw rejects the call immediately and sends nothing. But local state ca
 :::
 
 ::: warning Rule 2 — pass nondeterministic values in as args
-Ids, timestamps, random values: compute them at the call site and pass them as args, never inside `apply`. Otherwise the client's optimistic prediction and the server's authoritative run produce different results, and the UI flickers on confirm.
+Timestamps, random values, ids you know up front: compute them at the call site and pass them as args, never inside `apply`. Otherwise the client's optimistic prediction and the server's authoritative run produce different results, and the UI flickers on confirm.
 :::
 
 ```ts
@@ -80,6 +80,17 @@ await client.mutate.issue.create({ id: ulid(), createdAt: Date.now(), title })
 
 // ❌ nondeterministic — server echo won't match the local prediction
 apply: (tx, { title }) => tx.put('issues', ulid(), { id: ulid(), createdAt: Date.now(), title })
+```
+
+The one exception is ids for rows the caller *cannot* enumerate — a batch whose size depends on what the server holds. `ctx.nextId()` mints ids from a per-mutation seed the engine carries with the mutation, so the n-th call returns the same id in both runs:
+
+```ts
+apply: (tx, { studyId }, ctx) => {
+  for (const reviewer of tx.list('members', { where: { studyId } })) {
+    const id = ctx.nextId()                 // same id optimistically and on the server
+    tx.put('checklists', id, { id, studyId, assignedTo: reviewer.id })
+  }
+}
 ```
 
 ## Errors: `AppError` vs everything else

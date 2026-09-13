@@ -62,7 +62,7 @@ describe('authContext declaration', () => {
       { authContext },
     )
     // And without a declaration it stays unknown-shaped but present.
-    const ctx: MutatorContext = { clientId: 'c1', authoritative: false }
+    const ctx: MutatorContext = { clientId: 'c1', authoritative: false, seed: 's', nextId: () => 'id' }
     expect(ctx.principal).toBeUndefined()
   })
 })

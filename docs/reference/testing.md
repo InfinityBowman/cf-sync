@@ -53,6 +53,17 @@ Simulates a workspace whose data was stored under an older schema version. When 
 
 Initial rows, keyed table → id → row data. Whether they are validated or taken raw depends on [`storedVersion`](#storedversion) above.
 
+### nextSeed
+
+`() => string` · default a random UUID per mutation
+
+Mints the seed each [`mutate`](#mutate) runs under — `ctx.seed`, the value behind [`ctx.nextId()`](/reference/define-kit#mutatorcontext). The default is what a real client does. Supply a counter for reproducible ids, so a test can assert on the rows a batched mutator created:
+
+```ts
+let n = 0
+const engine = createTestEngine(app, { nextSeed: () => `seed-${++n}` })
+```
+
 ## Methods
 
 ### mutate

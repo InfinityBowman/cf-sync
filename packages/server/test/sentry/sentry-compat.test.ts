@@ -71,7 +71,7 @@ describe('instrumentDurableObjectWithSentry(createWorkspaceDO(app))', () => {
         socket!,
         JSON.stringify({
           type: 'push',
-          mutations: [{ id: 1, name: 'sync.put', args: { tbl: 'todos', id: 'inline', data: { n: 1 } } }],
+          mutations: [{ id: 1, name: 'sync.put', args: { tbl: 'todos', id: 'inline', data: { n: 1 } }, seed: 's' }],
         }),
       )
 

@@ -156,7 +156,7 @@ describe('optimistic intent mutations', () => {
     const pushes = socket.takeSent().filter((m) => m.type === 'push')
     expect(pushes).toHaveLength(1)
     // One intent mutation — no sync.del echoes from the optimistic deletes.
-    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'todos.clearCompleted', args: undefined }])
+    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'todos.clearCompleted', args: undefined, seed: expect.any(String) }])
 
     confirm(socket, 1, [
       { op: 'del', tbl: 'todos', id: 't2' },
@@ -255,7 +255,7 @@ describe('optimistic intent mutations', () => {
     await flushMicrotasks()
     const pushes = socket.takeSent().filter((m) => m.type === 'push')
     expect(pushes).toHaveLength(1)
-    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'todos.clearCompleted', args: undefined }])
+    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'todos.clearCompleted', args: undefined, seed: expect.any(String) }])
 
     confirm(socket, 1, [])
     await pending
@@ -274,7 +274,7 @@ describe('optimistic intent mutations', () => {
     await flushMicrotasks()
     const pushes = socket.takeSent().filter((m) => m.type === 'push')
     expect(pushes).toHaveLength(1)
-    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'sync.del', args: { tbl: 'todos', id: 'ghost' } }])
+    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'sync.del', args: { tbl: 'todos', id: 'ghost' }, seed: expect.any(String) }])
 
     confirm(socket, 1, [])
     await pending
@@ -473,7 +473,7 @@ describe('property-access mutate namespace', () => {
     // ...and the identical wire mutation.
     const pushes = socket.takeSent().filter((m) => m.type === 'push')
     expect(pushes[0]!.mutations).toEqual([
-      { id: 1, name: 'todos.add', args: { id: 't9', title: 'via namespace' } },
+      { id: 1, name: 'todos.add', args: { id: 't9', title: 'via namespace' }, seed: expect.any(String) },
     ])
 
     confirm(socket, 1, [
@@ -497,7 +497,7 @@ describe('property-access mutate namespace', () => {
     expect(todos.has('t1')).toBe(false)
     await flushMicrotasks()
     const pushes = socket.takeSent().filter((m) => m.type === 'push')
-    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'todos.clearCompleted', args: undefined }])
+    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'todos.clearCompleted', args: undefined, seed: expect.any(String) }])
     confirm(socket, 1, [{ op: 'del', tbl: 'todos', id: 't1' }])
     await pending
   })
@@ -538,7 +538,7 @@ describe('property-access mutate namespace', () => {
     const pending = client.mutate.call.me()
     await flushMicrotasks()
     const pushes = socket.takeSent().filter((m) => m.type === 'push')
-    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'call.me', args: undefined }])
+    expect(pushes[0]!.mutations).toEqual([{ id: 1, name: 'call.me', args: undefined, seed: expect.any(String) }])
     socket.receive({ type: 'pokeStart', pokeId: 'c', baseCursor: { backendId: 'b1', version: 1 } })
     socket.receive({
       type: 'pokePart',

@@ -1,6 +1,8 @@
 import { z } from 'zod'
 
-export const PROTOCOL_VERSION = 1
+// 2: mutations carry `seed` (ARCHITECTURE.md#optimistic-intents); a stale
+// client bundle sending seedless pushes is turned away at hello instead.
+export const PROTOCOL_VERSION = 2
 
 /**
  * Hibernated DO WebSockets can fail on frames just under 1MB (empirical, see
@@ -137,6 +139,8 @@ export const mutationSchema = z.object({
   id: z.number().int().positive(),
   name: z.string().min(1),
   args: z.unknown(),
+  /** The per-mutation seed behind `ctx.seed`/`ctx.nextId` — minted by the client, echoed to the authoritative run. */
+  seed: z.string().min(1).max(128),
 })
 export type Mutation = z.infer<typeof mutationSchema>
 

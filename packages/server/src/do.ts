@@ -14,6 +14,7 @@ import {
   type PatchOp,
 } from '@cf-sync/protocol'
 import {
+  createIdSource,
   KEEPALIVE_PING,
   MAX_ID_LENGTH,
   TABLE_NAME_RE,
@@ -1106,6 +1107,8 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         principal: attachment.principal,
         auth: attachment.auth,
         authoritative: true,
+        seed: mutation.seed,
+        nextId: createIdSource(mutation.seed),
       }
       let appError: { code: string; message: string } | undefined
       let committedVersion: number | null = null

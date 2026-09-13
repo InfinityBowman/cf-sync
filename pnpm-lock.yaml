@@ -100,6 +100,9 @@ importers:
         specifier: ^0.3.0
         version: 0.3.7(react@19.2.7)(typescript@5.9.3)
     devDependencies:
+      '@cf-sync/server':
+        specifier: workspace:*
+        version: link:../server
       '@cf-sync/yjs':
         specifier: workspace:*
         version: link:../yjs

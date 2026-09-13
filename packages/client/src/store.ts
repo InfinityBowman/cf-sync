@@ -5,6 +5,8 @@ export interface PersistedOutboxEntry {
   id: number | null
   name: string
   args: unknown
+  /** The mutation's seed (`ctx.seed`). Absent only in entries persisted before protocol 2; the client mints one at replay. */
+  seed?: string
 }
 
 /** A put/del row operation in durable form (clear is signaled separately). */
