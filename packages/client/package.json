@@ -67,7 +67,6 @@
     }
   },
   "devDependencies": {
-    "@cf-sync/server": "workspace:*",
     "@cf-sync/yjs": "workspace:*",
     "@tanstack/db": "^0.8.7",
     "@types/react": "^19.0.0",

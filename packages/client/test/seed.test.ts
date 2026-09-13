@@ -1,4 +1,4 @@
-import { createTestEngine } from '@cf-sync/server/testing'
+import { createIdSource } from '@cf-sync/protocol/internal'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { SyncClient } from '../src/client'
@@ -10,7 +10,9 @@ import { FakeSocket, flushMicrotasks } from './fake-socket'
 // The seed's three paths (ARCHITECTURE.md#optimistic-intents): minted at
 // mutate() time, persisted with the outbox entry, carried on the wire — so
 // the optimistic run, a post-reload replay, and the authoritative run all
-// mint the same ids.
+// mint the same ids. The authoritative side is `createIdSource(seed)` by
+// construction (packages/server/test/node/seed.test.ts pins that), so
+// agreement with it under the wire's seed is the parity proof here.
 
 const schema = defineSchema({
   cells: z.object({ id: z.string(), studyId: z.string() }),
@@ -74,13 +76,11 @@ describe('mutation seeds', () => {
     const [mutation] = push.mutations
     expect(mutation!.seed).toMatch(/\S/)
 
-    // The server's seat: the same mutation applied under the wire's seed.
-    const engine = createTestEngine(app, { nextSeed: () => mutation!.seed })
-    expect(engine.mutate('cells.materialize', { studyId: 's1', count: 3 }).error).toBeUndefined()
+    // What the server will mint from that seed, in order.
+    const authoritative = createIdSource(mutation!.seed)
     const optimistic = [...cells.keys()].sort()
-    const authoritative = engine.list('cells').map((r) => r.id).sort()
     expect(optimistic).toHaveLength(3)
-    expect(optimistic).toEqual(authoritative)
+    expect(optimistic).toEqual([authoritative(), authoritative(), authoritative()].sort())
     await client.destroy()
   })
 
