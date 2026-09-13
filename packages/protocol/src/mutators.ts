@@ -100,6 +100,24 @@ export type AuthContextCarrier<AC> = {
 /** Extracts the validated auth-context type a mutator registry declares, `unknown` when it declares none. */
 export type AuthContextOf<M> = M extends AuthContextCarrier<infer AC> ? AC : unknown
 
+/** The values a `tx.list` filter compares with: JSON scalars, matched by strict equality. */
+export type FilterValue = string | number | boolean | null
+
+/**
+ * Equality filters for `tx.list`, typed against the table's row shape: any
+ * subset of the row's scalar-valued fields. A field the row does not declare,
+ * or one that holds an object or array, is a type error.
+ */
+export type RowFilter<Row> = {
+  [F in keyof Row]?: unknown extends Row[F] ? FilterValue : Extract<Row[F], FilterValue>
+}
+
+/** Options for `tx.list`. */
+export interface ListOptions<Row> {
+  /** Keep only rows whose named fields strictly equal these values (all must match). */
+  where?: RowFilter<Row>
+}
+
 /**
  * The authoritative view a mutator runs against. Reads see the mutation's own
  * buffered writes; writes are flushed to SQLite only if the mutator completes
@@ -107,11 +125,12 @@ export type AuthContextOf<M> = M extends AuthContextCarrier<infer AC> ? AC : unk
  * validated output (defaults applied); `get`/`list` return the stored output
  * shape. `del`/`get`/`list` accept unknown tables at runtime so schema
  * migrations can read and clean up tables that left the schema — only `put`
- * is strict.
+ * is strict. `list` takes an optional `{ where }` of equality filters — the
+ * server evaluates them in SQL before parsing rows, the client before cloning.
  */
 export interface MutatorTx<S extends AnySyncSchema = AnySyncSchema> {
   get<K extends TableName<S>>(tbl: K, id: string): RowOf<S, K> | null
-  list<K extends TableName<S>>(tbl: K): Array<{ id: string; data: RowOf<S, K> }>
+  list<K extends TableName<S>>(tbl: K, opts?: ListOptions<RowOf<S, K>>): Array<{ id: string; data: RowOf<S, K> }>
   put<K extends TableName<S>>(tbl: K, id: string, data: RowInputOf<S, K>): void
   del(tbl: TableName<S>, id: string): void
 }
@@ -268,6 +287,23 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
     })
   }
   return defs
+}
+
+/**
+ * The exact `where` predicate both engines apply, after validating the filter
+ * (a non-scalar value is a permanent InvalidArgs — the same verdict on both
+ * runs). Storage prefilters are supersets of this; it is the truth.
+ */
+export function compileWhere(where: Record<string, unknown> | undefined): (data: Record<string, unknown>) => boolean {
+  if (!where) return () => true
+  const entries = Object.entries(where).filter(([, value]) => value !== undefined)
+  for (const [field, value] of entries) {
+    if (value !== null && typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+      throw new AppError('InvalidArgs', `list filter on "${field}" must be a string, number, boolean, or null`)
+    }
+  }
+  if (entries.length === 0) return () => true
+  return (data) => entries.every(([field, value]) => data[field] === value)
 }
 
 const crudTarget = {

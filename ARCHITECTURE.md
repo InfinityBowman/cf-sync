@@ -189,6 +189,19 @@ storage — `tx.put`, shared by mutators, schema migrations, and admin import:
 - Validation must be synchronous (mutations commit inside `transactionSync`);
   a validator returning a Promise is rejected as a permanent error.
 
+**Filtered reads.** `tx.list(tbl, { where })` takes equality filters over
+scalar fields, typed from the row. One predicate (`compileWhere`, in the
+protocol package) is the truth on both sides: the server's `WriteSet` applies
+it to stored rows and to its own buffered puts (a rewrite can make a stored
+row stop matching), the client's `LocalWriteSet` does the same over the
+collection. `SqlRowStore` also pushes the filter into SQL as
+`json_extract(data, '$.field') = ?` — a *prefilter*, since JSON equality is
+looser than `===` (a JSON `true` extracts as `1`, a JSON `null` and a missing
+key both extract as NULL), so only matching rows are parsed but every parsed
+row is re-checked. The expression form is deliberate: a future declared index
+is a partial expression index over the same text, no generated column and no
+backfill. Non-identifier keys skip the SQL clause and match in JS alone.
+
 **Post-commit hook.** `onMutationCommitted` on the engine config is the one
 seam for effects outside the workspace's rows (notifications, projections
 into D1, activity logs). With a hook configured — and only then — the

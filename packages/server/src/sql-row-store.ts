@@ -1,4 +1,8 @@
+import type { FilterValue } from '@cf-sync/protocol'
 import type { EngineRowStore } from './engine-core'
+
+// Only identifier-like keys go into a JSON path; the rest match in JS alone.
+const FIELD_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /**
  * EngineRowStore over DO SQLite — the storage half of the shared WriteSet
@@ -16,11 +20,27 @@ export class SqlRowStore implements EngineRowStore {
     return row ? (JSON.parse(row.data) as Record<string, unknown>) : null
   }
 
-  list(tbl: string): Array<{ id: string; data: Record<string, unknown> }> {
+  list(tbl: string, where?: Record<string, FilterValue>): Array<{ id: string; data: Record<string, unknown> }> {
+    // SQL is a prefilter: json_extract equality is looser than `===` (true
+    // reads as 1, a JSON null as a missing key), so the WriteSet re-checks
+    // every parsed row. The expression form here is what an index would cover.
+    const clauses: string[] = []
+    const params: Array<string | number> = [tbl]
+    for (const [field, value] of Object.entries(where ?? {})) {
+      if (!FIELD_RE.test(field)) continue
+      const path = `json_extract(data, '$.${field}')`
+      if (value === null) clauses.push(`${path} IS NULL`)
+      else if (typeof value === 'number' && !Number.isFinite(value)) clauses.push('0')
+      else {
+        clauses.push(`${path} = ?`)
+        params.push(typeof value === 'boolean' ? (value ? 1 : 0) : value)
+      }
+    }
+    const filter = clauses.map((c) => ` AND ${c}`).join('')
     const out: Array<{ id: string; data: Record<string, unknown> }> = []
     for (const row of this.sql.exec<{ id: string; data: string }>(
-      `SELECT id, data FROM rows WHERE tbl = ? AND deleted = 0`,
-      tbl,
+      `SELECT id, data FROM rows WHERE tbl = ? AND deleted = 0${filter}`,
+      ...params,
     )) {
       out.push({ id: row.id, data: JSON.parse(row.data) as Record<string, unknown> })
     }

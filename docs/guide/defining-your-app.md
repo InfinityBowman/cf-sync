@@ -46,6 +46,16 @@ const mutators = defineMutators(schema, {
 
 The server validates `args` against the schema before `apply` runs. Inside `apply`, `tx` gives you `get`, `put`, `del`, and `list` over the workspace's tables — every write validated, all of them committed atomically with the mutation's bookkeeping.
 
+Relation-shaped reads take an equality filter instead of a hand-written loop — `list` returns only the rows whose fields strictly equal the values you name, typed against the row so a misspelled field is a compile error:
+
+```ts
+for (const { id } of tx.list('checklists', { where: { studyId, assignedTo: userId } })) {
+  tx.del('checklists', id)
+}
+```
+
+The filter runs in SQL on the server before rows are parsed and before rows are cloned on the client; it still walks the table, so a mutator that filters once per item in a large batch should build its own lookup up front.
+
 The definitions can also be written directly inside `defineApp({ mutators: { ... } })` — inference is identical either way. `defineMutators` is only *required* when declaring an [`authContext`](/guide/auth#reading-the-verdict-in-mutators), its third argument.
 
 ### CRUD is included

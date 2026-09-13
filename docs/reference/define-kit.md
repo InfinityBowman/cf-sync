@@ -85,7 +85,7 @@ The full-row last-write-wins pair — `sync.put` and `sync.del`, the mutations [
 The authoritative view a mutator runs against, typed from the schema:
 
 - `get(tbl, id)` — the stored row (output shape, defaults applied) or `null`.
-- `list(tbl)` — every row as `{ id, data }`.
+- `list(tbl, { where? })` — every row as `{ id, data }`, or only the rows whose fields strictly equal the scalars in `where` (`{ studyId: 's1', assignedTo: null }`; all named fields must match). `where` is typed against the row (`RowFilter<Row>`): an undeclared field, or a field holding an object or array, is a type error; a non-scalar value at runtime is a permanent `InvalidArgs`. The server evaluates the filter in SQL before parsing rows, the client before cloning them.
 - `put(tbl, id, data)` — writes the input shape, stores the validated output.
 - `del(tbl, id)` — removes the row.
 

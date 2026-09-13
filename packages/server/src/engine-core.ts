@@ -1,5 +1,12 @@
-import { AppError, MAX_ROW_BYTES, type AnySyncSchema, type MutatorTx, type StandardSchemaV1 } from '@cf-sync/protocol'
-import { MAX_ID_LENGTH, TABLE_NAME_RE, formatIssues, jsonByteSize } from '@cf-sync/protocol/internal'
+import {
+  AppError,
+  MAX_ROW_BYTES,
+  type AnySyncSchema,
+  type FilterValue,
+  type MutatorTx,
+  type StandardSchemaV1,
+} from '@cf-sync/protocol'
+import { MAX_ID_LENGTH, TABLE_NAME_RE, compileWhere, formatIssues, jsonByteSize } from '@cf-sync/protocol/internal'
 import type { RowChange } from './config'
 
 /**
@@ -16,8 +23,11 @@ import type { RowChange } from './config'
 export interface EngineRowStore {
   /** The live (non-deleted) row, or null. */
   get(tbl: string, id: string): Record<string, unknown> | null
-  /** All live rows in a table. */
-  list(tbl: string): Array<{ id: string; data: Record<string, unknown> }>
+  /**
+   * Live rows in a table. `where` is a hint: the store may return a superset
+   * of the matching rows (or ignore it); the WriteSet applies the exact predicate.
+   */
+  list(tbl: string, where?: Record<string, FilterValue>): Array<{ id: string; data: Record<string, unknown> }>
   /** Insert or replace a live row stamped with `version`. */
   put(tbl: string, id: string, data: Record<string, unknown>, version: number): void
   /** Tombstone a live row stamped with `version`; returns rows affected (0 when absent). */
@@ -120,12 +130,19 @@ export class WriteSet {
       this.#before.set(k, structuredClone(stored))
       return stored
     },
-    list: (tbl) => {
+    list: (tbl, opts) => {
       if (!TABLE_NAME_RE.test(tbl)) throw new AppError('InvalidArgs', `invalid table name "${tbl}"`)
+      const where = opts?.where as Record<string, FilterValue> | undefined
+      const matches = compileWhere(where)
       const merged = new Map<string, Record<string, unknown>>()
-      for (const row of this.rows.list(tbl)) merged.set(row.id, row.data)
+      for (const row of this.rows.list(tbl, where)) if (matches(row.data)) merged.set(row.id, row.data)
       for (const del of this.#dels.values()) if (del.tbl === tbl) merged.delete(del.id)
-      for (const put of this.#puts.values()) if (put.tbl === tbl) merged.set(put.id, structuredClone(put.data))
+      for (const put of this.#puts.values()) {
+        if (put.tbl !== tbl) continue
+        // A buffered rewrite can make a stored row stop matching.
+        if (matches(put.data)) merged.set(put.id, structuredClone(put.data))
+        else merged.delete(put.id)
+      }
       return [...merged].map(([id, data]) => ({ id, data }))
     },
     put: (tbl, id, data) => {

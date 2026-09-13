@@ -61,6 +61,15 @@ export const testMutators = defineMutators(testSchema, {
       }
     },
   },
+  // Echoes the ids a filtered list returns, so tests can watch the SQL
+  // prefilter plus the exact re-check against real SQLite.
+  'where.echo': {
+    args: z.object({ into: z.string(), where: z.record(z.string(), z.unknown()) }),
+    apply: (tx, { into, where }) => {
+      const ids = tx.list('todos', { where: where as never }).map((r) => r.id).sort()
+      tx.put('counters', into, { ids })
+    },
+  },
   // Permanent failure: must advance the LMID without data effects.
   'always.fails': {
     apply: () => {

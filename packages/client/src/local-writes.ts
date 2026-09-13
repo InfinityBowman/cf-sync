@@ -1,5 +1,5 @@
-import { AppError, type AnySyncSchema, type MutatorTx, type TableSchema } from '@cf-sync/protocol'
-import { formatIssues } from '@cf-sync/protocol/internal'
+import { AppError, type AnySyncSchema, type FilterValue, type MutatorTx, type TableSchema } from '@cf-sync/protocol'
+import { compileWhere, formatIssues } from '@cf-sync/protocol/internal'
 import { MissingApplierError } from './errors'
 import type { TableApplier } from './types'
 
@@ -36,12 +36,17 @@ export class LocalWriteSet {
       const row = applier.get(id)
       return row ? structuredClone(row) : null
     },
-    list: (tbl) => {
+    list: (tbl, opts) => {
       const applier = this.#applier(tbl)
+      const matches = compileWhere(opts?.where as Record<string, FilterValue> | undefined)
       const merged = new Map<string, Record<string, unknown>>()
-      for (const { id, data } of applier.list()) merged.set(id, structuredClone(data))
+      for (const { id, data } of applier.list()) if (matches(data)) merged.set(id, structuredClone(data))
       for (const del of this.#dels.values()) if (del.tbl === tbl) merged.delete(del.id)
-      for (const put of this.#puts.values()) if (put.tbl === tbl) merged.set(put.id, structuredClone(put.data))
+      for (const put of this.#puts.values()) {
+        if (put.tbl !== tbl) continue
+        if (matches(put.data)) merged.set(put.id, structuredClone(put.data))
+        else merged.delete(put.id)
+      }
       return [...merged].map(([id, data]) => ({ id, data }))
     },
     put: (tbl, id, data) => {

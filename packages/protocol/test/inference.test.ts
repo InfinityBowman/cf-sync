@@ -98,6 +98,24 @@ describe('defineApp inline mutators', () => {
   })
 })
 
+describe('list where typing', () => {
+  it('filters type against the row: unknown fields and non-scalar values fail to compile', () => {
+    const mutators = defineMutators(schema, {
+      'todos.scan': {
+        apply: (tx) => {
+          const rows = tx.list('todos', { where: { done: true, title: 'x' } })
+          expectTypeOf(rows).toEqualTypeOf<Array<{ id: string; data: { id: string; title: string; done: boolean } }>>()
+          // @ts-expect-error a field the row does not declare
+          tx.list('todos', { where: { colour: 'red' } })
+          // @ts-expect-error the wrong scalar for a declared field
+          tx.list('todos', { where: { done: 'yes' } })
+        },
+      },
+    })
+    expect(Object.keys(mutators)).toEqual(['todos.scan'])
+  })
+})
+
 describe('migration tx typing', () => {
   it('reads come back as Record<string, unknown>, so field typos stay visible', () => {
     const app = defineApp({

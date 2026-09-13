@@ -33,11 +33,14 @@ export {
   type CrudMutators,
   type CrudPutArgs,
   type EngineErrorCode,
+  type FilterValue,
+  type ListOptions,
   type MutationArgs,
   type MutatorContext,
   type MutatorDef,
   type MutatorTx,
   type MutatorsFor,
+  type RowFilter,
 } from './mutators'
 export {
   defineApp,
