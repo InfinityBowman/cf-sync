@@ -420,9 +420,11 @@ Lifted from partyserver/tldraw/LiveStore, considered settled:
 
 ## Schema evolution
 
-- `protocolVersion` (integer): server supports N and N-1; older clients get
-  `VersionNotSupported` and hard-reload. Server deploys before clients (Zero's
-  rule, `protocol-version.ts:15-77`).
+- `protocolVersion` (integer): the server speaks exactly N; any other value
+  gets `VersionNotSupported` (4400) and hard-reloads. One worker serves both
+  bundle and DO, so the server is never behind the client and there is no
+  N-1 window to keep (Zero keeps one because its deploys are split,
+  `protocol-version.ts:15-77`).
 - **Every schema change requires a version bump** — additive too. The old
   additive-within-a-version allowance was unsound twice over: rows written
   before the change are never migrated, so a defaulted field is absent at
@@ -431,6 +433,15 @@ Lifted from partyserver/tldraw/LiveStore, considered settled:
   their full-row `sync.put`s silently strip any new field a new-bundle client
   set. A bump closes both. Never remove a mutator name shipped under a live
   version (D10).
+- **Import migrates older snapshots (2026-09-13).** A snapshot with
+  `schemaVersion < app.version` replays `migrationPath` over its rows in a
+  `MemoryRowStore` behind the same `WriteSet` (`validateAtFlush`) the wake
+  path uses, then imports the net result; the response carries
+  `migratedFrom`. Newer snapshots are rejected; a missing or throwing step
+  rejects before the transaction opens, so the workspace is untouched. The
+  chain only rewrites rows — extension state (Yjs fields) passes through as
+  is. This is what keeps a retention window of exports restorable across a
+  version bump.
 - **Drift detection is two-layered by blast radius.** At runtime the DO stores
   a structural fingerprint of the table schemas beside the version
   (`fingerprint.ts`); same version + different fingerprint warns once and

@@ -27,12 +27,14 @@ Routes resolve to `null` for traffic that isn't theirs, so they chain with `??` 
 ```
 GET  /admin/<workspaceId>/stats       gauges + counters (rows, versions, connections, db size)
 GET  /admin/<workspaceId>/export      JSON snapshot of live rows
-POST /admin/<workspaceId>/import      replace state from a snapshot (live clients converge via reset poke)
+POST /admin/<workspaceId>/import      replace state from a snapshot (live clients converge via reset poke); older snapshots are migrated on the way in
 POST /admin/<workspaceId>/reset       wipe the workspace; new history (backendId)
 POST /admin/<workspaceId>/disconnect  kick or refresh live sessions ({principal?, clientId?, mode})
 ```
 
 With the [yjs fields extension](/guide/collaborative-text) registered, `stats` includes its gauges and `export`/`import` round-trip fields alongside rows.
+
+A snapshot taken before a schema bump still imports: the server replays the app's migration chain over the snapshot's rows — the same steps a sleeping workspace runs on wake — and the response carries `migratedFrom` so the operator can see it happened. A snapshot *newer* than the deployed app is rejected, and a chain that cannot be replayed (a missing or throwing step) rejects with the workspace untouched. Retained backups therefore stay restorable across version bumps for as long as the migration chain reaches back to them.
 
 Live clients need no special handling around any of these: an `import` or `reset` changes the workspace's history id, and connected clients converge through a reset poke — a full re-bootstrap delivered as a normal protocol message.
 

@@ -50,7 +50,7 @@ import {
   type RowChange,
   type WorkspaceEngineConfig,
 } from './config'
-import { WriteSet, validateRow } from './engine-core'
+import { MemoryRowStore, validateRow, WriteSet } from './engine-core'
 import { presenceFingerprint, schemaFingerprint } from './fingerprint'
 import { SqlRowStore } from './sql-row-store'
 import { loadOrInitMeta, migrate, type Meta } from './storage'
@@ -740,16 +740,36 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           }
           if (!parsed.success) return json({ error: 'invalid snapshot', detail: parsed.error.message }, 400)
           const snapshot = parsed.data
-          if (snapshot.schemaVersion !== config.app.version) {
+          if (snapshot.schemaVersion > config.app.version) {
             return json(
               { error: `snapshot is schema version ${snapshot.schemaVersion}, server is ${config.app.version}` },
               400,
             )
           }
+          // An older snapshot replays the same chain the wake path runs
+          // (#migrateAppSchema), staged in memory: a missing or throwing step
+          // rejects with the workspace untouched (ARCHITECTURE.md#schema-evolution).
+          let rows: Array<{ tbl: string; id: string; data: Record<string, unknown> }> = snapshot.rows
+          let migratedFrom: number | undefined
+          if (snapshot.schemaVersion < config.app.version) {
+            try {
+              const steps = migrationPath(config.app, snapshot.schemaVersion)
+              const staged = new MemoryRowStore()
+              for (const row of snapshot.rows) staged.put(row.tbl, row.id, row.data, 0)
+              const writes = new WriteSet(staged, config.app.schema, { validateAtFlush: true })
+              for (const step of steps) step.migrate?.(writes.tx)
+              writes.flush(1)
+              rows = staged.live()
+              migratedFrom = snapshot.schemaVersion
+            } catch (err) {
+              const detail = err instanceof Error ? err.message : String(err)
+              return json({ error: `snapshot migration from version ${snapshot.schemaVersion} failed: ${detail}` }, 400)
+            }
+          }
           // Imported rows go through the same schema validation as mutator
           // writes; what lands in storage is the parsed output.
           const importRows: Array<{ tbl: string; id: string; data: Record<string, unknown> }> = []
-          for (const row of snapshot.rows) {
+          for (const row of rows) {
             if (!TABLE_NAME_RE.test(row.tbl) || row.id.length > MAX_ID_LENGTH) {
               return json({ error: `invalid row target ${row.tbl}/${row.id}` }, 400)
             }
@@ -813,7 +833,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
               patch: [{ op: 'clear' }, ...this.#snapshotPatch()],
             })
           }
-          return json({ imported: snapshot.rows.length, version })
+          return json({ imported: importRows.length, version, ...(migratedFrom !== undefined ? { migratedFrom } : {}) })
         }
 
         case 'POST reset': {

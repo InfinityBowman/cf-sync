@@ -73,6 +73,56 @@ export function rowKey(tbl: string, id: string): string {
   return `${tbl}\u0000${id}`
 }
 
+interface StoredRow {
+  tbl: string
+  id: string
+  data: Record<string, unknown>
+  version: number
+  deleted: boolean
+}
+
+/**
+ * EngineRowStore over a Map — the test engine's storage, and the staging
+ * area an admin import migrates an older snapshot in before touching SQLite.
+ */
+export class MemoryRowStore implements EngineRowStore {
+  readonly rows = new Map<string, StoredRow>()
+
+  get(tbl: string, id: string): Record<string, unknown> | null {
+    const row = this.rows.get(rowKey(tbl, id))
+    return row && !row.deleted ? structuredClone(row.data) : null
+  }
+
+  list(tbl: string): Array<{ id: string; data: Record<string, unknown> }> {
+    const out: Array<{ id: string; data: Record<string, unknown> }> = []
+    for (const row of this.rows.values()) {
+      if (row.tbl === tbl && !row.deleted) out.push({ id: row.id, data: structuredClone(row.data) })
+    }
+    return out
+  }
+
+  /** Every live row across tables, in insertion order. */
+  live(): Array<{ tbl: string; id: string; data: Record<string, unknown> }> {
+    const out: Array<{ tbl: string; id: string; data: Record<string, unknown> }> = []
+    for (const row of this.rows.values()) {
+      if (!row.deleted) out.push({ tbl: row.tbl, id: row.id, data: structuredClone(row.data) })
+    }
+    return out
+  }
+
+  put(tbl: string, id: string, data: Record<string, unknown>, version: number): void {
+    this.rows.set(rowKey(tbl, id), { tbl, id, data: structuredClone(data), version, deleted: false })
+  }
+
+  del(tbl: string, id: string, version: number): number {
+    const row = this.rows.get(rowKey(tbl, id))
+    if (!row || row.deleted) return 0
+    row.deleted = true
+    row.version = version
+    return 1
+  }
+}
+
 interface RowWrite {
   tbl: string
   id: string

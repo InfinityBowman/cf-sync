@@ -12,7 +12,7 @@ import {
 } from '@cf-sync/protocol'
 import { createIdSource, formatIssues, migrationPath, mintSeed } from '@cf-sync/protocol/internal'
 import type { RowChange } from './config'
-import { WriteSet, rowKey, validateRow, type EngineRowStore } from './engine-core'
+import { MemoryRowStore, WriteSet, validateRow } from './engine-core'
 import { schemaFingerprint, unfingerprintableTables } from './fingerprint'
 
 export { schemaFingerprint }
@@ -63,44 +63,6 @@ export interface TestMutationResult {
    * error and when the writes net to nothing.
    */
   changes: RowChange[]
-}
-
-interface StoredRow {
-  tbl: string
-  id: string
-  data: Record<string, unknown>
-  version: number
-  deleted: boolean
-}
-
-/** EngineRowStore over a Map — the test-engine counterpart of the DO's SQLite store. */
-class MemoryRowStore implements EngineRowStore {
-  readonly rows = new Map<string, StoredRow>()
-
-  get(tbl: string, id: string): Record<string, unknown> | null {
-    const row = this.rows.get(rowKey(tbl, id))
-    return row && !row.deleted ? structuredClone(row.data) : null
-  }
-
-  list(tbl: string): Array<{ id: string; data: Record<string, unknown> }> {
-    const out: Array<{ id: string; data: Record<string, unknown> }> = []
-    for (const row of this.rows.values()) {
-      if (row.tbl === tbl && !row.deleted) out.push({ id: row.id, data: structuredClone(row.data) })
-    }
-    return out
-  }
-
-  put(tbl: string, id: string, data: Record<string, unknown>, version: number): void {
-    this.rows.set(rowKey(tbl, id), { tbl, id, data: structuredClone(data), version, deleted: false })
-  }
-
-  del(tbl: string, id: string, version: number): number {
-    const row = this.rows.get(rowKey(tbl, id))
-    if (!row || row.deleted) return 0
-    row.deleted = true
-    row.version = version
-    return 1
-  }
 }
 
 // Permanent-vs-transient error semantics: invariant 2, ARCHITECTURE.md#invariants.
