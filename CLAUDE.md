@@ -21,3 +21,15 @@ Invariants that must never break (see ARCHITECTURE.md#invariants):
 1. A mutation's data effects and the client's `last_mutation_id` advance commit in the same SQLite transaction.
 2. Permanent app errors still advance `last_mutation_id`.
 3. All DO WebSocket handlers stay synchronous — no `await` between reading state and sending frames.
+
+## Releasing
+
+No release workflow, changesets, or tags: bump `version` in the package's package.json, commit, then from the repo root:
+
+```bash
+npm login                                                  # only if `npm whoami` fails; the token in ~/.npmrc expires
+pnpm build
+pnpm -r --filter './packages/*' publish --access public --no-git-checks
+```
+
+Recursive publish skips packages whose version is already on the registry, so it is safe to run for the whole workspace after bumping one package. `--no-git-checks` is required because the untracked `packages/yjs/reference/` clones dirty the tree. `prepack` only syncs docs, so run `pnpm build` first; `publishConfig` swaps exports to `dist/` at pack time. Then `pnpm --filter @cf-sync/demo deploy` if the demo should pick the release up. Consumers on pnpm hold new versions for the release-age window unless they exclude `@cf-sync/*` (corates does).
