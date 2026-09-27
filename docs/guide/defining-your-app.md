@@ -54,7 +54,7 @@ for (const { id } of tx.list('checklists', { where: { studyId, assignedTo: userI
 }
 ```
 
-The filter runs in SQL on the server before rows are parsed and before rows are cloned on the client; it still walks the table, so a mutator that filters once per item in a large batch should build its own lookup up front.
+On the server the filter runs in SQL, and each table and field you filter on gets an index the first time a list uses it, so a filtered read does not walk the table. The client's optimistic run still walks its collection, so a mutator that filters once per item in a large batch should build its own lookup up front.
 
 The definitions can also be written directly inside `defineApp({ mutators: { ... } })` — inference is identical either way. `defineMutators` is only *required* when declaring an [`authContext`](/guide/auth#reading-the-verdict-in-mutators), its third argument.
 

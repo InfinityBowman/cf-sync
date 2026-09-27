@@ -11,7 +11,7 @@ export default defineConfig({
             wrangler: { configPath: './test/fixture/wrangler.jsonc' },
           }),
         ],
-        test: { name: 'workerd', include: ['test/**/*.test.ts'], exclude: ['test/node/**', 'test/sentry/**'] },
+        test: { name: 'workerd', include: ['test/**/*.test.ts'], exclude: ['test/node/**', 'test/sentry/**', 'test/bench/**'] },
       },
       {
         // The Sentry-wrapper compatibility drill gets its own worker because
@@ -24,6 +24,15 @@ export default defineConfig({
         ],
         test: { name: 'sentry', include: ['test/sentry/**/*.test.ts'] },
       },
+      // Timing runs against a large workspace, opt-in: CF_SYNC_BENCH=1 pnpm vitest run --project bench
+      ...(process.env.CF_SYNC_BENCH
+        ? [
+            {
+              plugins: [cloudflareTest({ wrangler: { configPath: './test/fixture/wrangler.jsonc' } })],
+              test: { name: 'bench', include: ['test/bench/**/*.test.ts'], testTimeout: 600_000 },
+            },
+          ]
+        : []),
       {
         // Node-only pieces of the ./testing subpath (checkSchemaEvolution
         // reads and writes its snapshot file with node:fs).
