@@ -40,6 +40,38 @@ function request<T>(req: IDBRequest<T>): Promise<T> {
   })
 }
 
+/**
+ * Row writes per batch. Each put structured-clones its value synchronously
+ * on the calling thread, so a bootstrap's worth of puts issued at once is
+ * one long main-thread task; batches let the page breathe between them.
+ */
+const WRITE_BATCH = 1_000
+
+/**
+ * Issues the row ops in batches, each queued from the previous batch's last
+ * request callback — the transaction stays active inside request callbacks,
+ * so every op still commits in the one transaction.
+ */
+function writeRows(rowStore: IDBObjectStore, ops: PokePersist['ops']): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let i = 0
+    const next = (): void => {
+      let last: IDBRequest | null = null
+      for (const end = Math.min(i + WRITE_BATCH, ops.length); i < end; i++) {
+        const op = ops[i]!
+        last = op.op === 'put' ? rowStore.put(op.value, [op.tbl, op.id]) : rowStore.delete([op.tbl, op.id])
+      }
+      if (!last || i >= ops.length) {
+        resolve()
+        return
+      }
+      last.onsuccess = next
+      last.onerror = () => reject(last!.error ?? new Error('IndexedDB request failed'))
+    }
+    next()
+  })
+}
+
 function txnDone(txn: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     txn.oncomplete = () => resolve()
@@ -155,10 +187,7 @@ export class IndexedDBSyncStore implements SyncStore {
       if (!subsumed) {
         const rowStore = txn.objectStore(ROWS)
         if (update.clear) rowStore.clear()
-        for (const op of update.ops) {
-          if (op.op === 'put') rowStore.put(op.value, [op.tbl, op.id])
-          else rowStore.delete([op.tbl, op.id])
-        }
+        await writeRows(rowStore, update.ops)
         metaStore.put({ schemaVersion: update.schemaVersion, cursor: update.cursor } satisfies MetaRecord, 'state')
       }
       txn.objectStore(OUTBOX).put(

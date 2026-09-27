@@ -30,6 +30,21 @@ describe('IndexedDBSyncStore', () => {
     expect(await store.load()).toBeNull()
   })
 
+  it('persists a poke larger than one write batch, deletes included, in one commit', async () => {
+    const { store } = makeStore()
+    const puts = Array.from({ length: 2_500 }, (_, i) => ({ op: 'put' as const, tbl: 'todos', id: `t${i}`, value: { i } }))
+    await store.applyPoke(pokeUpdate({ clear: true, ops: puts, outbox: [{ id: 1, name: 'x', args: null, seed: 's' }] }))
+    // Deletes land on both sides of the 1,000-op batch boundaries.
+    const dels = [5, 999, 1_000, 1_001, 2_499].map((i) => ({ op: 'del' as const, tbl: 'todos', id: `t${i}` }))
+    await store.applyPoke(pokeUpdate({ ops: [...dels, ...puts.slice(0, 1_200)], cursor: { backendId: 'b1', version: 2 } }))
+    const state = await store.load()
+    expect(state?.cursor).toEqual({ backendId: 'b1', version: 2 })
+    const ids = new Set(state!.rows.map((r) => r.id))
+    expect(ids.size).toBe(2_499)
+    for (const id of ['t5', 't999', 't1000', 't1001']) expect(ids.has(id)).toBe(true) // re-put after the delete
+    expect(ids.has('t2499')).toBe(false)
+  })
+
   it('round-trips rows, cursor, lmid, and outbox through applyPoke', async () => {
     const { store } = makeStore()
     await store.applyPoke(
