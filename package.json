@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm --filter './packages/*' -r build",
     "check:packages": "pnpm build && bash scripts/check-packages.sh",
+    "release": "pnpm build && pnpm -r --filter './packages/*' publish --access public --no-git-checks",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "docs:dev": "pnpm --filter docs dev",
