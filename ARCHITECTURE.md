@@ -111,7 +111,8 @@ promise). What the shapes don't say:
   bootstrap patch keyed by `(backendId, currentVersion)`: hellos that arrive
   together (a class opening one workspace, every tab re-bootstrapping after a
   schema bump) share one build, and any write moves the version, so a stale
-  snapshot is never served.
+  snapshot is never served. The build is dropped as soon as the version
+  moves, since no later hello could use it.
 - **Every mutation carries a `seed`** (protocol 2): the client-minted value
   behind `ctx.seed`/`ctx.nextId`, echoed to the authoritative run so both
   mint the same ids (ARCHITECTURE.md#optimistic-intents). It is not logged
@@ -217,8 +218,10 @@ expression index on first use — `json_extract(data, '$.field') WHERE tbl =
 '<table>'`, over the same text the query uses, so no generated column and no
 backfill. The query inlines the table as a literal because SQLite only uses a
 partial index when the query's own WHERE repeats the index's term (the name is
-already restricted to `TABLE_NAME_RE`). Indexes are derived state: admin reset
-drops them with everything else and the next filtered list recreates them.
+already restricted to `TABLE_NAME_RE`). Indexes are derived state: every
+filtered list issues `CREATE INDEX IF NOT EXISTS` rather than remembering
+which exist, so one lost to a rolled-back mutation or to admin reset is back
+on the next filtered list.
 Non-identifier keys skip the SQL clause and match in JS alone.
 
 **Post-commit hook.** `onMutationCommitted` on the engine config is the one

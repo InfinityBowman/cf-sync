@@ -228,7 +228,11 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      * cannot wipe the reconnected client's fresh state.
      */
     #presence = new Map<string, { ws: WebSocket; principal?: string; state: unknown }>()
-    /** The last bootstrap patch built, reused while its version is current (see #bootstrapPatch). */
+    /**
+     * The last bootstrap patch built, reused while its version is current (see
+     * #bootstrapPatch). Dropped whenever the version moves: a large workspace's
+     * snapshot is tens of MB that no later hello could use.
+     */
     #snapshot: { backendId: string; version: number; patch: PatchParts } | null = null
     // Since-start operational counters (reset on eviction; durable gauges come
     // from SQL in #stats). No wall-clock latency here: workers freeze Date.now
@@ -815,6 +819,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           }
           this.#meta.currentVersion = version
           this.#meta.minCursorVersion = version
+          this.#snapshot = null
           if (hasExtensionData) {
             // ARCHITECTURE.md#yjs-fields: clients only re-GET fields on ready *transitions*, so an
             // import carrying extension state cycles every socket with a
@@ -843,8 +848,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
             ''
           await this.ctx.storage.deleteAll()
           migrate(this.#sql)
-          // deleteAll dropped the filter indexes too; a fresh store recreates them on use.
-          this.#rows = new SqlRowStore(this.#sql)
+          this.#snapshot = null
           this.#meta = loadOrInitMeta(
             this.#sql,
             config.app.version,
@@ -1198,6 +1202,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       // rollback can never leave memory ahead of storage.
       if (committedVersion !== null) {
         this.#meta.currentVersion = committedVersion
+        this.#snapshot = null
         this.#notifyCommitted({
           workspaceId: this.#meta.workspaceId,
           name: mutation.name,

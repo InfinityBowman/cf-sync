@@ -17,9 +17,6 @@ function hex(text: string): string {
  * private-copy contract.
  */
 export class SqlRowStore implements EngineRowStore {
-  /** (tbl, field) pairs whose filter index exists, so each is created once per wake. */
-  readonly #indexed = new Set<string>()
-
   constructor(private readonly sql: SqlStorage) {}
 
   /**
@@ -29,14 +26,13 @@ export class SqlRowStore implements EngineRowStore {
    * it every filtered list scans and parses the whole table.
    */
   #ensureIndex(tbl: string, field: string): void {
-    const key = `${tbl}\u0000${field}`
-    if (this.#indexed.has(key)) return
+    // Issued on every list rather than remembered: a no-op costs under a
+    // microsecond, and a mutation that rolls back takes a new index with it.
     // tbl passed TABLE_NAME_RE and field FIELD_RE: both are safe inline.
     this.sql.exec(
       `CREATE INDEX IF NOT EXISTS rows_where_${hex(tbl)}_${hex(field)}
        ON rows (json_extract(data, '$.${field}')) WHERE tbl = '${tbl}'`,
     )
-    this.#indexed.add(key)
   }
 
   get(tbl: string, id: string): Record<string, unknown> | null {

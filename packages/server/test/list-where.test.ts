@@ -1,5 +1,6 @@
 import { env, runInDurableObject, SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
+import { SqlRowStore } from '../src/sql-row-store'
 import { TestClient } from './harness'
 
 let n = 0
@@ -118,5 +119,23 @@ describe('filter indexes', () => {
     expect(c1.rows.get('counters/out')!.ids).toEqual(['c'])
     expect((await plan(workspace, query)).indexes).toHaveLength(1)
     c1.close()
+  })
+
+  it('a filtered list recreates an index that a rolled-back transaction took with it', async () => {
+    const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws()))
+    const indexes = await runInDurableObject(stub, async (_instance, state) => {
+      const store = new SqlRowStore(state.storage.sql)
+      expect(() =>
+        state.storage.transactionSync(() => {
+          store.list('todos', { s: 'x' })
+          throw new Error('transient')
+        }),
+      ).toThrow('transient')
+      store.list('todos', { s: 'x' })
+      return state.storage.sql
+        .exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'rows_where_%'`)
+        .toArray()
+    })
+    expect(indexes).toHaveLength(1)
   })
 })
