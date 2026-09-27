@@ -99,10 +99,20 @@ Message shapes are the zod schemas in `packages/protocol/src/messages.ts`
 promise). What the shapes don't say:
 
 - The **three-part poke** (`pokeStart`/`pokePart`/`pokeEnd`) is Zero's shape
-  (`zero-protocol/src/poke.ts:32-73`): large payloads stream in chunks without
-  server-side buffering, and it doubles as the chunked bootstrap. The
+  (`zero-protocol/src/poke.ts:32-73`): large payloads go out in frame-sized
+  chunks, and it doubles as the chunked bootstrap. The
   `remaining`/`pageInfo` countdown is LiveStore's progress signal
   (`sync-backend.ts:143-155`).
+- **Frames are assembled from stored JSON** (`server/src/frames.ts`): SQLite
+  concatenates each row's op text around the `data` column, and a part is a
+  join of those strings — a row is never parsed and re-serialized on its way
+  out, which was most of a large hello's cost. A poke's frames are all built,
+  then sent, in one synchronous turn (invariant 3). The DO keeps the last
+  bootstrap patch keyed by `(backendId, currentVersion)`: hellos that arrive
+  together (a class opening one workspace, every tab re-bootstrapping after a
+  schema bump) share one build, and any write moves the version, so a stale
+  snapshot is never served. The build is dropped as soon as the version
+  moves, since no later hello could use it.
 - **Every mutation carries a `seed`** (protocol 2): the client-minted value
   behind `ctx.seed`/`ctx.nextId`, echoed to the authoritative run so both
   mint the same ids (ARCHITECTURE.md#optimistic-intents). It is not logged
@@ -203,9 +213,16 @@ collection. `SqlRowStore` also pushes the filter into SQL as
 `json_extract(data, '$.field') = ?` — a *prefilter*, since JSON equality is
 looser than `===` (a JSON `true` extracts as `1`, a JSON `null` and a missing
 key both extract as NULL), so only matching rows are parsed but every parsed
-row is re-checked. The expression form is deliberate: a future declared index
-is a partial expression index over the same text, no generated column and no
-backfill. Non-identifier keys skip the SQL clause and match in JS alone.
+row is re-checked. Each `(table, field)` a filter names gets a partial
+expression index on first use — `json_extract(data, '$.field') WHERE tbl =
+'<table>'`, over the same text the query uses, so no generated column and no
+backfill. The query inlines the table as a literal because SQLite only uses a
+partial index when the query's own WHERE repeats the index's term (the name is
+already restricted to `TABLE_NAME_RE`). Indexes are derived state: every
+filtered list issues `CREATE INDEX IF NOT EXISTS` rather than remembering
+which exist, so one lost to a rolled-back mutation or to admin reset is back
+on the next filtered list.
+Non-identifier keys skip the SQL clause and match in JS alone.
 
 **Post-commit hook.** `onMutationCommitted` on the engine config is the one
 seam for effects outside the workspace's rows (notifications, projections
@@ -265,7 +282,11 @@ We evaluated `@tanstack/db-sqlite-persistence-core` and
 
 The seam is `SyncClient`'s `store: SyncStore` (`packages/client/src/store.ts`);
 `IndexedDBSyncStore` is the browser implementation, `MemorySyncStore` the test
-double and reference.
+double and reference. Each IndexedDB `put` structured-clones its value on the
+calling thread, so a poke's row writes are issued in batches, each queued from
+the previous batch's last request callback: the transaction stays active
+inside request callbacks, so atomicity holds, and a bootstrap no longer
+persists in one long main-thread task.
 
 **Multi-tab needs no leader election.** Rows + cursor are shared per workspace;
 outbox records are partitioned by clientId (each tab replays only its own;
@@ -415,8 +436,8 @@ Lifted from partyserver/tldraw/LiveStore, considered settled:
 - **Broadcast iterates `getWebSockets()` live**; a failed send closes that
   socket with 1011. Slow clients are not backpressured — pokes are deltas and
   a reconnect catches up by cursor, so dropping a laggard is always safe.
-- **Frame budget 900 KB**; the chunker packs by item count and encoded bytes
-  (LiveStore `splitArrayBySize`, `transport-chunking.ts:38-85`).
+- **Frame budget 900 KB**; pokes pack by encoded UTF-8 bytes (LiveStore
+  `splitArrayBySize`, `transport-chunking.ts:38-85`).
 
 ## Schema evolution
 

@@ -181,12 +181,20 @@ export type ClientMsg = z.infer<typeof clientMsgSchema>
 // server -> client
 // ---------------------------------------------------------------------------
 
+// A row value is checked for shape only. z.record would copy every value,
+// which on a bootstrap is a second full copy of the workspace on the client's
+// main thread; the value came out of JSON.parse and the server validated it.
+const rowValueSchema = z.custom<Record<string, unknown>>(
+  (value) => typeof value === 'object' && value !== null && !Array.isArray(value),
+  'expected an object',
+)
+
 export const patchOpSchema = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('put'),
     tbl: z.string().min(1),
     id: z.string().min(1),
-    value: z.record(z.string(), z.unknown()),
+    value: rowValueSchema,
   }),
   z.object({ op: z.literal('del'), tbl: z.string().min(1), id: z.string().min(1) }),
   z.object({ op: z.literal('clear') }),

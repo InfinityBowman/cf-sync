@@ -1,4 +1,6 @@
+import { env, runInDurableObject, SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
+import { SqlRowStore } from '../src/sql-row-store'
 import { TestClient } from './harness'
 
 let n = 0
@@ -64,5 +66,76 @@ describe('tx.list where against SQLite', () => {
     expect(await echo({ flag: true, n: 1, s: 'a' })).toEqual(['t_true'])
     expect(await echo({ flag: true, s: 'b' })).toEqual([])
     c1.close()
+  })
+})
+
+describe('filter indexes', () => {
+  const plan = (workspace: string, sql: string) =>
+    runInDurableObject(env.WORKSPACE.get(env.WORKSPACE.idFromName(workspace)), async (_instance, state) => ({
+      indexes: state.storage.sql
+        .exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'rows_where_%'`)
+        .toArray()
+        .map((r) => r.name),
+      plan: state.storage.sql
+        .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`)
+        .toArray()
+        .map((r) => r.detail)
+        .join(' | '),
+    }))
+
+  it('a filtered list creates a partial index the same query then uses, and admin reset rebuilds it', async () => {
+    const workspace = ws()
+    const c1 = await TestClient.connect(workspace, 'c1')
+    await c1.syncOnce()
+    let id = 0
+    c1.push([
+      { id: ++id, name: 'sync.put', args: { tbl: 'todos', id: 'a', data: { s: 'x' } } },
+      { id: ++id, name: 'sync.put', args: { tbl: 'todos', id: 'b', data: { s: 'y' } } },
+      { id: ++id, name: 'where.echo', args: { into: 'out', where: { s: 'x' } } },
+    ])
+    await c1.pokeUntilLmid(id)
+    expect(c1.rows.get('counters/out')!.ids).toEqual(['a'])
+
+    const query = `SELECT id, data FROM rows WHERE tbl = 'todos' AND deleted = 0 AND json_extract(data, '$.s') = 'x'`
+    const before = await plan(workspace, query)
+    expect(before.indexes).toHaveLength(1)
+    expect(before.plan).toContain(before.indexes[0])
+
+    const reset = await SELF.fetch(`https://test/admin/${workspace}/reset`, {
+      method: 'POST',
+      headers: { 'x-test-admin': 'yes' },
+    })
+    expect(reset.status).toBe(200)
+    await c1.nextPoke()
+    expect((await plan(workspace, query)).indexes).toEqual([])
+
+    c1.lmid = 0
+    id = 0
+    c1.push([
+      { id: ++id, name: 'sync.put', args: { tbl: 'todos', id: 'c', data: { s: 'x' } } },
+      { id: ++id, name: 'where.echo', args: { into: 'out', where: { s: 'x' } } },
+    ])
+    await c1.pokeUntilLmid(id)
+    expect(c1.rows.get('counters/out')!.ids).toEqual(['c'])
+    expect((await plan(workspace, query)).indexes).toHaveLength(1)
+    c1.close()
+  })
+
+  it('a filtered list recreates an index that a rolled-back transaction took with it', async () => {
+    const stub = env.WORKSPACE.get(env.WORKSPACE.idFromName(ws()))
+    const indexes = await runInDurableObject(stub, async (_instance, state) => {
+      const store = new SqlRowStore(state.storage.sql)
+      expect(() =>
+        state.storage.transactionSync(() => {
+          store.list('todos', { s: 'x' })
+          throw new Error('transient')
+        }),
+      ).toThrow('transient')
+      store.list('todos', { s: 'x' })
+      return state.storage.sql
+        .exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'rows_where_%'`)
+        .toArray()
+    })
+    expect(indexes).toHaveLength(1)
   })
 })

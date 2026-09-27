@@ -41,6 +41,38 @@ describe('bootstrap and hello', () => {
   })
 })
 
+describe('bootstrap snapshot reuse', () => {
+  it('serves a fresh snapshot once a write or delete moves the version', async () => {
+    const workspace = ws()
+    const c1 = await TestClient.connect(workspace, 'c1')
+    await c1.syncOnce()
+    c1.push([
+      { id: 1, name: 'sync.put', args: { tbl: 'todos', id: 't1', data: { title: 'first' } } },
+      { id: 2, name: 'sync.put', args: { tbl: 'todos', id: 't2', data: { title: 'naïve 🙂' } } },
+    ])
+    await c1.pokeUntilLmid(2)
+
+    // Two cold clients at the same version share the snapshot.
+    const a = await TestClient.connect(workspace, 'a')
+    const b = await TestClient.connect(workspace, 'b')
+    const [pa, pb] = await Promise.all([a.syncOnce(), b.syncOnce()])
+    expect(pb.patch).toEqual(pa.patch)
+    expect(b.rows.get('todos/t2')).toEqual({ title: 'naïve 🙂' })
+
+    // Any write moves the version; the next bootstrap must reflect it.
+    c1.push([
+      { id: 3, name: 'sync.put', args: { tbl: 'todos', id: 't1', data: { title: 'second' } } },
+      { id: 4, name: 'sync.del', args: { tbl: 'todos', id: 't2' } },
+    ])
+    await c1.pokeUntilLmid(4)
+    const c = await TestClient.connect(workspace, 'c')
+    await c.syncOnce()
+    expect(c.rows.get('todos/t1')).toEqual({ title: 'second' })
+    expect(c.rows.has('todos/t2')).toBe(false)
+    for (const client of [c1, a, b, c]) client.close()
+  })
+})
+
 describe('push', () => {
   it('applies mutations, confirms the origin, and broadcasts to others', async () => {
     const workspace = ws()

@@ -11,7 +11,6 @@ import {
   type AppDefinition,
   type Cursor,
   type MutatorContext,
-  type PatchOp,
 } from '@cf-sync/protocol'
 import {
   createIdSource,
@@ -20,9 +19,7 @@ import {
   TABLE_NAME_RE,
   migrationPath,
   KEEPALIVE_PONG,
-  MAX_PART_PATCH_BYTES,
   PROTOCOL_VERSION,
-  chunkBySize,
   clientMsgSchema,
   formatIssues,
   jsonByteSize,
@@ -31,9 +28,6 @@ import {
   type HelloMsg,
   type Mutation,
   type MutationResult,
-  type PokeEndMsg,
-  type PokePartMsg,
-  type PokeStartMsg,
   type PresenceMsg,
   type PresencePeersMsg,
   type PresenceUpdateMsg,
@@ -51,6 +45,7 @@ import {
   type WorkspaceEngineConfig,
 } from './config'
 import { MemoryRowStore, validateRow, WriteSet } from './engine-core'
+import { CLEAR_OP, DEL_OP_SQL, packPatch, pokeFrames, PUT_OP_SQL, type OpJson, type PatchParts } from './frames'
 import { presenceFingerprint, schemaFingerprint } from './fingerprint'
 import { SqlRowStore } from './sql-row-store'
 import { loadOrInitMeta, migrate, type Meta } from './storage'
@@ -233,6 +228,12 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      * cannot wipe the reconnected client's fresh state.
      */
     #presence = new Map<string, { ws: WebSocket; principal?: string; state: unknown }>()
+    /**
+     * The last bootstrap patch built, reused while its version is current (see
+     * #bootstrapPatch). Dropped whenever the version moves: a large workspace's
+     * snapshot is tens of MB that no later hello could use.
+     */
+    #snapshot: { backendId: string; version: number; patch: PatchParts } | null = null
     // Since-start operational counters (reset on eviction; durable gauges come
     // from SQL in #stats). No wall-clock latency here: workers freeze Date.now
     // during synchronous execution, so honest latency must be measured by
@@ -818,6 +819,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           }
           this.#meta.currentVersion = version
           this.#meta.minCursorVersion = version
+          this.#snapshot = null
           if (hasExtensionData) {
             // ARCHITECTURE.md#yjs-fields: clients only re-GET fields on ready *transitions*, so an
             // import carrying extension state cycles every socket with a
@@ -828,10 +830,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
               this.#closeSocket(socket, CLOSE_REFRESH, 'import')
             }
           } else {
-            this.#sendPoke(this.#readySockets(), {
-              baseCursor: null,
-              patch: [{ op: 'clear' }, ...this.#snapshotPatch()],
-            })
+            this.#sendPoke(this.#readySockets(), { baseCursor: null, patch: this.#bootstrapPatch() })
           }
           return json({ imported: importRows.length, version, ...(migratedFrom !== undefined ? { migratedFrom } : {}) })
         }
@@ -849,6 +848,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
             ''
           await this.ctx.storage.deleteAll()
           migrate(this.#sql)
+          this.#snapshot = null
           this.#meta = loadOrInitMeta(
             this.#sql,
             config.app.version,
@@ -867,7 +867,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           if (this.#maintenanceEnabled()) {
             await this.ctx.storage.setAlarm(Date.now() + maintenanceIntervalMs)
           }
-          this.#sendPoke(this.#readySockets(), { baseCursor: null, patch: [{ op: 'clear' }] })
+          this.#sendPoke(this.#readySockets(), { baseCursor: null, patch: packPatch([CLEAR_OP]) })
           return json({ backendId: this.#meta.backendId })
         }
 
@@ -957,9 +957,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         cursor.version <= this.#meta.currentVersion
       // Reset is the bootstrap path, not an error (D7 in ARCHITECTURE.md#locked-decisions): stale or
       // unknown cursors get `clear` + full snapshot.
-      const patch: PatchOp[] = valid
-        ? this.#patchSince(cursor.version)
-        : [{ op: 'clear' }, ...this.#snapshotPatch()]
+      const patch = valid ? packPatch(this.#patchSince(cursor.version)) : this.#bootstrapPatch()
       this.#sendPoke([ws], {
         baseCursor: valid ? cursor : null,
         patch,
@@ -1092,20 +1090,20 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         // the current LMID to the origin so a replayed outbox settles.
         this.#sendPoke([ws], {
           baseCursor: this.#cursor(),
-          patch: [],
+          patch: packPatch([]),
           lastMutationIdChanges: { [clientId]: lmid },
         })
         return
       }
 
-      const patch = this.#patchSince(startVersion)
+      const ops = this.#patchSince(startVersion)
       // Data changes fan out to everyone; LMID-only advances (app errors,
       // no-op mutations) concern only the origin. Data versions only move
       // when rows change, so other clients' cursors stay aligned.
-      const recipients = patch.length > 0 ? this.#readySockets() : [ws]
+      const recipients = ops.length > 0 ? this.#readySockets() : [ws]
       this.#sendPoke(recipients, {
         baseCursor: { backendId: this.#meta.backendId, version: startVersion },
-        patch,
+        patch: packPatch(ops),
         lastMutationIdChanges: { [clientId]: lmid },
         mutationResults: results,
       })
@@ -1204,6 +1202,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       // rollback can never leave memory ahead of storage.
       if (committedVersion !== null) {
         this.#meta.currentVersion = committedVersion
+        this.#snapshot = null
         this.#notifyCommitted({
           workspaceId: this.#meta.workspaceId,
           name: mutation.name,
@@ -1256,29 +1255,41 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       return rows.length ? Number(rows[0]!.last_mutation_id) : 0
     }
 
-    #patchSince(version: number): PatchOp[] {
-      const ops: PatchOp[] = []
-      for (const row of this.#sql.exec<{ tbl: string; id: string; data: string; deleted: number }>(
-        `SELECT tbl, id, data, deleted FROM rows WHERE version > ? ORDER BY version`,
-        version,
-      )) {
-        ops.push(
-          Number(row.deleted)
-            ? { op: 'del', tbl: row.tbl, id: row.id }
-            : { op: 'put', tbl: row.tbl, id: row.id, value: JSON.parse(row.data) as Record<string, unknown> },
+    #patchSince(version: number): OpJson[] {
+      const ops: OpJson[] = []
+      for (const [op] of this.#sql
+        .exec<{ op: string }>(
+          `SELECT CASE WHEN deleted
+             THEN ${DEL_OP_SQL}
+             ELSE ${PUT_OP_SQL}
+           END FROM rows WHERE version > ? ORDER BY version`,
+          version,
         )
+        .raw()) {
+        ops.push(op as string)
       }
       return ops
     }
 
-    #snapshotPatch(): PatchOp[] {
-      const ops: PatchOp[] = []
-      for (const row of this.#sql.exec<{ tbl: string; id: string; data: string }>(
-        `SELECT tbl, id, data FROM rows WHERE deleted = 0 ORDER BY tbl, id`,
-      )) {
-        ops.push({ op: 'put', tbl: row.tbl, id: row.id, value: JSON.parse(row.data) as Record<string, unknown> })
+    /**
+     * `clear` plus every live row, packed into frames. Kept until the data
+     * version or backend moves, so hellos arriving together (a reconnect
+     * storm after a schema bump, a class opening one project) share one
+     * build instead of each blocking the DO for a full one.
+     */
+    #bootstrapPatch(): PatchParts {
+      const { backendId, currentVersion } = this.#meta
+      const cached = this.#snapshot
+      if (cached && cached.backendId === backendId && cached.version === currentVersion) return cached.patch
+      const ops: OpJson[] = [CLEAR_OP]
+      for (const [op] of this.#sql
+        .exec<{ op: string }>(`SELECT ${PUT_OP_SQL} FROM rows WHERE deleted = 0 ORDER BY tbl, id`)
+        .raw()) {
+        ops.push(op as string)
       }
-      return ops
+      const patch = packPatch(ops)
+      this.#snapshot = { backendId, version: currentVersion, patch }
+      return patch
     }
 
     #cursor(): Cursor {
@@ -1296,32 +1307,13 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       sockets: WebSocket[],
       poke: {
         baseCursor: Cursor | null
-        patch: PatchOp[]
+        patch: PatchParts
         lastMutationIdChanges?: Record<string, number>
         mutationResults?: MutationResult[]
       },
     ): void {
       if (sockets.length === 0) return
-      const pokeId = crypto.randomUUID()
-      const frames: string[] = []
-      const start: PokeStartMsg = { type: 'pokeStart', pokeId, baseCursor: poke.baseCursor }
-      frames.push(JSON.stringify(start))
-
-      const chunks = chunkBySize(poke.patch, { maxBytes: MAX_PART_PATCH_BYTES, sizeOf: jsonByteSize })
-      const partPatches: PatchOp[][] = chunks.length > 0 ? chunks : [[]]
-      let sent = 0
-      partPatches.forEach((patch, i) => {
-        sent += patch.length
-        const part: PokePartMsg = { type: 'pokePart', pokeId, patch, remaining: poke.patch.length - sent }
-        if (i === 0) {
-          if (poke.lastMutationIdChanges) part.lastMutationIdChanges = poke.lastMutationIdChanges
-          if (poke.mutationResults?.length) part.mutationResults = poke.mutationResults
-        }
-        frames.push(JSON.stringify(part))
-      })
-
-      const end: PokeEndMsg = { type: 'pokeEnd', pokeId, cursor: this.#cursor(), pageInfo: { more: false } }
-      frames.push(JSON.stringify(end))
+      const frames = pokeFrames({ ...poke, pokeId: crypto.randomUUID(), cursor: this.#cursor() })
 
       this.#counters.pokesSent++
       this.#counters.lastFanout = sockets.length

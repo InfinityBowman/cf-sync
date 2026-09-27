@@ -1,8 +1,15 @@
 import type { FilterValue } from '@cf-sync/protocol'
+import { TABLE_NAME_RE } from '@cf-sync/protocol/internal'
 import type { EngineRowStore } from './engine-core'
 
 // Only identifier-like keys go into a JSON path; the rest match in JS alone.
 const FIELD_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+// SQLite identifiers are case-insensitive and table/field names are not, so
+// the name carries both in hex rather than risk two filters sharing an index.
+function hex(text: string): string {
+  return Array.from(text, (ch) => ch.charCodeAt(0).toString(16).padStart(2, '0')).join('')
+}
 
 /**
  * EngineRowStore over DO SQLite — the storage half of the shared WriteSet
@@ -11,6 +18,22 @@ const FIELD_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
  */
 export class SqlRowStore implements EngineRowStore {
   constructor(private readonly sql: SqlStorage) {}
+
+  /**
+   * A filter over a field gets a partial expression index on first use
+   * (ARCHITECTURE.md#mutation-processing): one table's rows, keyed by the
+   * same json_extract text the query uses, so SQLite can match them. Without
+   * it every filtered list scans and parses the whole table.
+   */
+  #ensureIndex(tbl: string, field: string): void {
+    // Issued on every list rather than remembered: a no-op costs under a
+    // microsecond, and a mutation that rolls back takes a new index with it.
+    // tbl passed TABLE_NAME_RE and field FIELD_RE: both are safe inline.
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS rows_where_${hex(tbl)}_${hex(field)}
+       ON rows (json_extract(data, '$.${field}')) WHERE tbl = '${tbl}'`,
+    )
+  }
 
   get(tbl: string, id: string): Record<string, unknown> | null {
     const rows = this.sql
@@ -21,13 +44,15 @@ export class SqlRowStore implements EngineRowStore {
   }
 
   list(tbl: string, where?: Record<string, FilterValue>): Array<{ id: string; data: Record<string, unknown> }> {
+    if (!TABLE_NAME_RE.test(tbl)) throw new Error(`invalid table name "${tbl}"`)
     // SQL is a prefilter: json_extract equality is looser than `===` (true
     // reads as 1, a JSON null as a missing key), so the WriteSet re-checks
     // every parsed row. The expression form here is what an index would cover.
     const clauses: string[] = []
-    const params: Array<string | number> = [tbl]
+    const params: Array<string | number> = []
     for (const [field, value] of Object.entries(where ?? {})) {
       if (!FIELD_RE.test(field)) continue
+      this.#ensureIndex(tbl, field)
       const path = `json_extract(data, '$.${field}')`
       if (value === null) clauses.push(`${path} IS NULL`)
       else if (typeof value === 'number' && !Number.isFinite(value)) clauses.push('0')
@@ -38,8 +63,10 @@ export class SqlRowStore implements EngineRowStore {
     }
     const filter = clauses.map((c) => ` AND ${c}`).join('')
     const out: Array<{ id: string; data: Record<string, unknown> }> = []
+    // tbl is inlined, not bound: a partial index is only usable when the
+    // query's own WHERE repeats its `tbl = '...'` term as a literal.
     for (const row of this.sql.exec<{ id: string; data: string }>(
-      `SELECT id, data FROM rows WHERE tbl = ? AND deleted = 0${filter}`,
+      `SELECT id, data FROM rows WHERE tbl = '${tbl}' AND deleted = 0${filter}`,
       ...params,
     )) {
       out.push({ id: row.id, data: JSON.parse(row.data) as Record<string, unknown> })
