@@ -1590,8 +1590,9 @@ export class SyncClient<
           }
         }
       }
-      if (jsonByteSize(state) > MAX_PRESENCE_BYTES) {
-        throw new Error(`SyncClient: presence state exceeds ${MAX_PRESENCE_BYTES} bytes`)
+      const max = this.#opts.app.presenceMaxBytes ?? MAX_PRESENCE_BYTES
+      if (jsonByteSize(state) > max) {
+        throw new Error(`SyncClient: presence state exceeds ${max} bytes`)
       }
     }
     this.#presenceState = state

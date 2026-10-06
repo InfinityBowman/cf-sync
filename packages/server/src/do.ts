@@ -1000,8 +1000,9 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       }
       let state: unknown = null
       if (msg.state !== null && msg.state !== undefined) {
-        if (jsonByteSize(msg.state) > MAX_PRESENCE_BYTES) {
-          this.#sendError(ws, 'PresenceInvalid', `presence state exceeds ${MAX_PRESENCE_BYTES} bytes`)
+        const max = config.app.presenceMaxBytes ?? MAX_PRESENCE_BYTES
+        if (jsonByteSize(msg.state) > max) {
+          this.#sendError(ws, 'PresenceInvalid', `presence state exceeds ${max} bytes`)
           return
         }
         const result = schema['~standard'].validate(msg.state)

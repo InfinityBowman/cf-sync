@@ -96,6 +96,13 @@ export interface AppDefinition<
    * cannot re-parse what it produced.
    */
   readonly presence?: P
+  /**
+   * Per-client presence-state cap in bytes of JSON, checked by the client
+   * and the server. Defaults to {@link MAX_PRESENCE_BYTES}; raise it when
+   * presence carries more than cursors (e.g. a description of what the user
+   * has selected).
+   */
+  readonly presenceMaxBytes?: number
 }
 
 /**
@@ -200,6 +207,7 @@ export function defineApp<
   } & D
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
   presence?: P
+  presenceMaxBytes?: number
   crud: false
 }): AppDefinition<S, D, P>
 export function defineApp<
@@ -218,6 +226,7 @@ export function defineApp<
   } & D
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
   presence?: P
+  presenceMaxBytes?: number
   crud?: true
 }): AppDefinition<S, D & CrudMutators<S>, P>
 export function defineApp<
@@ -230,6 +239,7 @@ export function defineApp<
   mutators: M
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
   presence?: P
+  presenceMaxBytes?: number
   crud: false
 }): AppDefinition<S, M, P>
 export function defineApp<
@@ -242,6 +252,7 @@ export function defineApp<
   mutators: M
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
   presence?: P
+  presenceMaxBytes?: number
   crud?: true
 }): AppDefinition<S, M & CrudMutators<S>, P>
 export function defineApp<S extends AnySyncSchema>(def: {
@@ -250,6 +261,7 @@ export function defineApp<S extends AnySyncSchema>(def: {
   mutators?: MutatorsFor<S>
   migrations?: { readonly [toVersion: number]: SchemaMigrationFn | null }
   presence?: StandardSchemaV1
+  presenceMaxBytes?: number
   crud?: boolean
 }): AppDefinition<S, AnyMutators> {
   const { version, schema } = def
@@ -315,9 +327,16 @@ export function defineApp<S extends AnySyncSchema>(def: {
     migrations: SchemaMigration[]
     authContext?: StandardSchemaV1<any, any>
     presence?: StandardSchemaV1
+    presenceMaxBytes?: number
   } = { version, schema, mutators, migrations }
   if (authContext !== undefined) app.authContext = authContext
   if (def.presence !== undefined) app.presence = def.presence
+  if (def.presenceMaxBytes !== undefined) {
+    if (!Number.isInteger(def.presenceMaxBytes) || def.presenceMaxBytes < 1) {
+      throw new Error(`defineApp: presenceMaxBytes must be a positive integer (got ${JSON.stringify(def.presenceMaxBytes)})`)
+    }
+    app.presenceMaxBytes = def.presenceMaxBytes
+  }
   return app
 }
 
