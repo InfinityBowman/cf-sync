@@ -31,6 +31,8 @@ export {
   type AuthVerdict,
   type DisconnectOptions,
   type SyncFetchOptions,
+  type ServerMutateOptions,
+  type ServerMutationArgs,
   type WorkspaceAdmin,
 } from './worker'
 // The schema/mutator definition kit lives in @cf-sync/protocol so app code

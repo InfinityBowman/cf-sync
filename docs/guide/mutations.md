@@ -64,7 +64,7 @@ try {
 
 The vocabulary, in three groups:
 
-- **Engine rejections** (`EngineErrorCode`) — the server refused before your mutator ran: `InvalidArgs`, `UnknownMutator`, `RowTooLarge`.
+- **Engine rejections** (`EngineErrorCode`) — the server refused before your mutator ran: `InvalidArgs`, `UnknownMutator`, `RowTooLarge`, `InternalMutator`.
 - **Client-local outcomes** — `Timeout`, `Stopped`, `Fatal`, `LocalApplyFailed` (your mutator threw during the optimistic run; nothing was sent).
 - **Your codes** — whatever your mutators throw in an `AppError('YourCode', …)`.
 
@@ -110,6 +110,23 @@ const status = useSyncStatus(client)
 ```
 
 Status is about the *pipe*, not about individual mutations — individual outcomes arrive through each `mutate` promise.
+
+## Server-only mutators
+
+Some writes report what the server did — a build finished, a payment cleared — and no client should be able to make them. Mark the mutator `internal` and run it from worker code with [`workspaceAdmin(...).mutate`](/reference/server#workspaceadmin):
+
+```ts
+'build.finish': {
+  args: z.object({ sha: z.string() }),
+  internal: true,
+  apply: (tx, { sha }) => tx.put('meta', 'build', { id: 'build', sha }),
+},
+
+// In a webhook, a queue consumer, another Durable Object:
+await workspaceAdmin<typeof app.mutators>(env.WORKSPACE, projectId).mutate('build.finish', { sha })
+```
+
+Clients still read the rows it writes like any others; a client that pushes it is rejected with `InternalMutator`.
 
 ## Reacting after the commit
 

@@ -10,12 +10,13 @@ import type { StandardSchemaV1 } from './standard-schema'
  *   write failed the table schema / referenced an unknown table or bad id.
  * - `UnknownMutator` — no mutator by that name in the app's registry.
  * - `RowTooLarge` — a written row exceeds the per-row byte cap.
+ * - `InternalMutator` — a client pushed a mutator marked `internal`.
  *
  * All are permanent: the LMID advances, nothing is written. Apps may branch
  * on them via `MutationError.code` (client) or `result.error.code` (test
  * engine); pick different codes for your own `AppError`s.
  */
-export type EngineErrorCode = 'InvalidArgs' | 'UnknownMutator' | 'RowTooLarge'
+export type EngineErrorCode = 'InvalidArgs' | 'UnknownMutator' | 'RowTooLarge' | 'InternalMutator'
 
 // Permanent errors advancing the LMID is invariant 2, ARCHITECTURE.md#invariants.
 /**
@@ -174,6 +175,13 @@ export interface MutatorDef<S extends AnySyncSchema = AnySyncSchema, In = any, O
    * mutation is retried.
    */
   apply(tx: MutatorTx<S>, args: Out, ctx: MutatorContext): void
+  /**
+   * Server code only: the mutation runs through `workspaceAdmin(...).mutate`
+   * (a build finishing, a webhook landing), and a client that pushes it is
+   * rejected with `InternalMutator`. For writes that report what the server
+   * did, which no client should be able to forge.
+   */
+  internal?: boolean
 }
 
 // `any` keeps concrete registries assignable in constraint position across generics.
@@ -246,6 +254,7 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
     [K in keyof A]: {
       args?: StandardSchemaV1<any, A[K]>
       apply: (tx: MutatorTx<S>, args: A[K], ctx: MutatorContext<AC>) => void
+      internal?: boolean
     }
   } & D,
   opts: { authContext: StandardSchemaV1<any, AC> },
@@ -256,6 +265,7 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
     [K in keyof A]: {
       args?: StandardSchemaV1<any, A[K]>
       apply: (tx: MutatorTx<S>, args: A[K], ctx: MutatorContext) => void
+      internal?: boolean
     }
   } & D,
 ): D
@@ -268,6 +278,7 @@ export function defineMutators<S extends AnySyncSchema, A extends Record<string,
     [K in keyof A]: {
       args?: StandardSchemaV1<any, A[K]>
       apply: (tx: MutatorTx<S>, args: A[K], ctx: MutatorContext<any>) => void
+      internal?: boolean
     }
   } & D,
   opts?: { authContext?: StandardSchemaV1<any, any> },

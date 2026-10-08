@@ -244,6 +244,26 @@ rebuildable from `export`. Migrations, admin import, and reset bypass
 `#applyMutation` and therefore never fire it; rejected mutations and no-op
 writes do not either.
 
+### Server mutations
+
+Server code — a webhook, a scheduled job, another Durable Object — writes
+through the same mutators: `workspaceAdmin(ns, id).mutate(name, args)` posts to
+the DO's admin `mutate` op, which runs `#applyMutation` with `from: 'server'`.
+Validation, `apply` (with `ctx.authoritative` true and `ctx.clientId` the
+caller's label, default `"server"`), the mutation log and the post-commit hook
+are unchanged; changed rows poke every ready socket. The differences follow
+from there being no client outbox behind the call: no LMID is read or written
+(nothing to deduplicate against, so a caller retrying after a transient failure
+must use a mutation that is safe to repeat), and the result comes back on the
+HTTP response — an `AppError` as a 422 with its `code`, which `workspaceAdmin`
+rethrows as an `AppError`. A mutator marked `internal: true` runs only this
+way: a client push of it is rejected permanently with `InternalMutator`, before
+`apply`, so writes that report what the server did (a build finished, a job
+failed) cannot be forged by a client. One path, not a parallel server-write
+API: the mutator stays the single place a row change is defined.
+Reads go the other way through `rows(tbl)` (the admin `rows` op): a table's live rows as
+stored, for server code that needs what clients wrote without holding a socket.
+
 ## Client adapter
 
 The adapter is a TanStack DB collection options creator implementing

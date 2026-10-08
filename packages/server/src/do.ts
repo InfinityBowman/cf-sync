@@ -105,6 +105,13 @@ interface Attachment {
   defunct?: true
 }
 
+const serverMutationSchema = z.object({
+  name: z.string().min(1),
+  args: z.unknown().optional(),
+  /** What the mutator sees as `ctx.clientId` (and the mutation log records). */
+  clientId: z.string().min(1).default('server'),
+})
+
 const disconnectBodySchema = z.object({
   principal: z.string().optional(),
   clientId: z.string().optional(),
@@ -871,6 +878,45 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           return json({ backendId: this.#meta.backendId })
         }
 
+        case 'GET rows': {
+          // One table's live rows, for server code that reads what clients wrote (a worker
+          // rendering drafts, a job summarizing comments) without a sync connection.
+          const tbl = new URL(request.url).searchParams.get('tbl') ?? ''
+          if (!TABLE_NAME_RE.test(tbl)) return json({ error: 'invalid table name' }, 400)
+          const rows = this.#sql
+            .exec<{ id: string; data: string }>(`SELECT id, data FROM rows WHERE tbl = ? AND deleted = 0 ORDER BY id`, tbl)
+            .toArray()
+            .map((r) => ({ id: r.id, data: JSON.parse(r.data) as Record<string, unknown> }))
+          return json({ version: this.#meta.currentVersion, rows })
+        }
+
+        case 'POST mutate': {
+          // A mutation from server code (ARCHITECTURE.md#server-mutations): the
+          // same apply, validation and post-commit hook as a client push, but
+          // no LMID (nothing to deduplicate against) and `internal` mutators
+          // allowed. Changed rows fan out to every ready socket.
+          let parsed
+          try {
+            parsed = serverMutationSchema.safeParse(await request.json())
+          } catch {
+            return json({ error: 'invalid JSON body' }, 400)
+          }
+          if (!parsed.success) return json({ error: 'invalid mutate request', detail: parsed.error.message }, 400)
+          const { name, args, clientId } = parsed.data
+          const startVersion = this.#meta.currentVersion
+          const seed = crypto.randomUUID()
+          const error = this.#applyMutation({ clientId, ready: true }, { id: 0, name, args, seed }, 'server')
+          if (error) return json({ error: error.message, code: error.code }, 422)
+          const ops = this.#patchSince(startVersion)
+          if (ops.length > 0) {
+            this.#sendPoke(this.#readySockets(), {
+              baseCursor: { backendId: this.#meta.backendId, version: startVersion },
+              patch: packPatch(ops),
+            })
+          }
+          return json({ version: this.#meta.currentVersion })
+        }
+
         case 'POST disconnect': {
           // Revoke or refresh live sessions (ARCHITECTURE.md#session-control). No selector
           // means all sockets; given selectors must all match. kick closes
@@ -1118,7 +1164,11 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      * post-commit hook runs after the transaction returned, so what it
      * observes is what every client will be poked with.
      */
-    #applyMutation(attachment: Attachment, mutation: Mutation): { code: string; message: string } | undefined {
+    #applyMutation(
+      attachment: Attachment,
+      mutation: Mutation,
+      from: 'client' | 'server' = 'client',
+    ): { code: string; message: string } | undefined {
       const { clientId } = attachment
       const mutator = config.app.mutators[mutation.name]
       const ctx: MutatorContext = {
@@ -1140,6 +1190,9 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           // Unknown mutator names are permanent: schemaVersion matched at
           // hello, so this is a registry bug, and retrying can never succeed.
           appError = { code: 'UnknownMutator', message: `no mutator named "${mutation.name}"` }
+        } else if (mutator.internal && from === 'client') {
+          // Permanent like UnknownMutator: no retry can make a client allowed.
+          appError = { code: 'InternalMutator', message: `"${mutation.name}" runs only from the server` }
         } else {
           // Before-images cost a read per blind write; only pay when a hook
           // will see them.
@@ -1179,12 +1232,15 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         if (wroteVersion !== null) {
           this.#sql.exec(`UPDATE meta SET current_version = ? WHERE id = 1`, wroteVersion)
         }
-        this.#sql.exec(
-          `UPDATE clients SET last_mutation_id = ?, last_seen_at = ? WHERE client_id = ?`,
-          mutation.id,
-          new Date().toISOString(),
-          clientId,
-        )
+        // Server mutations have no outbox to sequence, so no LMID.
+        if (from === 'client') {
+          this.#sql.exec(
+            `UPDATE clients SET last_mutation_id = ?, last_seen_at = ? WHERE client_id = ?`,
+            mutation.id,
+            new Date().toISOString(),
+            clientId,
+          )
+        }
         this.#sql.exec(
           `INSERT INTO mutation_log (version, client_id, mutation_id, name, args, result, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,

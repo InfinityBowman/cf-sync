@@ -78,6 +78,15 @@ export const testMutators = defineMutators(testSchema, {
       for (let i = 0; i < count; i++) tx.put('todos', ctx.nextId(), { seed: ctx.seed })
     },
   },
+  // Server-only (ARCHITECTURE.md#server-mutations): runs through workspaceAdmin().mutate, never
+  // from a client push. Records the context it ran with.
+  'server.stamp': {
+    args: z.object({ id: z.string(), note: z.string() }),
+    internal: true,
+    apply: (tx, { id, note }, ctx) => {
+      tx.put('todos', id, { note, clientId: ctx.clientId, authoritative: ctx.authoritative })
+    },
+  },
   // Permanent failure: must advance the LMID without data effects.
   'always.fails': {
     apply: () => {

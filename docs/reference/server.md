@@ -163,7 +163,7 @@ URL prefix for sync routes (`${prefix}/<workspaceId>`), matching the client's [`
 
 `(opts: AdminFetchOptions) => (request, env) => Promise<Response>` · `…Promise<Response | null>`
 
-The worker router for the workspace admin surface at `${pathPrefix}/<workspaceId>/<op>` (default prefix `"/admin"`). Same route/fetch split as the sync pair. `namespace` works as above; `authorize` is **required** — admin operations read and destroy whole workspaces — and returns `boolean | Response` (no verdict form; there is no connection to stamp). It receives the operation name as `op: AdminOp` (`'stats' | 'export' | 'import' | 'reset' | 'disconnect'`), so a per-op policy — a read-only token that allows `stats` and `export` but not `reset` — is one `switch` away.
+The worker router for the workspace admin surface at `${pathPrefix}/<workspaceId>/<op>` (default prefix `"/admin"`). Same route/fetch split as the sync pair. `namespace` works as above; `authorize` is **required** — admin operations read and destroy whole workspaces — and returns `boolean | Response` (no verdict form; there is no connection to stamp). It receives the operation name as `op: AdminOp` (`'stats' | 'export' | 'import' | 'reset' | 'disconnect' | 'mutate' | 'rows'`), so a per-op policy — a read-only token that allows `stats` and `export` but not `reset` — is one `switch` away.
 
 The endpoints, mirroring [Operations](/guide/operations):
 
@@ -174,6 +174,8 @@ The endpoints, mirroring [Operations](/guide/operations):
 | `POST /admin/<workspaceId>/import` | replace state from a snapshot; live clients converge via reset poke |
 | `POST /admin/<workspaceId>/reset` | wipe the workspace; new history under a fresh `backendId` |
 | `POST /admin/<workspaceId>/disconnect` | kick or refresh live sessions (`{ principal?, clientId?, mode?, code?, reason? }`) |
+| `POST /admin/<workspaceId>/mutate` | run a mutator from server code (`{ name, args?, clientId? }`); `{ version }`, or 422 `{ error, code }` |
+| `GET /admin/<workspaceId>/rows?tbl=<table>` | one table's live rows as stored, with the data version |
 
 ### bearerTokenAuth
 
@@ -183,7 +185,7 @@ An `authorize` hook that checks `Authorization: Bearer <token>` against a secret
 
 ## workspaceAdmin
 
-`(namespace: DurableObjectNamespace, workspaceId: string) => WorkspaceAdmin`
+`<M>(namespace: DurableObjectNamespace, workspaceId: string) => WorkspaceAdmin<M>`
 
 Typed admin surface over a workspace DO stub, for same-worker callers — app command handlers, billing webhooks — so server code never hand-builds admin HTTP requests against its own routes. It talks straight to the stub (no `createAdminFetch` in between), so it carries the caller's authority; external callers go through `createAdminFetch` and its authorize hook instead. A failing op throws with the operation name, HTTP status, and the DO's error message. See [Operations](/guide/operations#same-worker-callers).
 
@@ -192,6 +194,8 @@ Typed admin surface over a workspace DO stub, for same-worker callers — app co
 - `import(snapshot)` — replaces the workspace's rows atomically at a single new data version, resolving `{ imported, version }`. A snapshot from an older schema version is migrated first — the app's migration chain replays over its rows in memory, and the result carries `migratedFrom` — while a newer snapshot, or one whose chain cannot replay (missing or throwing step), is rejected with the workspace untouched. Live clients converge on their own: a reset poke re-bootstraps them in place, or — when the snapshot carries extension state — every socket is cycled with a refresh close instead.
 - `reset()` — wipes the workspace and starts a new history under a fresh `backendId`, resolving `{ backendId }`. Also the one op a quarantined workspace still serves — the [recovery hatch](/guide/operations#reset-as-the-recovery-hatch).
 - `disconnect(opts?)` — closes live sockets matching the selectors (`principal`, `clientId`, or neither for all sockets), resolving `{ disconnected }`. `mode: 'kick'` (default) closes permanently — the client stops reconnecting and calls `onFatal` with `code` (default 4403) and `reason` — while `'refresh'` closes with 4300 so the client reconnects through a fresh `authorize` run and picks up new stamps. See [revoking and refreshing](/guide/auth#revoking-and-refreshing-live-sessions).
+- `mutate(name, args, opts?)` — runs a registered mutator from server code, resolving `{ version }`. Pass your registry for typed names and args: `workspaceAdmin<typeof app.mutators>(env.WORKSPACE, id).mutate('build.finish', { sha })` (args are `undefined` for a mutator that takes none). It applies exactly like a client push — args validated, `apply` with `ctx.authoritative` true, the post-commit hook — and the rows reach every live client. `opts.clientId` sets `ctx.clientId` (default `"server"`). A mutator's `AppError` rejects the promise with that `AppError`, nothing written. There is no outbox behind the call: a transient failure (a plain `Error`) may or may not have applied, so retry only mutations that are safe to repeat. The only way to run an [`internal`](/guide/mutations#server-only-mutators) mutator.
+- `rows(tbl)` — one table's live rows as the server stores them, resolving `{ version, rows: [{ id, data }] }`: for server code that reads what clients wrote (a worker rendering their drafts) without a sync connection. A client's optimistic write shows up once its push has landed.
 
 ## EngineExtension
 

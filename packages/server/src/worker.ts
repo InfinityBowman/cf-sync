@@ -1,4 +1,4 @@
-import { CLOSE_UNAUTHORIZED } from '@cf-sync/protocol'
+import { AppError, CLOSE_UNAUTHORIZED, type AnyMutators, type MutationArgs } from '@cf-sync/protocol'
 import { AUTH_HEADER, WORKSPACE_HEADER, encodeAuthStamps, rejectUpgrade } from './upgrade'
 
 /**
@@ -198,7 +198,7 @@ export function createSyncFetch<Env>(opts: SyncFetchOptions<Env>) {
  * per-op policy — say, a read-only token that allows `stats` and `export`
  * but not `reset` — is one `switch` away.
  */
-export type AdminOp = 'stats' | 'export' | 'import' | 'reset' | 'disconnect'
+export type AdminOp = 'stats' | 'export' | 'import' | 'reset' | 'disconnect' | 'mutate' | 'rows'
 
 const ADMIN_METHODS: Record<AdminOp, string> = {
   stats: 'GET',
@@ -206,6 +206,8 @@ const ADMIN_METHODS: Record<AdminOp, string> = {
   import: 'POST',
   reset: 'POST',
   disconnect: 'POST',
+  mutate: 'POST',
+  rows: 'GET',
 }
 
 /** Options for {@link createAdminRoute} / {@link createAdminFetch}, the worker router for the workspace admin surface. */
@@ -227,7 +229,8 @@ export interface AdminFetchOptions<Env> {
 /**
  * Routes `${prefix}/<workspaceId>/<op>` to the workspace DO's admin surface:
  * GET stats, GET export, POST import (snapshot body), POST reset,
- * POST disconnect (kick or refresh live sockets).
+ * POST disconnect (kick or refresh live sockets), POST mutate
+ * (`{ name, args, clientId? }`, see {@link WorkspaceAdmin.mutate}), GET rows (`?tbl=<table>`).
  *
  * The composable form (see {@link createSyncRoute} for the pattern): resolves
  * to `null` when the request is not admin traffic, so it chains with other
@@ -257,7 +260,7 @@ export function createAdminRoute<Env>(opts: AdminFetchOptions<Env>) {
     const stub = namespace.get(namespace.idFromName(workspaceId))
     const headers = new Headers(request.headers)
     headers.set(WORKSPACE_HEADER, workspaceId)
-    return stub.fetch(`https://do/admin/${op}`, {
+    return stub.fetch(`https://do/admin/${op}${url.search}`, {
       method: request.method,
       headers,
       body: request.method === 'POST' ? request.body : null,
@@ -297,7 +300,7 @@ export interface DisconnectOptions {
  * admin op, mirroring the HTTP routes `createAdminFetch` exposes. A failing
  * op throws with the operation name, HTTP status, and the DO's error message.
  */
-export interface WorkspaceAdmin {
+export interface WorkspaceAdmin<M extends AnyMutators = AnyMutators> {
   /** Operational gauges and counters for the workspace — rows, versions, live connections, database size — designed to be scraped. */
   stats(): Promise<Record<string, unknown>>
   /** A JSON snapshot of every live row (plus extension state when one is registered), accepted back by `import`. */
@@ -323,6 +326,32 @@ export interface WorkspaceAdmin {
    * reconnects through a fresh `authorize` run and picks up new stamps.
    */
   disconnect(opts?: DisconnectOptions): Promise<{ disconnected: number }>
+  /**
+   * Runs a mutator from server code: a webhook, a scheduled job, another
+   * Durable Object. It is applied like a client push — args validated, the
+   * same `apply` with `ctx.authoritative` true, the post-commit hook — and
+   * its rows reach every live client. `internal` mutators run only this way.
+   * There is no outbox behind it: a call that fails transiently (the promise
+   * rejects with a plain Error) may or may not have applied, so make the
+   * mutation safe to repeat. An `AppError` thrown by the mutator rejects the
+   * promise with that `AppError` (same `code`), and nothing was written.
+   */
+  mutate<K extends keyof M & string>(name: K, args: ServerMutationArgs<M[K]>, opts?: ServerMutateOptions): Promise<{ version: number }>
+  /**
+   * One table's live rows as stored (the server's view, so a client's optimistic writes appear once
+   * their push lands), with the workspace's data version. For server code that reads what clients
+   * wrote, such as a worker rendering their drafts.
+   */
+  rows(tbl: string): Promise<{ version: number; rows: { id: string; data: Record<string, unknown> }[] }>
+}
+
+/** The args {@link WorkspaceAdmin.mutate} takes for a mutator: its args schema's input, or `undefined` when it has none. */
+export type ServerMutationArgs<Def> = MutationArgs<Def> extends [] ? undefined : MutationArgs<Def>[0]
+
+/** Options for {@link WorkspaceAdmin.mutate}. */
+export interface ServerMutateOptions {
+  /** What the mutator sees as `ctx.clientId` (default `"server"`). */
+  clientId?: string
 }
 
 /**
@@ -340,17 +369,21 @@ export interface WorkspaceAdmin {
  * carries the caller's authority — external callers go through
  * `createAdminFetch` and its authorize hook instead.
  */
-export function workspaceAdmin(namespace: DurableObjectNamespace<any>, workspaceId: string): WorkspaceAdmin {
+export function workspaceAdmin<M extends AnyMutators = AnyMutators>(
+  namespace: DurableObjectNamespace<any>,
+  workspaceId: string,
+): WorkspaceAdmin<M> {
   const ns = namespace as DurableObjectNamespace | undefined
   if (!ns) throw missingNamespace()
   const stub = ns.get(ns.idFromName(workspaceId))
-  const call = async <T>(op: AdminOp, body?: unknown): Promise<T> => {
-    const response = await stub.fetch(`https://do/admin/${op}`, {
+  const call = async <T>(op: AdminOp, body?: unknown, query = ''): Promise<T> => {
+    const response = await stub.fetch(`https://do/admin/${op}${query}`, {
       method: ADMIN_METHODS[op],
       headers: { [WORKSPACE_HEADER]: workspaceId },
       body: body === undefined ? null : JSON.stringify(body),
     })
-    const json = (await response.json()) as T & { error?: string }
+    const json = (await response.json()) as T & { error?: string; code?: string }
+    if (op === 'mutate' && response.status === 422 && json.code) throw new AppError(json.code, json.error ?? json.code)
     if (!response.ok) {
       throw new Error(`workspaceAdmin.${op} failed (${response.status}): ${json.error ?? 'unknown error'}`)
     }
@@ -362,5 +395,7 @@ export function workspaceAdmin(namespace: DurableObjectNamespace<any>, workspace
     import: (snapshot) => call('import', snapshot),
     reset: () => call('reset'),
     disconnect: (opts = {}) => call('disconnect', opts),
+    mutate: (name, args, opts) => call('mutate', { name, args, ...(opts?.clientId ? { clientId: opts.clientId } : {}) }),
+    rows: (tbl) => call('rows', undefined, `?tbl=${encodeURIComponent(tbl)}`),
   }
 }
