@@ -8,7 +8,6 @@ import {
   MAX_PRESENCE_BYTES,
   MAX_ROW_BYTES,
   type AnySyncSchema,
-  type AppDefinition,
   type Cursor,
   type MutatorContext,
 } from '@cf-sync/protocol'
