@@ -111,6 +111,14 @@ const serverMutationSchema = z.object({
   clientId: z.string().min(1).default('server'),
 })
 
+/** How long a held presence entry lasts without another hold, by default and at most. */
+const DEFAULT_HOLD_MS = 60_000
+const MAX_HOLD_MS = 60 * 60_000
+const holdBodySchema = z.object({
+  clientId: z.string().min(1).max(256),
+  state: z.unknown(),
+  ttlMs: z.number().int().positive().max(MAX_HOLD_MS).optional(),
+})
 const disconnectBodySchema = z.object({
   principal: z.string().optional(),
   clientId: z.string().optional(),
@@ -231,9 +239,10 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      * hibernation. Hibernation drops the map while sockets survive; the
      * constructor's presencePoll rebuilds it in one round-trip. Each entry
      * remembers its owning socket so a superseded socket's late close event
-     * cannot wipe the reconnected client's fresh state.
+     * cannot wipe the reconnected client's fresh state. A held entry (no socket: `ws` null) is
+     * server code's (#hold), and lasts `until` its hold runs out.
      */
-    #presence = new Map<string, { ws: WebSocket; principal?: string; state: unknown }>()
+    #presence = new Map<string, { ws: WebSocket | null; principal?: string; state: unknown; until?: number }>()
     /**
      * The last bootstrap patch built, reused while its version is current (see
      * #bootstrapPatch). Dropped whenever the version moves: a large workspace's
@@ -349,6 +358,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         this.#sql.exec(`UPDATE meta SET schema_hash = ? WHERE id = 1`, fingerprint)
         this.#meta.schemaHash = fingerprint
       }
+      this.#loadHeld()
       // Extension init runs on every wake (idempotent DDL, in-memory state
       // rebuild); a throw quarantines the workspace like any init failure.
       this.#initExtension()
@@ -555,6 +565,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         return new Response(`workspace unavailable: ${this.#initError.message}`, { status: 503 })
       }
       this.#rememberWorkspaceId(request)
+      this.#expireHeld()
       const url = new URL(request.url)
       if (url.pathname.startsWith('/admin/')) {
         // Only our own worker routers can reach a DO; createAdminFetch
@@ -639,6 +650,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       // expiry) still delivers in-flight frames until the peer acks — drop
       // them instead of processing.
       if (attachment.defunct) return
+      this.#expireHeld()
       // Expired stamps gate writes (ARCHITECTURE.md#session-control): close with refresh so the
       // reconnect re-runs authorize. Keepalive pings never reach here — the
       // runtime auto-responds without waking the DO.
@@ -916,6 +928,30 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           return json({ version: this.#meta.currentVersion })
         }
 
+        case 'GET presence': {
+          this.#expireHeld()
+          const peers = [...this.#presence].map(([clientId, e]) => ({
+            clientId,
+            state: e.state,
+            ...(e.principal !== undefined ? { principal: e.principal } : {}),
+            ...(e.ws === null ? { held: true } : {}),
+          }))
+          return json({ peers })
+        }
+
+        case 'POST hold': {
+          let parsed
+          try {
+            parsed = holdBodySchema.safeParse(await request.json())
+          } catch {
+            return json({ error: 'invalid JSON body' }, 400)
+          }
+          if (!parsed.success) return json({ error: 'invalid hold request', detail: parsed.error.message }, 400)
+          const { clientId, state, ttlMs } = parsed.data
+          const error = this.#hold(clientId, state ?? null, ttlMs ?? DEFAULT_HOLD_MS)
+          return error ? json({ error }, 400) : json({ ok: true })
+        }
+
         case 'POST disconnect': {
           // Revoke or refresh live sessions (ARCHITECTURE.md#session-control). No selector
           // means all sockets; given selectors must all match. kick closes
@@ -1080,6 +1116,67 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       for (const socket of this.#readySockets()) {
         if (socket === from) continue
         this.#deliver(socket, [frame])
+      }
+    }
+
+    /**
+     * Shows a peer with no socket (ARCHITECTURE.md#held-presence), validated like a socket's
+     * presence, until `ttlMs` passes without another hold; null clears it. Peers hear a change, not
+     * a renewal. Returns what was wrong with the state, if anything.
+     */
+    #hold(clientId: string, raw: unknown, ttlMs: number): string | null {
+      const schema = config.app.presence
+      if (!schema) return 'the app declares no presence schema'
+      const was = this.#presence.get(clientId)
+      if (raw === null) {
+        if (was?.ws !== null) return null
+        this.#presence.delete(clientId)
+        this.#sql.exec(`DELETE FROM held_presence WHERE client_id = ?`, clientId)
+        this.#relayPresence(null, clientId, undefined, null)
+        return null
+      }
+      const max = config.app.presenceMaxBytes ?? MAX_PRESENCE_BYTES
+      if (jsonByteSize(raw) > max) return `presence state exceeds ${max} bytes`
+      const result = schema['~standard'].validate(raw)
+      if (result instanceof Promise) {
+        void result.catch(() => {})
+        return 'async presence validation is not supported'
+      }
+      if (result.issues) return formatIssues(result.issues)
+      const state = result.value
+      const until = Date.now() + ttlMs
+      const text = JSON.stringify(state)
+      this.#presence.set(clientId, { ws: null, state, until })
+      this.#sql.exec(
+        `INSERT INTO held_presence (client_id, state, until) VALUES (?, ?, ?)
+         ON CONFLICT (client_id) DO UPDATE SET state = excluded.state, until = excluded.until`,
+        clientId,
+        text,
+        until,
+      )
+      if (was?.ws !== null || JSON.stringify(was.state) !== text) this.#relayPresence(null, clientId, undefined, state)
+      return null
+    }
+
+    /** The held entries still running, as storage has them (a wake dropped the map), and the ones that ran out let go. */
+    #loadHeld(): void {
+      const rows = this.#sql.exec<{ client_id: string; state: string; until: number }>(`SELECT client_id, state, until FROM held_presence`).toArray()
+      for (const r of rows) if (!this.#presence.has(r.client_id)) this.#presence.set(r.client_id, { ws: null, state: JSON.parse(r.state) as unknown, until: r.until })
+      this.#expireHeld()
+    }
+
+    /**
+     * Lets go of held entries that ran out, telling peers. Checked whenever the object does anything
+     * (a request, a socket message) rather than on a timer, which would keep it from hibernating: an
+     * entry outlives its hold only while nothing happens, so while nobody is around to see it.
+     */
+    #expireHeld(): void {
+      const now = Date.now()
+      for (const [clientId, e] of this.#presence) {
+        if (e.ws !== null || e.until! > now) continue
+        this.#presence.delete(clientId)
+        this.#sql.exec(`DELETE FROM held_presence WHERE client_id = ?`, clientId)
+        this.#relayPresence(null, clientId, undefined, null)
       }
     }
 

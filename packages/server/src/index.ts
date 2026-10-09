@@ -28,6 +28,7 @@ export {
   workspaceAdmin,
   type AdminFetchOptions,
   type AdminOp,
+  type PresenceEntry,
   type AuthVerdict,
   type DisconnectOptions,
   type SyncFetchOptions,

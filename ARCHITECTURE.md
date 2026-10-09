@@ -682,6 +682,23 @@ client-claimed, `clientId`/`principal` are not.
   must round-trip its own output); peers reset to empty on disconnect — stale
   presence is worse than absent presence.
 
+## Held presence
+
+A peer with no socket — an agent working through a server's calls, say — is
+shown by server code: `workspaceAdmin(ns, id).hold(clientId, state, { ttlMs })`.
+The state is validated like a socket's and relayed like one (peers can't tell
+the difference), and `presence()` reads everyone's, held entries marked.
+
+- **Held until the hold runs out.** Each hold renews it for `ttlMs` (default
+  60 s); null clears it. A renewal with the same state relays nothing.
+- **Stored, unlike socket presence.** Nothing would re-announce a held entry
+  after a wake, so it lives in `held_presence` as well as the map. Holds come
+  at the pace of server calls, not cursor moves, so the write is cheap.
+- **Expired on activity, not on a timer.** A pending timer would keep the
+  object from hibernating; instead every request and socket message lets go of
+  entries past their time (relaying the null). An entry outlives its hold only
+  while nothing happens — while nobody is around to see it.
+
 ## Yjs fields
 
 Per-field Y.Docs hosted inside the workspace DO, on the existing socket

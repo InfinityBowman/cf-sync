@@ -198,7 +198,7 @@ export function createSyncFetch<Env>(opts: SyncFetchOptions<Env>) {
  * per-op policy — say, a read-only token that allows `stats` and `export`
  * but not `reset` — is one `switch` away.
  */
-export type AdminOp = 'stats' | 'export' | 'import' | 'reset' | 'disconnect' | 'mutate' | 'rows'
+export type AdminOp = 'stats' | 'export' | 'import' | 'reset' | 'disconnect' | 'mutate' | 'rows' | 'presence' | 'hold'
 
 const ADMIN_METHODS: Record<AdminOp, string> = {
   stats: 'GET',
@@ -208,6 +208,8 @@ const ADMIN_METHODS: Record<AdminOp, string> = {
   disconnect: 'POST',
   mutate: 'POST',
   rows: 'GET',
+  presence: 'GET',
+  hold: 'POST',
 }
 
 /** Options for {@link createAdminRoute} / {@link createAdminFetch}, the worker router for the workspace admin surface. */
@@ -230,7 +232,8 @@ export interface AdminFetchOptions<Env> {
  * Routes `${prefix}/<workspaceId>/<op>` to the workspace DO's admin surface:
  * GET stats, GET export, POST import (snapshot body), POST reset,
  * POST disconnect (kick or refresh live sockets), POST mutate
- * (`{ name, args, clientId? }`, see {@link WorkspaceAdmin.mutate}), GET rows (`?tbl=<table>`).
+ * (`{ name, args, clientId? }`, see {@link WorkspaceAdmin.mutate}), GET rows (`?tbl=<table>`),
+ * GET presence, POST hold (`{ clientId, state, ttlMs? }`, see {@link WorkspaceAdmin.hold}).
  *
  * The composable form (see {@link createSyncRoute} for the pattern): resolves
  * to `null` when the request is not admin traffic, so it chains with other
@@ -343,6 +346,23 @@ export interface WorkspaceAdmin<M extends AnyMutators = AnyMutators> {
    * wrote, such as a worker rendering their drafts.
    */
   rows(tbl: string): Promise<{ version: number; rows: { id: string; data: Record<string, unknown> }[] }>
+  /** Everyone's presence now: each socket's, and the entries held for peers without one (`held`). */
+  presence(): Promise<{ peers: PresenceEntry[] }>
+  /**
+   * Shows a peer that has no socket, such as an agent working through server calls, with `state`
+   * (validated like a socket's presence) until `ttlMs` (default 60 s, at most an hour) passes
+   * without another hold; null clears it. Held entries are stored, so they outlive a wake.
+   */
+  hold(clientId: string, state: unknown, opts?: { ttlMs?: number }): Promise<{ ok: true }>
+}
+
+/** A peer's presence as {@link WorkspaceAdmin.presence} returns it. */
+export interface PresenceEntry {
+  clientId: string
+  state: unknown
+  principal?: string
+  /** Held by server code (no socket). */
+  held?: true
 }
 
 /** The args {@link WorkspaceAdmin.mutate} takes for a mutator: its args schema's input, or `undefined` when it has none. */
@@ -397,5 +417,7 @@ export function workspaceAdmin<M extends AnyMutators = AnyMutators>(
     disconnect: (opts = {}) => call('disconnect', opts),
     mutate: (name, args, opts) => call('mutate', { name, args, ...(opts?.clientId ? { clientId: opts.clientId } : {}) }),
     rows: (tbl) => call('rows', undefined, `?tbl=${encodeURIComponent(tbl)}`),
+    presence: () => call('presence'),
+    hold: (clientId, state, opts) => call('hold', { clientId, state, ...(opts?.ttlMs ? { ttlMs: opts.ttlMs } : {}) }),
   }
 }

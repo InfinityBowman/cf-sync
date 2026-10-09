@@ -84,6 +84,16 @@ const MIGRATIONS: ReadonlyArray<readonly string[]> = [
   // v5 — presence fingerprint, separate from schema_hash: presence drift is
   //      advisory (soft warning, no version bump), table drift is a bug.
   [`ALTER TABLE meta ADD COLUMN presence_hash TEXT NOT NULL DEFAULT ''`],
+  // v6 — held presence: peers server code shows without a socket (an agent working through
+  //      server calls), until their hold runs out. Stored, unlike socket presence: nothing would
+  //      re-announce them after a wake.
+  [
+    `CREATE TABLE IF NOT EXISTS held_presence (
+      client_id TEXT    PRIMARY KEY,
+      state     TEXT    NOT NULL,
+      until     INTEGER NOT NULL
+    ) STRICT`,
+  ],
 ]
 
 export function migrate(sql: SqlStorage): void {

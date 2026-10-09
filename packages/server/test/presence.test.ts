@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { presenceFingerprint, schemaFingerprint } from '../src/fingerprint'
 import { testSchema } from './fixture/worker'
+import { workspaceAdmin } from '../src/index'
 import { TestClient, type PresenceLaneMsg } from './harness'
 
 // Presence (ARCHITECTURE.md#presence): in-memory relay over the sync socket. Identity is
@@ -330,5 +331,64 @@ describe('fingerprint', () => {
     expect(a).not.toBe(b)
     expect(presenceFingerprint(z.object({ name: z.string() }))).toBe(a)
     expect(presenceFingerprint(undefined)).toBe('')
+  })
+})
+
+describe('held presence (ARCHITECTURE.md#held-presence)', () => {
+  const admin = (workspace: string) => workspaceAdmin(env.WORKSPACE, workspace)
+
+  it('shows a peer without a socket: relayed, in snapshots and presence(); a renewal relays nothing; null clears it', async () => {
+    const workspace = `presence-held-${Date.now()}`
+    const { client: c1 } = await connectLive(workspace, 'c1')
+    await admin(workspace).hold('agent', { name: 'claude' })
+    expect(await c1.nextPresence()).toEqual({ type: 'presence', clientId: 'agent', state: { name: 'claude', label: 'peer' } })
+
+    await admin(workspace).hold('agent', { name: 'claude' })
+    await c1.expectNoPresence()
+
+    const { client: c2, snapshot } = await connectLive(workspace, 'c2')
+    expect(snapshot).toEqual({ type: 'presencePeers', peers: [{ clientId: 'agent', state: { name: 'claude', label: 'peer' } }] })
+    c2.presence({ name: 'ada' })
+    await c1.nextPresence()
+    const { peers } = await admin(workspace).presence()
+    expect(peers.sort((a, b) => a.clientId.localeCompare(b.clientId))).toEqual([
+      { clientId: 'agent', state: { name: 'claude', label: 'peer' }, held: true },
+      { clientId: 'c2', state: { name: 'ada', label: 'peer' } },
+    ])
+
+    await admin(workspace).hold('agent', null)
+    expect(await c1.nextPresence()).toEqual({ type: 'presence', clientId: 'agent', state: null })
+    expect((await admin(workspace).presence()).peers.map((p) => p.clientId)).toEqual(['c2'])
+    c1.close()
+    c2.close()
+  })
+
+  it('runs out after its ttl: peers are told when the object next does anything', async () => {
+    const workspace = `presence-held-ttl-${Date.now()}`
+    const { client: c1 } = await connectLive(workspace, 'c1')
+    const { client: c2 } = await connectLive(workspace, 'c2')
+    await admin(workspace).hold('agent', { name: 'claude' }, { ttlMs: 200 })
+    await c1.nextPresence()
+    await c2.nextPresence()
+    await sleep(400)
+    c2.presence({ name: 'ada' })
+    expect(await c1.nextPresence()).toEqual({ type: 'presence', clientId: 'agent', state: null })
+    expect((await admin(workspace).presence()).peers.map((p) => p.clientId)).toEqual(['c2'])
+    c1.close()
+    c2.close()
+  })
+
+  it('outlives a wake, unlike socket presence', async () => {
+    const workspace = `presence-held-wake-${Date.now()}`
+    await admin(workspace).hold('agent', { name: 'claude' })
+    await evictDurableObject(env.WORKSPACE.get(env.WORKSPACE.idFromName(workspace)))
+    const { snapshot } = await connectLive(workspace, 'c1')
+    expect(snapshot).toEqual({ type: 'presencePeers', peers: [{ clientId: 'agent', state: { name: 'claude', label: 'peer' } }] })
+  })
+
+  it('is validated against the presence schema', async () => {
+    const workspace = `presence-held-invalid-${Date.now()}`
+    await expect(admin(workspace).hold('agent', { name: 42 })).rejects.toThrow(/hold failed \(400\)/)
+    expect((await admin(workspace).presence()).peers).toEqual([])
   })
 })
