@@ -175,8 +175,8 @@ export interface PresencePeer<T = unknown> {
  * The full-row CRUD mutators (`sync.put` / `sync.del` — what collections emit
  * for local writes) are included automatically; `mutators` adds intent-based
  * mutations alongside them and may be omitted for a pure-CRUD app. Pass
- * `crud: false` for an intent-only registry — collections then refuse to
- * attach, and every write must go through a named mutator.
+ * `crud: false` for an intent-only registry — collections are then
+ * read-only, and every write must go through a named mutator.
  *
  * `mutators` accepts a registry built by `defineMutators` or the definitions
  * written inline — both infer identically (the same mapped type contextually

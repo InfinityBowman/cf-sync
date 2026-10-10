@@ -177,7 +177,7 @@ describe('typed mutate', () => {
     ).rejects.toSatisfy((e) => e instanceof MutationError && e.code === 'UnknownMutator')
   })
 
-  it('fails at setup when a crud: false registry meets a collection', () => {
+  it('makes read-only collections for a crud: false registry', () => {
     const client = new SyncClient({
       url: 'ws://test',
       workspaceId: 'w1',
@@ -192,8 +192,8 @@ describe('typed mutate', () => {
       }),
       createSocket: () => new FakeSocket(),
     })
-    expect(() => workspaceCollectionOptions({ client, table: 'todos' })).toThrow(/crud: false/)
-    expect(() => createCollections(client)).toThrow(/sync\.put/)
+    const { todos } = createCollections(client)
+    expect(() => todos.insert({ id: 't1', title: 'x', done: false } as never)).toThrow()
   })
 })
 

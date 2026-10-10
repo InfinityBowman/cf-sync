@@ -183,19 +183,11 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
         `known tables: ${Object.keys(client.schema.tables).join(', ') || '(none)'}`,
     )
   }
-  // Collections write through sync.put / sync.del. Fail at setup when the
-  // registry lacks them — the alternative is every insert rejecting at
-  // runtime with UnknownMutator and silently rolling back its optimistic row.
-  for (const required of ['sync.put', 'sync.del'] as const) {
-    if (!(client.app.mutators as Record<string, unknown>)[required]) {
-      throw new Error(
-        `workspaceCollectionOptions: the app's mutator registry has no "${required}", which ` +
-          `collections emit for local writes — the app was defined with crud: false; remove it ` +
-          `(defineApp includes the crud mutators by default) or drive this table through ` +
-          `intent mutators only, without a collection`,
-      )
-    }
-  }
+  // Collections write through sync.put / sync.del. An app defined with crud: false has neither,
+  // so its collections are read-only: no write handlers, and TanStack DB refuses an insert, update
+  // or delete at the call site instead of the server rejecting it later. Every write then goes
+  // through a named mutator.
+  const writable = ['sync.put', 'sync.del'].every((m) => m in (client.app.mutators as Record<string, unknown>))
   const getKey =
     cfg.getKey ??
     ((row: Row): string => {
@@ -271,25 +263,27 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
         }
       },
     },
-    onInsert: async ({ transaction }) => {
-      await Promise.all(
-        transaction.mutations.map((m) =>
-          mutate('sync.put', { tbl: table, id: getKey(m.modified as Row), data: m.modified }),
-        ),
-      )
-    },
-    onUpdate: async ({ transaction }) => {
-      await Promise.all(
-        transaction.mutations.map((m) =>
-          mutate('sync.put', { tbl: table, id: getKey(m.modified as Row), data: m.modified }),
-        ),
-      )
-    },
-    onDelete: async ({ transaction }) => {
-      await Promise.all(
-        transaction.mutations.map((m) => mutate('sync.del', { tbl: table, id: String(m.key) })),
-      )
-    },
+    ...(writable && {
+      onInsert: async ({ transaction }) => {
+        await Promise.all(
+          transaction.mutations.map((m) =>
+            mutate('sync.put', { tbl: table, id: getKey(m.modified as Row), data: m.modified }),
+          ),
+        )
+      },
+      onUpdate: async ({ transaction }) => {
+        await Promise.all(
+          transaction.mutations.map((m) =>
+            mutate('sync.put', { tbl: table, id: getKey(m.modified as Row), data: m.modified }),
+          ),
+        )
+      },
+      onDelete: async ({ transaction }) => {
+        await Promise.all(
+          transaction.mutations.map((m) => mutate('sync.del', { tbl: table, id: String(m.key) })),
+        )
+      },
+    }),
   }
 }
 
