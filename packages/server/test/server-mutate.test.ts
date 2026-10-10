@@ -1,7 +1,7 @@
 import { SELF, env } from 'cloudflare:test'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 import { AppError, workspaceAdmin } from '../src/index'
-import type { testMutators } from './fixture/worker'
+import type { testMutators, testSchema } from './fixture/worker'
 import { TestClient } from './harness'
 
 // Mutations from server code (ARCHITECTURE.md#server-mutations): workspaceAdmin().mutate runs a
@@ -10,6 +10,8 @@ import { TestClient } from './harness'
 
 const ws = (name: string) => `server-mutate-${name}-${Date.now()}`
 const admin = (workspace: string) => workspaceAdmin<typeof testMutators>(env.WORKSPACE, workspace)
+/** The same, typed by the schema too: table names checked, rows typed. */
+const typed = (workspace: string) => workspaceAdmin<typeof testMutators, typeof testSchema>(env.WORKSPACE, workspace)
 
 describe('workspaceAdmin().mutate', () => {
   it('applies a mutator and pokes every live client', async () => {
@@ -76,6 +78,17 @@ describe('workspaceAdmin().mutate', () => {
     ])
     expect((await admin(workspace).rows('todos')).rows).toEqual([])
     await expect(admin(workspace).rows('no such; table')).rejects.toThrow(/invalid table name/)
+  })
+
+  it('types rows by the schema when it is passed', async () => {
+    const workspace = ws('typed-rows')
+    await admin(workspace).mutate('sync.put', { tbl: 'typed', id: 'x', data: { name: 'a' } })
+    const { rows } = await typed(workspace).rows('typed')
+    expectTypeOf(rows[0]!.data).toEqualTypeOf<{ name: string; n: number }>()
+    expect(rows).toEqual([{ id: 'x', data: { name: 'a', n: 1 } }])
+    // A table the schema doesn't have is a type error (at run time it has no rows).
+    // @ts-expect-error not one of the schema's tables
+    expect((await typed(workspace).rows('nope')).rows).toEqual([])
   })
 
   it('is an admin route too', async () => {

@@ -1,4 +1,4 @@
-import { AppError, CLOSE_UNAUTHORIZED, type AnyMutators, type MutationArgs } from '@cf-sync/protocol'
+import { AppError, CLOSE_UNAUTHORIZED, type AnyMutators, type AnySyncSchema, type MutationArgs, type RowOf, type TableName } from '@cf-sync/protocol'
 import { AUTH_HEADER, WORKSPACE_HEADER, encodeAuthStamps, rejectUpgrade } from './upgrade'
 
 /**
@@ -302,8 +302,9 @@ export interface DisconnectOptions {
  * The typed admin surface {@link workspaceAdmin} returns — one method per
  * admin op, mirroring the HTTP routes `createAdminFetch` exposes. A failing
  * op throws with the operation name, HTTP status, and the DO's error message.
+ * `M` types `mutate` by the app's mutators, `S` types `rows` by its schema.
  */
-export interface WorkspaceAdmin<M extends AnyMutators = AnyMutators> {
+export interface WorkspaceAdmin<M extends AnyMutators = AnyMutators, S extends AnySyncSchema = AnySyncSchema> {
   /** Operational gauges and counters for the workspace — rows, versions, live connections, database size — designed to be scraped. */
   stats(): Promise<Record<string, unknown>>
   /** A JSON snapshot of every live row (plus extension state when one is registered), accepted back by `import`. */
@@ -343,9 +344,10 @@ export interface WorkspaceAdmin<M extends AnyMutators = AnyMutators> {
   /**
    * One table's live rows as stored (the server's view, so a client's optimistic writes appear once
    * their push lands), with the workspace's data version. For server code that reads what clients
-   * wrote, such as a worker rendering their drafts.
+   * wrote, such as a worker rendering their drafts. With the schema passed (`S`), the table name is
+   * checked and each row's `data` is typed as that table's row.
    */
-  rows(tbl: string): Promise<{ version: number; rows: { id: string; data: Record<string, unknown> }[] }>
+  rows<T extends TableName<S>>(tbl: T): Promise<{ version: number; rows: { id: string; data: RowOf<S, T> }[] }>
   /** Everyone's presence now: each socket's, and the entries held for peers without one (`held`). */
   presence(): Promise<{ peers: PresenceEntry[] }>
   /**
@@ -383,16 +385,20 @@ export interface ServerMutateOptions {
  * const ws = workspaceAdmin(env.WORKSPACE, projectId)
  * await ws.disconnect({ principal: userId, mode: 'kick', reason: 'membership-revoked' })
  * await ws.disconnect({ mode: 'refresh' }) // everyone re-authorizes
+ *
+ * // Typed by the app: mutator names and args, table names and rows.
+ * const typed = workspaceAdmin<typeof app.mutators, typeof app.schema>(env.WORKSPACE, projectId)
+ * const { rows } = await typed.rows('todos') // rows[0].data is a todo
  * ```
  *
  * Talks straight to the stub (no `createAdminFetch` in between), so it
  * carries the caller's authority — external callers go through
  * `createAdminFetch` and its authorize hook instead.
  */
-export function workspaceAdmin<M extends AnyMutators = AnyMutators>(
+export function workspaceAdmin<M extends AnyMutators = AnyMutators, S extends AnySyncSchema = AnySyncSchema>(
   namespace: DurableObjectNamespace<any>,
   workspaceId: string,
-): WorkspaceAdmin<M> {
+): WorkspaceAdmin<M, S> {
   const ns = namespace as DurableObjectNamespace | undefined
   if (!ns) throw missingNamespace()
   const stub = ns.get(ns.idFromName(workspaceId))
