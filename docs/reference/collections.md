@@ -32,7 +32,7 @@ The unit shape is the point for workspace-per-project apps: switching projects i
 
 One fully typed collection per table in the client's schema — the one-line alternative to a `createCollection(workspaceCollectionOptions(…))` block per table. Rows are keyed by their `id` field (this engine's row model); a table whose rows key differently needs an individual [`workspaceCollectionOptions`](#workspacecollectionoptions) call with its own `getKey`.
 
-Each collection's lifetime is tied to the client: [`client.destroy()`](/reference/sync-client#destroy) cleans them up too, so switching workspaces is one call. Collection ids are scoped by workspace (`workspace-<workspaceId>-<table>`), so an app with two open workspaces never collides on TanStack DB's app-wide ids. The collections also serve as `mutate`'s optimistic surface — [intent mutations](/guide/mutations) run their shared `apply` against them locally, attached at creation so intents fired before a collection has subscribers still get their optimistic effect.
+Each collection's lifetime is tied to the client: [`client.destroy()`](/reference/sync-client#destroy) cleans them up too, along with any live queries still reading them, so switching workspaces is one call. Collection ids are scoped by workspace (`workspace-<workspaceId>-<table>`), so an app with two open workspaces never collides on TanStack DB's app-wide ids. The collections also serve as `mutate`'s optimistic surface — [intent mutations](/guide/mutations) run their shared `apply` against them locally, attached at creation so intents fired before a collection has subscribers still get their optimistic effect.
 
 ### startSync
 
@@ -72,7 +72,7 @@ Maps a row to its collection key. Required only when the table's row schema has 
 
 `boolean` · default: TanStack's lazy default
 
-Start the sync pipeline immediately instead of on first subscriber. `createCollections` flips this to `true` for you; here it stays lazy unless you opt in.
+Start the sync pipeline immediately instead of on first subscriber. `createCollections` flips this to `true` for you; here it stays lazy unless you opt in. An eager collection is never garbage-collected for lack of subscribers: it lives until its `cleanup()`, which `createCollections` ties to `client.destroy()`. A lazy one keeps TanStack's `gcTime` default.
 
 ## Writes and the wire
 

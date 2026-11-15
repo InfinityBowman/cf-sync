@@ -1,4 +1,4 @@
-import { createCollection } from '@tanstack/db'
+import { createCollection, createLiveQueryCollection } from '@tanstack/db'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { SyncClient } from '../src/client'
@@ -10,6 +10,8 @@ import { FakeSocket, flushMicrotasks } from './fake-socket'
 // Optimistic intent execution (ARCHITECTURE.md#optimistic-intents): `mutate` runs the shared
 // mutator locally against the collections and lands its writes as one atomic
 // overlay — one wire mutation, no crud echoes, rolled back on rejection.
+
+let peeked: Record<string, unknown> | null | undefined
 
 const schema = defineSchema({
   todos: z.object({
@@ -54,6 +56,12 @@ const mutators = defineMutators(schema, {
       if (todo) tx.put('notes', id, { id, body: String(todo.title) })
     },
   },
+  'todos.peek': {
+    args: z.object({ id: z.string() }),
+    apply: (tx, { id }) => {
+      peeked = tx.get('todos', id)
+    },
+  },
   'todos.blowUp': {
     apply: () => {
       throw new TypeError('not an AppError')
@@ -90,6 +98,27 @@ function setup(opts: { confirmTimeoutMs?: number } = {}) {
   const socket = sockets[sockets.length - 1]!
   socket.open()
   return { client, todos, socket }
+}
+
+function setupCollections() {
+  const sockets: FakeSocket[] = []
+  const client = new SyncClient({
+    url: 'ws://test',
+    workspaceId: 'w3',
+    clientId: CLIENT_ID,
+    autoStart: false,
+    app,
+    createSocket: () => {
+      const socket = new FakeSocket()
+      sockets.push(socket)
+      return socket
+    },
+  })
+  const collections = createCollections(client)
+  client.start()
+  const socket = sockets[sockets.length - 1]!
+  socket.open()
+  return { client, ...collections, socket }
 }
 
 function bootstrap(socket: FakeSocket, rows: Todo[]): void {
@@ -455,6 +484,42 @@ describe('optimistic intent mutations', () => {
     await flushMicrotasks()
     const pushes = socket.takeSent().filter((m) => m.type === 'push')
     expect(pushes.flatMap((p) => p.mutations.map((m) => m.name))).toEqual(['todos.add'])
+  })
+
+  it("mutator reads never see TanStack's virtual props", async () => {
+    const { client, todos, socket } = setup()
+    bootstrap(socket, [todo('t1', 'read me', false)])
+    await todos.preload()
+
+    peeked = undefined
+    void client.mutate('todos.peek', { id: 't1' }).catch(() => {})
+    expect(peeked).toMatchObject({ id: 't1', title: 'read me' })
+    expect(Object.keys(peeked!).filter((k) => k.startsWith('$'))).toEqual([])
+  })
+
+  it('an eager collection with no subscriber is not garbage-collected', async () => {
+    vi.useFakeTimers()
+    try {
+      const { todos, socket } = setupCollections()
+      bootstrap(socket, [todo('t1', 'kept', false)])
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(todos.status).not.toBe('cleaned-up')
+      expect(todos.get('t1')).toMatchObject({ title: 'kept' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('destroy() cleans up collections that a live query still reads', async () => {
+    const { client, todos, socket } = setupCollections()
+    bootstrap(socket, [todo('t1', 'read', false)])
+    const live = createLiveQueryCollection((q) => q.from({ todo: todos }))
+    const unsubscribe = live.subscribeChanges(() => {})
+    await live.preload()
+
+    await client.destroy()
+    expect(todos.status).toBe('cleaned-up')
+    unsubscribe.unsubscribe()
   })
 })
 
