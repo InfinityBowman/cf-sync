@@ -115,7 +115,7 @@ describe('workspaceCollectionOptions + TanStack DB', () => {
       pageInfo: { more: false },
     })
 
-    await tx.isPersisted.promise
+    await tx.when('settled')
     expect(todos.get('t2')).toMatchObject({ title: 'optimistic' })
     expect(todos.size).toBe(1)
   })

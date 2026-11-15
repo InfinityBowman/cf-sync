@@ -29,13 +29,13 @@ const runIntentTransaction: IntentTransactionRunner = (intent, flush, persist) =
     // behind, and the server's run is the one that counts.
     return persist()
   }
-  return tx.isPersisted.promise.then(() => undefined)
+  return tx.when('settled').then(() => undefined)
 }
 
 /** TanStack enriches rows with virtual props; keep them out of mutator reads and overlays. */
 function stripVirtualProps(row: Record<string, unknown>): Record<string, unknown> {
-  const { $synced, $origin, $key, $collectionId, ...data } = row as Record<string, unknown> & {
-    $synced?: unknown
+  const { $hasPendingWrites, $origin, $key, $collectionId, ...data } = row as Record<string, unknown> & {
+    $hasPendingWrites?: unknown
     $origin?: unknown
     $key?: unknown
     $collectionId?: unknown
@@ -226,6 +226,11 @@ export function workspaceCollectionOptions<S extends AnySyncSchema, K extends Ta
     getKey,
     schema: tableSchema as S['tables'][K] & StandardSchemaV1,
     startSync: cfg.startSync,
+    // TanStack starts its GC timer on an eager sync with no subscriber, so an
+    // unread table would be collected after gcTime and its next subscriber
+    // would take the full-resync path. Eager collections live until cleanup()
+    // instead (client.destroy() for createCollections).
+    ...(cfg.startSync ? { gcTime: 0 } : {}),
     sync: {
       rowUpdateMode: 'full',
       sync: (params) => {
@@ -342,7 +347,9 @@ export function createCollections<S extends AnySyncSchema>(
     client.registerApplier(table, collectionApplier(collection), runIntentTransaction)
     // Tie the collection's lifetime to the client: client.destroy() cleans
     // these up too, so teardown (e.g. switching workspaces) is one call.
-    client.onDestroy(() => collection.cleanup())
+    // dependents: live queries still reading the collection would otherwise
+    // make cleanup() reject and leave it running after destroy().
+    client.onDestroy(() => collection.cleanup({ dependents: true }))
     collections[table] = collection
   }
   return collections as WorkspaceCollections<S>
