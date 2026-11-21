@@ -246,7 +246,10 @@ the transaction. Delivery is at-most-once — an eviction with the promise in
 flight loses it — so consumers must be idempotent on `version` and
 rebuildable from `export`. Migrations, admin import, and reset bypass
 `#applyMutation` and therefore never fire it; rejected mutations and no-op
-writes do not either.
+writes do not either. Admin `mutate` runs the same `#runMutator` core in its
+own transaction (principal `admin`, clientId `$admin`, auth from `adminAuth`, no
+LMID since no client owns the sequence) and fires it on commit; its dry run
+throws inside the transaction so SQLite rolls the writes back.
 
 ## Client adapter
 

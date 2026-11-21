@@ -20,7 +20,7 @@ export default {
 
 Routes resolve to `null` for traffic that isn't theirs, so they chain with `??` — no hand-routing on `pathname`. (`createAdminFetch` is the same route with a built-in 404, for mounting standalone.)
 
-`bearerTokenAuth` compares in constant time and **fails closed** when the secret is unset. Your `authorize` receives the op name (`'stats'`, `'export'`, `'import'`, `'reset'`, `'disconnect'`), so per-op policies are one `switch` away.
+`bearerTokenAuth` compares in constant time and **fails closed** when the secret is unset. Your `authorize` receives the op name (`'stats'`, `'export'`, `'import'`, `'reset'`, `'disconnect'`, `'mutate'`), so per-op policies are one `switch` away.
 
 ## The endpoints
 
@@ -30,6 +30,7 @@ GET  /admin/<workspaceId>/export      JSON snapshot of live rows
 POST /admin/<workspaceId>/import      replace state from a snapshot (live clients converge via reset poke); older snapshots are migrated on the way in
 POST /admin/<workspaceId>/reset       wipe the workspace; new history (backendId)
 POST /admin/<workspaceId>/disconnect  kick or refresh live sessions ({principal?, clientId?, mode})
+POST /admin/<workspaceId>/mutate      run one registered mutator as the operator ({name, args?, dryRun?})
 ```
 
 With the [yjs fields extension](/guide/collaborative-text) registered, `stats` includes its gauges and `export`/`import` round-trip fields alongside rows.
@@ -52,6 +53,27 @@ await ws.reset()
 ```
 
 This is the natural home for billing webhooks and app command handlers — see [Auth & sessions](/guide/auth#revoking-and-refreshing-live-sessions) for the kick/refresh semantics.
+
+## Fixing data with `mutate`
+
+`import` replaces a whole workspace, so a targeted fix through it overwrites anything users changed since the export. `mutate` runs one of your registered mutators instead, through the same args validation, write gates, and single transaction as a client push, so a fix can only produce states your app itself can produce. Live clients see it as an ordinary change, it lands in the mutation log, and `onMutationCommitted` fires with principal `'admin'`.
+
+Mutators see `ctx.auth` as the engine config's [`adminAuth`](/reference/server#adminauth), so set it to whatever your write gates require:
+
+```ts
+export class WorkspaceDO extends createWorkspaceDO({
+  app,
+  adminAuth: { role: 'owner', writeAllowed: true },
+}) {}
+```
+
+Run with `dryRun: true` first: the mutator runs, the response lists every row it would write or delete as a before/after pair, and the transaction rolls back. Then send the same body without it.
+
+```ts
+const ws = workspaceAdmin(env.WORKSPACE, workspaceId)
+const preview = await ws.mutate('todos.clearCompleted', undefined, { dryRun: true })
+await ws.mutate('todos.clearCompleted')
+```
 
 ## `reset` as the recovery hatch
 

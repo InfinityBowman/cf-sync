@@ -1,5 +1,6 @@
 import { CLOSE_UNAUTHORIZED } from '@cf-sync/protocol'
 import { AUTH_HEADER, WORKSPACE_HEADER, encodeAuthStamps, rejectUpgrade } from './upgrade'
+import type { RowChange } from './config'
 
 /**
  * An `authorize` hook that checks `Authorization: Bearer <token>` against a
@@ -198,7 +199,7 @@ export function createSyncFetch<Env>(opts: SyncFetchOptions<Env>) {
  * per-op policy — say, a read-only token that allows `stats` and `export`
  * but not `reset` — is one `switch` away.
  */
-export type AdminOp = 'stats' | 'export' | 'import' | 'reset' | 'disconnect'
+export type AdminOp = 'stats' | 'export' | 'import' | 'reset' | 'disconnect' | 'mutate'
 
 const ADMIN_METHODS: Record<AdminOp, string> = {
   stats: 'GET',
@@ -206,6 +207,7 @@ const ADMIN_METHODS: Record<AdminOp, string> = {
   import: 'POST',
   reset: 'POST',
   disconnect: 'POST',
+  mutate: 'POST',
 }
 
 /** Options for {@link createAdminRoute} / {@link createAdminFetch}, the worker router for the workspace admin surface. */
@@ -227,7 +229,8 @@ export interface AdminFetchOptions<Env> {
 /**
  * Routes `${prefix}/<workspaceId>/<op>` to the workspace DO's admin surface:
  * GET stats, GET export, POST import (snapshot body), POST reset,
- * POST disconnect (kick or refresh live sockets).
+ * POST disconnect (kick or refresh live sockets), POST mutate (run one
+ * registered mutator as an operator).
  *
  * The composable form (see {@link createSyncRoute} for the pattern): resolves
  * to `null` when the request is not admin traffic, so it chains with other
@@ -292,6 +295,13 @@ export interface DisconnectOptions {
   reason?: string
 }
 
+/** What an admin `mutate` reports: the committed version (null for a dry run or a no-op) and the rows it wrote or deleted. */
+export interface AdminMutateResult {
+  dryRun: boolean
+  version: number | null
+  changes: RowChange[]
+}
+
 /**
  * The typed admin surface {@link workspaceAdmin} returns — one method per
  * admin op, mirroring the HTTP routes `createAdminFetch` exposes. A failing
@@ -323,6 +333,14 @@ export interface WorkspaceAdmin {
    * reconnects through a fresh `authorize` run and picks up new stamps.
    */
   disconnect(opts?: DisconnectOptions): Promise<{ disconnected: number }>
+  /**
+   * Runs one registered mutator as an operator: principal `'admin'`, the
+   * `adminAuth` stamp from the engine config, and the same validation and
+   * single transaction as a client push. Live clients receive the change as
+   * a normal poke. With `dryRun`, the mutator runs and its changes are
+   * reported, then rolled back. A mutator's AppError rejects with its message.
+   */
+  mutate(name: string, args?: unknown, opts?: { dryRun?: boolean }): Promise<AdminMutateResult>
 }
 
 /**
@@ -362,5 +380,6 @@ export function workspaceAdmin(namespace: DurableObjectNamespace<any>, workspace
     import: (snapshot) => call('import', snapshot),
     reset: () => call('reset'),
     disconnect: (opts = {}) => call('disconnect', opts),
+    mutate: (name, args, opts = {}) => call('mutate', { name, args, dryRun: opts.dryRun ?? false }),
   }
 }

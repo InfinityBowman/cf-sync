@@ -200,6 +200,14 @@ export interface WorkspaceEngineConfig<S extends AnySyncSchema = AnySyncSchema, 
    * need editing when a later version reshapes the same table.
    */
   app: AppDefinition<S>
+  /**
+   * The auth stamp mutators see as `ctx.auth` when an operator runs one
+   * through the admin `mutate` op — whatever your write gates check, e.g.
+   * `{ role: 'owner', writeAllowed: true }`. Unset, admin mutations run with
+   * no stamp, so any mutator that requires one refuses them. The principal
+   * is always `'admin'`.
+   */
+  adminAuth?: unknown
   compaction?: CompactionConfig
   /** Stream the mutation log to R2 for archive/analytics — see {@link ExportConfig}. */
   export?: ExportConfig<Env>

@@ -27,6 +27,7 @@ export {
   createSyncRoute,
   workspaceAdmin,
   type AdminFetchOptions,
+  type AdminMutateResult,
   type AdminOp,
   type AuthVerdict,
   type DisconnectOptions,

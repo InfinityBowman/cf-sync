@@ -43,6 +43,12 @@ Export it through an empty subclass, as above: a `class` declaration is a type a
 
 The shared [app definition](/reference/define-kit#defineapp) — the same `defineApp` object every client is constructed with: schema version, table schemas, mutator registry, and the migration chain. Every `tx.put` — from mutators, migrations, and admin imports — is validated against the target table's schema; the validated output (defaults applied) is what gets stored. When the DO wakes with data stored under an older version, the migration chain replays before any traffic and commits atomically at a single new data version; a stored version outside the declared chain, or a throwing step, quarantines the workspace rather than serving old-shaped data. See [Schema evolution](/guide/schema-evolution).
 
+### adminAuth
+
+`unknown`
+
+The auth stamp mutators see as `ctx.auth` when an operator runs one through the admin [`mutate`](#workspaceadmin) op — whatever your write gates check, e.g. `{ role: 'owner', writeAllowed: true }`. Unset, admin mutations run with no stamp, so any mutator that requires one refuses them. The principal is always `'admin'`.
+
 ### compaction
 
 `CompactionConfig`
@@ -89,7 +95,7 @@ logger: (level, message, { workspaceId }, ...detail) => {
 
 `(event: MutationCommitted, env: Env) => void | Promise<void>`
 
-Runs after a mutation's data effects commit, with the rows it wrote or deleted — the seam for notifications, projections into another store, and activity logging. Fires once per mutation that changed rows; a rejected mutation, one whose writes net to nothing, a schema migration, and an admin `import` or `reset` all emit nothing. The worker env rides along so the hook can reach its own bindings.
+Runs after a mutation's data effects commit, with the rows it wrote or deleted — the seam for notifications, projections into another store, and activity logging. Fires once per mutation that changed rows; a rejected mutation, one whose writes net to nothing, a schema migration, and an admin `import` or `reset` all emit nothing. An admin [`mutate`](#workspaceadmin) fires it like any other mutation, with principal `'admin'`. The worker env rides along so the hook can reach its own bindings.
 
 ```ts
 onMutationCommitted: async ({ workspaceId, name, principal, changes }, env) => {
@@ -163,7 +169,7 @@ URL prefix for sync routes (`${prefix}/<workspaceId>`), matching the client's [`
 
 `(opts: AdminFetchOptions) => (request, env) => Promise<Response>` · `…Promise<Response | null>`
 
-The worker router for the workspace admin surface at `${pathPrefix}/<workspaceId>/<op>` (default prefix `"/admin"`). Same route/fetch split as the sync pair. `namespace` works as above; `authorize` is **required** — admin operations read and destroy whole workspaces — and returns `boolean | Response` (no verdict form; there is no connection to stamp). It receives the operation name as `op: AdminOp` (`'stats' | 'export' | 'import' | 'reset' | 'disconnect'`), so a per-op policy — a read-only token that allows `stats` and `export` but not `reset` — is one `switch` away.
+The worker router for the workspace admin surface at `${pathPrefix}/<workspaceId>/<op>` (default prefix `"/admin"`). Same route/fetch split as the sync pair. `namespace` works as above; `authorize` is **required** — admin operations read and destroy whole workspaces — and returns `boolean | Response` (no verdict form; there is no connection to stamp). It receives the operation name as `op: AdminOp` (`'stats' | 'export' | 'import' | 'reset' | 'disconnect' | 'mutate'`), so a per-op policy — a read-only token that allows `stats` and `export` but not `reset` — is one `switch` away.
 
 The endpoints, mirroring [Operations](/guide/operations):
 
@@ -174,6 +180,7 @@ The endpoints, mirroring [Operations](/guide/operations):
 | `POST /admin/<workspaceId>/import` | replace state from a snapshot; live clients converge via reset poke |
 | `POST /admin/<workspaceId>/reset` | wipe the workspace; new history under a fresh `backendId` |
 | `POST /admin/<workspaceId>/disconnect` | kick or refresh live sessions (`{ principal?, clientId?, mode?, code?, reason? }`) |
+| `POST /admin/<workspaceId>/mutate` | run one registered mutator as the operator (`{ name, args?, dryRun? }`) |
 
 ### bearerTokenAuth
 
@@ -192,6 +199,7 @@ Typed admin surface over a workspace DO stub, for same-worker callers — app co
 - `import(snapshot)` — replaces the workspace's rows atomically at a single new data version, resolving `{ imported, version }`. A snapshot from an older schema version is migrated first — the app's migration chain replays over its rows in memory, and the result carries `migratedFrom` — while a newer snapshot, or one whose chain cannot replay (missing or throwing step), is rejected with the workspace untouched. Live clients converge on their own: a reset poke re-bootstraps them in place, or — when the snapshot carries extension state — every socket is cycled with a refresh close instead.
 - `reset()` — wipes the workspace and starts a new history under a fresh `backendId`, resolving `{ backendId }`. Also the one op a quarantined workspace still serves — the [recovery hatch](/guide/operations#reset-as-the-recovery-hatch).
 - `disconnect(opts?)` — closes live sockets matching the selectors (`principal`, `clientId`, or neither for all sockets), resolving `{ disconnected }`. `mode: 'kick'` (default) closes permanently — the client stops reconnecting and calls `onFatal` with `code` (default 4403) and `reason` — while `'refresh'` closes with 4300 so the client reconnects through a fresh `authorize` run and picks up new stamps. See [revoking and refreshing](/guide/auth#revoking-and-refreshing-live-sessions).
+- `mutate(name, args?, { dryRun? })` — runs one registered mutator as the operator: principal `'admin'`, the [`adminAuth`](#adminauth) stamp, and the same args validation and single transaction as a client push. Resolves `{ dryRun, version, changes }`: the committed data version (`null` for a dry run or a mutation whose writes net to nothing) and the before/after image of every row it wrote or deleted. Live clients receive the change as a normal poke, it is appended to the mutation log, and [`onMutationCommitted`](#onmutationcommitted) fires. With `dryRun`, the mutator runs and its changes are reported, then rolled back. A mutator's `AppError` rejects (HTTP 422 with `{ error, code }`) and writes nothing.
 
 ## EngineExtension
 
