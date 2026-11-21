@@ -28,6 +28,7 @@ import {
 } from '@cf-sync/protocol/internal'
 import {
   buildSyncUrl,
+  claimClientId,
   consoleLogger,
   createDefaultStore,
   defaultClientId,
@@ -115,9 +116,9 @@ export class SyncClient<
   P extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined,
 > {
   readonly #opts: SyncClientOptions<S, M, P>
-  readonly #clientId: string
-  readonly #url: string
-  readonly #store: SyncStore | undefined
+  #clientId: string
+  #url: string
+  #store: SyncStore | undefined
   readonly #tables = new Map<string, TableHooks>()
   readonly #appliers = new Map<string, TableApplier>()
   readonly #warnedTables = new Set<string>()
@@ -251,6 +252,9 @@ export class SyncClient<
     this.#clientId = opts.clientId ?? defaultClientId(opts.workspaceId)
     this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, this.#clientId)
     this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId, opts.logger ?? consoleLogger) : undefined)
+    // Nothing persists until hydration has read the stored outbox (and the
+    // managed id is confirmed): an earlier save would overwrite that partition.
+    this.#hydrating = this.#store !== undefined
     this.mutate = buildMutate(Object.keys(opts.app.mutators), (name, args) =>
       this.#guardMutation(name, args, this.#mutateByName(name, args)),
     )
@@ -488,6 +492,30 @@ export class SyncClient<
     this.#clearStartNudge()
     this.#listenForWake(true)
     this.#setStatus('connecting')
+    // A managed id must be confirmed as this tab's before the store hydrates
+    // its outbox partition or the socket binds it (see claimClientId).
+    if (this.#opts.clientId === undefined && this.#opts.store === undefined && typeof document !== 'undefined') {
+      void claimClientId(this.#opts.workspaceId, this.#clientId).then((clientId) => {
+        if (this.#stopped) return
+        if (clientId !== this.#clientId) this.#adoptClientId(clientId)
+        this.#begin()
+      })
+      return
+    }
+    this.#begin()
+  }
+
+  #adoptClientId(clientId: string): void {
+    const opts = this.#opts
+    this.#clientId = clientId
+    this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, clientId)
+    if (opts.persist) {
+      void this.#store?.close?.()
+      this.#store = createDefaultStore(opts.workspaceId, clientId, opts.logger ?? consoleLogger)
+    }
+  }
+
+  #begin(): void {
     const store = this.#store
     if (store) {
       this.#hydrating = true
@@ -1528,7 +1556,7 @@ export class SyncClient<
     this.#persistScheduled = true
     queueMicrotask(() => {
       this.#persistScheduled = false
-      if (this.#stopped) return
+      if (this.#stopped || this.#hydrating || store !== this.#store) return
       void store
         .saveOutbox(this.#outboxSnapshot(), this.#confirmedLmid)
         .catch((err) => this.#log('warn', '[cf-sync] failed to persist outbox', err))

@@ -24,10 +24,6 @@ Invariants that must never break (see ARCHITECTURE.md#invariants):
 
 ## Releasing
 
-No release workflow, changesets, or tags: bump `version` in the package's package.json, commit, then from the repo root:
+Releases run in CI: bump `version` in the package's package.json and merge to main. `.github/workflows/release.yml` (also runnable with `gh workflow run release.yml`) typechecks, tests, then runs `pnpm release`, which builds and publishes every package whose version is not on npm yet. It authenticates through npm trusted publishing (OIDC), so no token is stored; each `@cf-sync/*` package trusts `release.yml` in `InfinityBowman/cf-sync` with direct publish allowed. No changesets or tags.
 
-```bash
-pnpm release
-```
-
-It builds, then publishes every package. Recursive publish skips packages whose version is already on the registry, so it is safe to run for the whole workspace after bumping one package. `--no-git-checks` is required because the untracked `packages/yjs/reference/` clones dirty the tree. `prepack` only syncs docs, which is why the script builds first; `publishConfig` swaps exports to `dist/` at pack time. If publish fails on auth, the token in ~/.npmrc has expired: `npm login` and rerun. Then `pnpm --filter @cf-sync/demo deploy` if the demo should pick the release up. Consumers on pnpm hold new versions for the release-age window unless they exclude `@cf-sync/*` (corates does).
+A failed publish shows ENEEDAUTH when a package's trusted publisher is missing or the workflow filename or `repository.url` no longer matches it. A new package must exist on npm before a trusted publisher can be added, so Jacob publishes its first version locally (`pnpm release` after `npm login`), then runs `npm trust github @cf-sync/<name> --file release.yml --repo InfinityBowman/cf-sync --allow-publish --yes` (needs his 2FA); CI publishes from then on. Locally, `pnpm release` still works as a fallback with a logged-in npm (`npm login`). Then `pnpm --filter @cf-sync/demo deploy` if the demo should pick the release up. Consumers on pnpm hold new versions for the release-age window unless they exclude `@cf-sync/*` (corates does).
