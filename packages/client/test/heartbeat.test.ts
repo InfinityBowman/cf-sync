@@ -108,7 +108,7 @@ describe('connection resilience', () => {
   })
 
   it('declares a silent socket dead and reconnects — without any close event', async () => {
-    const { client, sockets } = makeClient({ pingIntervalMs: 20, idleTimeoutMs: 60 })
+    const { client, sockets } = makeClient({ pingIntervalMs: 20, pingTimeoutMs: 10 })
     client.registerTable('todos', noopHooks)
     client.start()
     const first = sockets[0]!
@@ -124,6 +124,29 @@ describe('connection resilience', () => {
     const [hello] = second.takeSent()
     // resume by cursor: the dead connection cost nothing
     expect(hello).toMatchObject({ type: 'hello', cursor: cursor(7) })
+    void client.destroy()
+  })
+
+  it('keeps a quiet socket whose pings are answered, however far apart the beats are', async () => {
+    // A background tab's timers fire about once a minute: beats far longer apart than the ping
+    // timeout, with nothing but pongs in between, must not read as a dead socket.
+    const { client, sockets } = makeClient({ pingIntervalMs: 60, pingTimeoutMs: 10 })
+    client.registerTable('todos', noopHooks)
+    client.start()
+    const socket = sockets[0]!
+    socket.open()
+    bootstrap(socket)
+    const send = socket.send.bind(socket)
+    socket.send = (data) => {
+      send(data)
+      if (typeof data === 'string' && (JSON.parse(data) as { type: string }).type === 'ping') {
+        setTimeout(() => socket.receive({ type: 'pong' } as never), 1)
+      }
+    }
+    await sleep(400)
+    expect(socket.takeSent().filter((m) => (m as { type: string }).type === 'ping').length).toBeGreaterThanOrEqual(3)
+    expect(sockets.length).toBe(1)
+    expect(socket.closed).toBe(false)
     void client.destroy()
   })
 

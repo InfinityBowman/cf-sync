@@ -179,6 +179,8 @@ export class SyncClient<
   #heartbeatTimer: ReturnType<typeof setInterval> | null = null
   #startNudgeTimer: ReturnType<typeof setTimeout> | null = null
   #lastFrameAt = 0
+  /** When the last keepalive went out on this socket (0: none yet). */
+  #lastPingAt = 0
 
   // Presence (ARCHITECTURE.md#presence). `#presenceState` is this client's last-set state
   // (undefined = never set, null = cleared); it survives reconnects so the
@@ -1155,19 +1157,23 @@ export class SyncClient<
    * Idle edge connections die unpredictably (NAT/edge timeouts, observed
    * live anywhere from ~75s to >130s), and a half-open socket never emits a
    * close event — send() just vanishes. Pings keep the path warm (the server
-   * runtime answers them without waking the DO), and a missed idle deadline
-   * is the only reliable dead-socket signal: declare it dead locally and
-   * run the normal reconnect + cursor catch-up.
+   * runtime answers them without waking the DO), and a ping with no frame
+   * back within `pingTimeoutMs` is the only reliable dead-socket signal:
+   * declare it dead locally and run the normal reconnect + cursor catch-up.
+   * Judged from the ping rather than the clock, because a background tab's
+   * timers fire as rarely as once a minute and a quiet socket is not a dead one.
    */
   #startHeartbeat(): void {
     this.#stopHeartbeat()
     const interval = this.#opts.pingIntervalMs ?? 25_000
     if (interval <= 0) return
-    const deadline = this.#opts.idleTimeoutMs ?? interval * 2 + 5_000
+    const timeout = this.#opts.pingTimeoutMs ?? 10_000
+    this.#lastPingAt = 0
     this.#heartbeatTimer = setInterval(() => {
       const socket = this.#socket
       if (!socket) return
-      if (Date.now() - this.#lastFrameAt > deadline) {
+      const now = Date.now()
+      if (this.#lastPingAt > this.#lastFrameAt && now - this.#lastPingAt > timeout) {
         this.#socket = null // ignore any late events from the dead socket
         try {
           socket.close(4408, 'heartbeat timeout')
@@ -1183,6 +1189,7 @@ export class SyncClient<
       }
       try {
         socket.send(KEEPALIVE_PING)
+        this.#lastPingAt = now
       } catch {
         // send failure surfaces via the close event or the next deadline check
       }

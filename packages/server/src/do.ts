@@ -47,6 +47,7 @@ import {
 import { MemoryRowStore, validateRow, WriteSet } from './engine-core'
 import { CLEAR_OP, DEL_OP_SQL, packPatch, pokeFrames, PUT_OP_SQL, type OpJson, type PatchParts } from './frames'
 import { presenceFingerprint, schemaFingerprint } from './fingerprint'
+import { isSilent, SILENT_MS } from './silent'
 import { SqlRowStore } from './sql-row-store'
 import { loadOrInitMeta, migrate, type Meta } from './storage'
 import {
@@ -94,6 +95,8 @@ interface Attachment {
    * reconnect re-runs authorize.
    */
   expiresAt?: number
+  /** When the DO accepted the socket (epoch ms), the baseline for one that never pings (silent.ts). Unset on sockets from older code. */
+  acceptedAt?: number
   /**
    * Set when the DO itself closes the socket (kick, supersede, expiry). A
    * close is not instantaneous — inbound frames already in flight still fire
@@ -118,6 +121,10 @@ const PING = KEEPALIVE_PING
 const PONG = KEEPALIVE_PONG
 /** Close codes with no peer to reciprocate to (RFC 6455 reserved). */
 const RESERVED_CLOSE_CODES = new Set([1005, 1006, 1015])
+/** Closes a socket with no keepalive in SILENT_MS; outside the refresh and permanent bands, so a client still there reconnects with backoff. */
+const CLOSE_SILENT = 4000
+/** How often an awake object looks for silent sockets; it always looks on waking. */
+const SILENT_CHECK_MS = 10_000
 
 /**
  * What `createWorkspaceDO` returns: a Durable Object class to export from the
@@ -255,6 +262,8 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       this.#rows = new SqlRowStore(this.#sql)
       // Keepalives answered by the runtime so idle sockets never wake the DO.
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG))
+      // Before the presence poll, so sockets whose client is gone are closed rather than polled.
+      this.#closeSilentSockets()
       // The constructor runs on every wake: surviving ready sockets mean
       // hibernation just dropped the presence map — ask clients to re-send
       // their state (ARCHITECTURE.md#presence). A cold start has no sockets, so this is free.
@@ -337,7 +346,8 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
               `migrations: { ${config.app.version + 1}: ... } (a migrate function if existing rows ` +
               `need backfilling, null if the change is additive). Without one, old bundles and ` +
               `cached rows keep being accepted as version ${config.app.version} and rows written ` +
-              `before the change are never migrated.`,
+              `before the change are never migrated. Expected once per change for apps whose ` +
+              `checkSchemaEvolution allows optional field additions.`,
           )
         }
         this.#sql.exec(`UPDATE meta SET schema_hash = ? WHERE id = 1`, fingerprint)
@@ -436,6 +446,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
 
     override async alarm(): Promise<void> {
       if (this.#initError) return // nothing to maintain; a successful reset re-arms the alarm
+      this.#closeSilentSockets()
       try {
         if (!config.compaction?.disabled) this.#compact()
         this.#extension?.onAlarm?.()
@@ -549,6 +560,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         return new Response(`workspace unavailable: ${this.#initError.message}`, { status: 503 })
       }
       this.#rememberWorkspaceId(request)
+      this.#closeSilentSockets()
       const url = new URL(request.url)
       if (url.pathname.startsWith('/admin/')) {
         // Only our own worker routers can reach a DO; createAdminFetch
@@ -599,6 +611,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           `auth context exceeds the ${MAX_ATTACHMENT_BYTES}-byte attachment budget`,
         )
       }
+      attachment.acceptedAt = Date.now()
 
       // Supersede rule (ARCHITECTURE.md#session-control): a clientId's newest socket wins. The old one
       // is almost always a half-open zombie the client already abandoned;
@@ -633,6 +646,7 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       // expiry) still delivers in-flight frames until the peer acks — drop
       // them instead of processing.
       if (attachment.defunct) return
+      this.#closeSilentSockets()
       // Expired stamps gate writes (ARCHITECTURE.md#session-control): close with refresh so the
       // reconnect re-runs authorize. Keepalive pings never reach here — the
       // runtime auto-responds without waking the DO.
@@ -1294,6 +1308,30 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
 
     #cursor(): Cursor {
       return { backendId: this.#meta.backendId, version: this.#meta.currentVersion }
+    }
+
+    /** When it last looked for silent sockets; in memory only, so every wake looks. */
+    #silentCheckedAt = 0
+
+    /**
+     * Closes sockets whose client is gone without a close (silent.ts). Left open, they keep a woken
+     * object from hibernating again until the runtime gives up on them, minutes later.
+     */
+    #closeSilentSockets(): void {
+      const now = Date.now()
+      if (now - this.#silentCheckedAt < SILENT_CHECK_MS) return
+      this.#silentCheckedAt = now
+      const sockets = this.ctx.getWebSockets()
+      let closed = 0
+      for (const socket of sockets) {
+        const attachment = socket.deserializeAttachment() as Attachment | null
+        if (attachment?.defunct) continue
+        const lastPing = this.ctx.getWebSocketAutoResponseTimestamp(socket)?.getTime() ?? null
+        if (!isSilent({ lastPing, acceptedAt: attachment?.acceptedAt }, now)) continue
+        this.#closeSocket(socket, CLOSE_SILENT, 'no ping')
+        closed++
+      }
+      if (closed) this.#log('warn', `[cf-sync] closed ${closed} of ${sockets.length} sockets with no ping in ${SILENT_MS / 1000}s`)
     }
 
     #readySockets(): WebSocket[] {

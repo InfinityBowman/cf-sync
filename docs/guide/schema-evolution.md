@@ -43,6 +43,18 @@ Two failure modes, both silent without the bump:
 
 A `null` entry (or a backfill `migrate` when the new field needs a value on old rows) closes both holes.
 
+### Optional fields, opt-in
+
+A bump reloads every open tab, which is a lot to pay for one new optional field. If your clients never send whole rows (no `sync.put` left reachable; every mutator takes field-level args and merges on the server), neither hole above applies to a field added as optional with no default: old rows simply lack it, and no old tab can write a row without it. Opt in on the CI check:
+
+```ts
+await checkSchemaEvolution(app, new URL('./schema-snapshot.json', import.meta.url), {
+  allowOptionalAdditions: true,
+})
+```
+
+The snapshot then keeps each table's shape, and a field added as optional (nested ones too) passes unbumped. Everything else still needs a bump: a new table, a removed field, a field made required or optional, a field added with a default, any type or constraint change. The DO's runtime drift warning still logs once per such change.
+
 ## Drift detection
 
 This is enforced mechanically, not by convention — twice, at different distances from the mistake.
