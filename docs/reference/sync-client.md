@@ -52,7 +52,7 @@ Durable storage for synced rows, the cursor, and the outbox — pass your own [`
 
 `string` · default: managed by the library
 
-Identifies one contiguous mutation sequence — unique per SyncClient instance (per tab/session), never shared across concurrent tabs. The managed default is persisted per workspace in sessionStorage (reload continuity without cross-tab sharing), random where sessionStorage is unavailable. Duplicating a tab copies its sessionStorage, so in a browser the client holds a Web Lock on its id for the page's lifetime: a duplicate finds the lock taken and mints its own id before hydrating, while a reload or a crash-restored tab keeps its id and replays its queued mutations. Pass explicitly to take over the lifecycle.
+Identifies one contiguous mutation sequence — unique per SyncClient instance (per tab/session), never shared across concurrent tabs. The managed default is persisted per workspace in sessionStorage (reload continuity without cross-tab sharing), random where sessionStorage is unavailable. Duplicating a tab copies its sessionStorage, so in a browser the client holds a Web Lock on its id for the page's lifetime: a duplicate finds the lock taken and mints its own id before hydrating, while a reload or a crash-restored tab keeps its id and replays its queued mutations. This applies to the managed id with `persist` or no store, where Web Locks exist; with an explicit `clientId`, a custom `store`, or no Web Locks, the app must keep concurrent tabs from sharing an id. Pass explicitly to take over the lifecycle.
 
 ### authToken
 

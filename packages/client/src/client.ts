@@ -252,6 +252,9 @@ export class SyncClient<
     this.#clientId = opts.clientId ?? defaultClientId(opts.workspaceId)
     this.#url = buildSyncUrl(opts.url, opts.pathPrefix ?? '/sync', opts.workspaceId, this.#clientId)
     this.#store = opts.store ?? (opts.persist ? createDefaultStore(opts.workspaceId, this.#clientId, opts.logger ?? consoleLogger) : undefined)
+    // Nothing persists until hydration has read the stored outbox (and the
+    // managed id is confirmed): an earlier save would overwrite that partition.
+    this.#hydrating = this.#store !== undefined
     this.mutate = buildMutate(Object.keys(opts.app.mutators), (name, args) =>
       this.#guardMutation(name, args, this.#mutateByName(name, args)),
     )
@@ -492,8 +495,6 @@ export class SyncClient<
     // A managed id must be confirmed as this tab's before the store hydrates
     // its outbox partition or the socket binds it (see claimClientId).
     if (this.#opts.clientId === undefined && this.#opts.store === undefined && typeof document !== 'undefined') {
-      // Mutations queued meanwhile must not persist into the provisional id's partition.
-      if (this.#store) this.#hydrating = true
       void claimClientId(this.#opts.workspaceId, this.#clientId).then((clientId) => {
         if (this.#stopped) return
         if (clientId !== this.#clientId) this.#adoptClientId(clientId)
@@ -1555,7 +1556,7 @@ export class SyncClient<
     this.#persistScheduled = true
     queueMicrotask(() => {
       this.#persistScheduled = false
-      if (this.#stopped) return
+      if (this.#stopped || this.#hydrating || store !== this.#store) return
       void store
         .saveOutbox(this.#outboxSnapshot(), this.#confirmedLmid)
         .catch((err) => this.#log('warn', '[cf-sync] failed to persist outbox', err))

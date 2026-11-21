@@ -52,8 +52,13 @@ function clientIdKey(workspaceId: string): string {
   return `cf-sync:client-id:${encodeURIComponent(workspaceId)}`
 }
 
-/** Ids this document holds a lock on; a later client for the same workspace in this tab reuses its id. */
-const heldClientIds = new Set<string>()
+/**
+ * Claims made in this document, keyed by the id each started from (fresh ids
+ * included). A later or replacement client in the same tab joins the same
+ * claim, even one still waiting on its lock, instead of finding its own
+ * document's lock taken.
+ */
+const claims = new Map<string, Promise<string>>()
 
 type Hold = 'held' | 'taken' | 'unavailable'
 
@@ -65,7 +70,6 @@ function holdClientId(locks: LockManager, clientId: string): Promise<Hold> {
           resolve('taken')
           return
         }
-        heldClientIds.add(clientId)
         resolve('held')
         // Held for the document's lifetime; the browser releases it on unload or crash.
         return new Promise<never>(() => {})
@@ -74,22 +78,10 @@ function holdClientId(locks: LockManager, clientId: string): Promise<Hold> {
   })
 }
 
-/**
- * Confirms the managed clientId belongs to this tab alone. Duplicating a tab
- * clones its sessionStorage, so the copy would present the original's id: the
- * server would supersede the original's socket, and both tabs would share one
- * mutation sequence and outbox partition. A Web Lock held per id for the
- * document's lifetime tells a duplicate (a live tab holds the lock) from a
- * reload or a crash-restored tab (the lock died with the old document), so
- * only the duplicate mints a fresh id and reloads keep replaying their outbox.
- * Without Web Locks (outside a browser document, sandboxed frames) the id is
- * kept as before.
- */
-export async function claimClientId(workspaceId: string, clientId: string): Promise<string> {
-  const locks = typeof document !== 'undefined' && typeof navigator !== 'undefined' ? navigator.locks : undefined
-  if (!locks || heldClientIds.has(clientId)) return clientId
+async function claimOrMint(locks: LockManager, workspaceId: string, clientId: string): Promise<string> {
   if ((await holdClientId(locks, clientId)) !== 'taken') return clientId
   const fresh = crypto.randomUUID()
+  claims.set(fresh, Promise.resolve(fresh))
   try {
     sessionStorage.setItem(clientIdKey(workspaceId), fresh)
   } catch {
@@ -97,6 +89,28 @@ export async function claimClientId(workspaceId: string, clientId: string): Prom
   }
   await holdClientId(locks, fresh)
   return fresh
+}
+
+/**
+ * Confirms the managed clientId belongs to this tab alone. Duplicating a tab
+ * clones its sessionStorage, so the copy would present the original's id: the
+ * server would supersede the original's socket, and both tabs would share one
+ * mutation sequence and outbox partition. A Web Lock held per id for the
+ * document's lifetime tells a duplicate (another live tab holds the lock) from
+ * a reload or a crash-restored tab (the lock died with the old document), so
+ * only the duplicate mints a fresh id and reloads keep replaying their outbox.
+ * Without Web Locks (outside a browser document, sandboxed frames) the id is
+ * kept as before.
+ */
+export function claimClientId(workspaceId: string, clientId: string): Promise<string> {
+  const locks = typeof document !== 'undefined' && typeof navigator !== 'undefined' ? navigator.locks : undefined
+  if (!locks) return Promise.resolve(clientId)
+  let claim = claims.get(clientId)
+  if (!claim) {
+    claim = claimOrMint(locks, workspaceId, clientId)
+    claims.set(clientId, claim)
+  }
+  return claim
 }
 
 const FATAL_RELOAD_MIN_INTERVAL_MS = 60_000

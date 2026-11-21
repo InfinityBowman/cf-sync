@@ -125,6 +125,63 @@ describe('duplicated tab', () => {
     await reread.close()
   })
 
+  it('keeps the id when a replacement client starts before the lock is granted', async () => {
+    // Browsers grant locks asynchronously, so a quick destroy-and-replace overlaps the claim.
+    const held = new Set<string>()
+    const locks = {
+      held,
+      request(name: string, _opts: { ifAvailable: boolean }, cb: (lock: object | null) => unknown) {
+        return new Promise((resolve) =>
+          setTimeout(() => {
+            const free = !held.has(name)
+            if (free) held.add(name)
+            resolve(cb(free ? { name } : null))
+          }, 0),
+        )
+      },
+    }
+    stubTab({ 'cf-sync:client-id:race-1': 'orig-5' }, locks)
+
+    const first = makeClient('race-1').client
+    first.start()
+    await first.destroy()
+    const { client: replacement, urls } = makeClient('race-1')
+    replacement.start()
+    await settle()
+
+    expect(replacement.clientId).toBe('orig-5')
+    expect(urls).toEqual(['ws://test/sync/race-1?clientId=orig-5'])
+  })
+
+  it("does not overwrite the original's outbox with a mutation queued before start()", async () => {
+    const factory = new IDBFactory()
+    const original = new IndexedDBSyncStore({ workspaceId: 'dup-3', clientId: 'orig-6', indexedDB: factory })
+    const originalOutbox = [{ id: null, name: 'sync.put', args: { tbl: 'todos', id: 'mine', data: {} } }]
+    await original.applyPoke({
+      ops: [],
+      clear: true,
+      cursor: { backendId: 'b1', version: 1 },
+      schemaVersion: 1,
+      confirmedLmid: 0,
+      outbox: originalOutbox,
+    })
+    await original.close()
+
+    stubTab({ 'cf-sync:client-id:dup-3': 'orig-6' }, fakeLocks(['cf-sync:client:orig-6']))
+    vi.stubGlobal('indexedDB', factory)
+    const { client } = makeClient('dup-3', { persist: true })
+    void client.mutate('sync.put', { tbl: 'todos', id: 'dup', data: {} } as never).catch(() => {})
+    await settle()
+    client.start()
+    await settle()
+
+    expect(client.clientId).not.toBe('orig-6')
+    await client.destroy()
+    const reread = new IndexedDBSyncStore({ workspaceId: 'dup-3', clientId: 'orig-6', indexedDB: factory })
+    expect((await reread.load())?.outbox).toEqual(originalOutbox)
+    await reread.close()
+  })
+
   it('leaves an explicitly configured clientId alone', async () => {
     stubTab({}, fakeLocks(['cf-sync:client:explicit']))
     const { client, urls } = makeClient('explicit-1', { clientId: 'explicit' })
