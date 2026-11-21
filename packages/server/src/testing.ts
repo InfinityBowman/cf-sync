@@ -13,7 +13,7 @@ import {
 import { createIdSource, formatIssues, migrationPath, mintSeed } from '@cf-sync/protocol/internal'
 import type { RowChange } from './config'
 import { MemoryRowStore, WriteSet, validateRow } from './engine-core'
-import { schemaFingerprint, unfingerprintableTables } from './fingerprint'
+import { breakingChange, schemaFingerprint, schemaShapes, unfingerprintableTables } from './fingerprint'
 
 export { schemaFingerprint }
 
@@ -286,6 +286,19 @@ export interface SchemaSnapshot {
   version: number
   /** Structural fingerprint of the table schemas — the same one the DO stores for drift detection. */
   fingerprint: string
+  /** The table shapes the fingerprint hashes, kept only under `allowOptionalAdditions` to tell an addition from a change. */
+  tables?: Record<string, unknown>
+}
+
+/** Options for {@link checkSchemaEvolution}. */
+export interface CheckSchemaEvolutionOptions {
+  /**
+   * Let fields added as optional, with no default, pass without a version bump; the snapshot takes
+   * them in. Safe only when no client sends whole rows: a tab still on the old bundle that writes a
+   * full row (an unguarded `sync.put`) strips the new field from it. Apps whose mutators take
+   * field-level args and merge on the server qualify, and skip a bump that reloads every open tab.
+   */
+  allowOptionalAdditions?: boolean
 }
 
 /**
@@ -314,6 +327,10 @@ export interface SchemaSnapshot {
  * Presence is deliberately outside the fingerprint: presence is ephemeral —
  * never stored — so reshaping it needs no version bump.
  *
+ * With `allowOptionalAdditions`, fields added as optional (no default) pass
+ * without a bump and the snapshot takes them in; see the option for when that
+ * is safe.
+ *
  * Rare false positive: the fingerprint derives from zod's JSON Schema
  * emission, so a zod upgrade can shift it with no semantic change — the
  * thrown message says so; delete the snapshot file to re-baseline.
@@ -321,6 +338,7 @@ export interface SchemaSnapshot {
 export async function checkSchemaEvolution(
   app: AppDefinition<AnySyncSchema>,
   snapshotPath: string | URL,
+  opts: CheckSchemaEvolutionOptions = {},
 ): Promise<SchemaSnapshot> {
   // Refuse a false green: fingerprinting reads zod's JSON Schema emission, so
   // a table this cannot see would sail through every run no matter how its
@@ -341,6 +359,7 @@ export async function checkSchemaEvolution(
   // at runtime both are WHATWG URLs, which node's fs accepts directly.
   const path = snapshotPath as unknown as string
   const current: SchemaSnapshot = { version: app.version, fingerprint: schemaFingerprint(app.schema) }
+  if (opts.allowOptionalAdditions) current.tables = schemaShapes(app.schema)
   const serialize = (snap: SchemaSnapshot): string =>
     `${JSON.stringify({ __comment: 'cf-sync schema snapshot (checkSchemaEvolution) — commit this file', ...snap }, null, 2)}\n`
 
@@ -357,6 +376,7 @@ export async function checkSchemaEvolution(
     const parsed = JSON.parse(raw) as Record<string, unknown>
     if (typeof parsed.version !== 'number' || typeof parsed.fingerprint !== 'string') throw new Error('shape')
     stored = { version: parsed.version, fingerprint: parsed.fingerprint }
+    if (parsed.tables !== null && typeof parsed.tables === 'object') stored.tables = parsed.tables as Record<string, unknown>
   } catch {
     throw new Error(
       `checkSchemaEvolution: ${String(snapshotPath)} is not a schema snapshot this helper wrote — ` +
@@ -365,9 +385,24 @@ export async function checkSchemaEvolution(
   }
 
   if (stored.version === current.version) {
-    if (stored.fingerprint === current.fingerprint) return current
+    if (stored.fingerprint === current.fingerprint) {
+      // A snapshot written before the option was on: same schemas, so keep their shapes from now on.
+      if (current.tables && !stored.tables) fs.writeFileSync(path, serialize(current))
+      return current
+    }
+    let why = ''
+    if (current.tables) {
+      const change = stored.tables
+        ? breakingChange(stored.tables, current.tables)
+        : 'the snapshot predates allowOptionalAdditions, so it has no shapes to compare: run the check on the commit before this change first'
+      if (change === null) {
+        fs.writeFileSync(path, serialize(current))
+        return current
+      }
+      why = ` (${change})`
+    }
     throw new Error(
-      `checkSchemaEvolution: table schemas changed but version is still ${current.version} ` +
+      `checkSchemaEvolution: table schemas changed${why} but version is still ${current.version} ` +
         `(fingerprint ${stored.fingerprint} -> ${current.fingerprint}). Every schema change requires a ` +
         `version bump — additive ones too. Bump defineApp to version: ${current.version + 1} and add ` +
         `migrations[${current.version + 1}] (null when new fields have defaults and no rows need ` +

@@ -90,13 +90,13 @@ Memory-only clients (no `store`/`persist`): reject unconfirmed mutations after t
 
 `number` · default `25_000`
 
-Keepalive ping cadence. Pings keep idle edge connections alive (the server's auto-response answers without waking the DO) and give the heartbeat a liveness signal. `0` disables the heartbeat entirely.
+Keepalive ping cadence. Pings keep idle edge connections alive (the server's auto-response answers without waking the DO) and give the heartbeat a liveness signal. `0` disables the heartbeat entirely. The server closes a socket that has sent no ping for 150s, so keep this well under that.
 
-### idleTimeoutMs
+### pingTimeoutMs
 
-`number` · default: `2 × pingIntervalMs + 5s`
+`number` · default `10_000`
 
-Force a reconnect when no frame of any kind has arrived for this long — the only way to detect a half-open socket, which never emits a close event.
+Force a reconnect when a keepalive ping has had no frame of any kind back for this long — the only way to detect a half-open socket, which never emits a close event. It is checked on the next ping beat, so detection takes at least `pingIntervalMs`. A quiet but healthy socket is never taken for dead, even in a background tab whose timers fire only once a minute.
 
 ### maxBackoffMs
 

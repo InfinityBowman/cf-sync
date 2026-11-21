@@ -127,9 +127,11 @@ The CI side of [drift detection](/guide/schema-evolution#drift-detection) — ca
 
 ### checkSchemaEvolution
 
-`(app, snapshotPath: string | URL) => Promise<SchemaSnapshot>`
+`(app, snapshotPath: string | URL, opts?: { allowOptionalAdditions?: boolean }) => Promise<SchemaSnapshot>`
 
 One test next to your app definition that fails the build on an unbumped schema change — the deployed engine only detects it after the fact, as a warning in Durable Object logs. The snapshot file works like a jest snapshot: commit it. The first run scaffolds it; a legitimate version bump rewrites it automatically (the bump is the fix, so the test passes); a schema change **without** a bump throws with the exact `migrations` entry to add. Presence is deliberately outside the fingerprint — never stored, so reshaping it needs no bump. Node-only, like everything in this subpath.
+
+`allowOptionalAdditions` lets fields added as optional with no default pass without a bump, for apps whose clients never send whole rows; see [Optional fields, opt-in](/guide/schema-evolution#optional-fields-opt-in).
 
 ```ts
 it('every schema change ships with a version bump', async () => {
@@ -145,6 +147,6 @@ The structural fingerprint of the table schemas — the same one the Durable Obj
 
 ### SchemaSnapshot
 
-`{ version: number; fingerprint: string }`
+`{ version: number; fingerprint: string; tables?: Record<string, unknown> }`
 
-What `checkSchemaEvolution` stores in — and returns from — its snapshot file.
+What `checkSchemaEvolution` stores in — and returns from — its snapshot file. `tables` holds the table shapes the fingerprint hashes, written only under `allowOptionalAdditions`.

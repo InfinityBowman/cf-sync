@@ -261,16 +261,18 @@ export interface SyncClientOptions<
   /**
    * Keepalive ping cadence. Pings keep idle edge connections alive (the
    * server's auto-response answers without waking the DO) and give the
-   * heartbeat a liveness signal. 0 disables the heartbeat entirely.
-   * Default: 25s.
+   * heartbeat a liveness signal. 0 disables the heartbeat entirely. The
+   * server closes a socket that has sent no ping for 150s, so keep this well
+   * under that. Default: 25s.
    */
   pingIntervalMs?: number
   /**
-   * Force a reconnect when no frame of any kind has arrived for this long —
-   * the only way to detect a half-open socket, which never emits a close
-   * event. Default: 2×pingInterval + 5s.
+   * Force a reconnect when a keepalive ping has had no frame of any kind back
+   * for this long — the only way to detect a half-open socket, which never
+   * emits a close event. Checked on the next ping beat, so detection takes at
+   * least `pingIntervalMs`. Default: 10s.
    */
-  idleTimeoutMs?: number
+  pingTimeoutMs?: number
   /**
    * Trailing-edge throttle window for `presence.set` — the client sends at
    * most one presence frame per window, carrying the latest state, so apps

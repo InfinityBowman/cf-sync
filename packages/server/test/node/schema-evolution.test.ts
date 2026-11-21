@@ -92,3 +92,66 @@ describe('checkSchemaEvolution', () => {
     await expect(checkSchemaEvolution(app, snapshotPath())).rejects.toThrow(/"todos" \(valibot\).*false green/s)
   })
 })
+
+describe('checkSchemaEvolution with allowOptionalAdditions', () => {
+  const allow = { allowOptionalAdditions: true }
+  function appWith(todo: z.ZodObject, extra?: Record<string, z.ZodObject>) {
+    const schema = defineSchema({ todos: todo, ...extra })
+    return defineApp({ version: 1, schema, mutators: crudMutators(schema) })
+  }
+  const base = z.object({ id: z.string(), title: z.string(), meta: z.object({ by: z.string() }) })
+
+  it('takes in fields added as optional, nested ones too, without a bump', async () => {
+    const path = snapshotPath()
+    await checkSchemaEvolution(appWith(base), path, allow)
+    const grown = appWith(base.extend({ note: z.string().optional(), meta: z.object({ by: z.string(), at: z.number().optional() }) }))
+    const after = await checkSchemaEvolution(grown, path, allow)
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ version: 1, fingerprint: after.fingerprint })
+    await expect(checkSchemaEvolution(grown, path, allow)).resolves.toEqual(after)
+  })
+
+  it.each([
+    ['a required field', base.extend({ due: z.string() }), /which fields are required changed/],
+    ['a field with a default', base.extend({ priority: z.string().default('normal') }), /required changed|added with a default/],
+    ['a removed field', z.object({ id: z.string(), meta: z.object({ by: z.string() }) }), /removed|required changed/],
+    ['a changed type', base.extend({ title: z.number() }), /todos\.title/],
+    ['a field made optional', base.extend({ title: z.string().optional() }), /which fields are required changed/],
+  ])('still demands a bump for %s', async (_, todo, why) => {
+    const path = snapshotPath()
+    await checkSchemaEvolution(appWith(base), path, allow)
+    await expect(checkSchemaEvolution(appWith(todo), path, allow)).rejects.toThrow(why)
+  })
+
+  it('still demands a bump for an added table', async () => {
+    const path = snapshotPath()
+    await checkSchemaEvolution(appWith(base), path, allow)
+    await expect(checkSchemaEvolution(appWith(base, { tags: z.object({ id: z.string() }) }), path, allow)).rejects.toThrow(
+      /table "tags" added/,
+    )
+  })
+
+  it('records the shapes into a snapshot written without the option, then compares against them', async () => {
+    const path = snapshotPath()
+    await checkSchemaEvolution(appWith(base), path)
+    expect(JSON.parse(readFileSync(path, 'utf8')).tables).toBeUndefined()
+    await checkSchemaEvolution(appWith(base), path, allow)
+    expect(JSON.parse(readFileSync(path, 'utf8')).tables).toBeDefined()
+    await expect(checkSchemaEvolution(appWith(base.extend({ note: z.string().optional() })), path, allow)).resolves.toBeDefined()
+  })
+
+  it('cannot tell an addition from a change on a snapshot that has no shapes', async () => {
+    const path = snapshotPath()
+    await checkSchemaEvolution(appWith(base), path)
+    await expect(checkSchemaEvolution(appWith(base.extend({ note: z.string().optional() })), path, allow)).rejects.toThrow(
+      /predates allowOptionalAdditions/,
+    )
+  })
+
+  it('leaves snapshots alone without the option', async () => {
+    const path = snapshotPath()
+    await checkSchemaEvolution(appWith(base), path)
+    await expect(checkSchemaEvolution(appWith(base.extend({ note: z.string().optional() })), path)).rejects.toThrow(
+      /version is still 1/,
+    )
+  })
+})

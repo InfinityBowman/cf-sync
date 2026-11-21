@@ -429,10 +429,21 @@ Lifted from partyserver/tldraw/LiveStore, considered settled:
   (tldraw `TldrawDurableObject.ts:44`).
 - **The client heartbeats** (live-observed: idle edge connections die
   unpredictably between ~75s and >130s, and a half-open socket emits no close
-  event). Ping every 25s; force-reconnect if no frame arrives within the idle
-  deadline — the missed deadline is the only reliable dead-socket signal. A
+  event). Ping every 25s; force-reconnect if a ping gets no frame back within
+  10s — the unanswered ping is the only reliable dead-socket signal. It is
+  judged from the ping, not wall-clock silence: a background tab's timers fire
+  as rarely as once a minute, so a clock deadline took healthy quiet sockets
+  for dead and reconnected every minute. A
   synchronously-throwing `WebSocket` constructor is treated as an instant
   disconnect so the backoff loop never dies.
+- **The DO closes silent sockets.** When the edge drops a connection, the
+  client sees 1006 and reconnects, but the DO is never told and keeps the old
+  socket, which holds a woken object awake until the runtime gives up on it.
+  On waking, and at most every 10s while awake (fetch, frame, alarm), the DO
+  closes (4000) any socket whose last auto-responded ping
+  (`getWebSocketAutoResponseTimestamp`), or accept time if it never pinged, is
+  over 150s old. A live client pings every 25s, about once a minute from a
+  background tab.
 - **Once-only `onStart` under `blockConcurrencyWhile`** re-runs migrations and
   loads meta on wake (partyserver `#ensureInitialized`, `index.ts:875`).
 - **Reciprocate close frames** (except reserved 1005/1006/1015) or clients
@@ -458,6 +469,14 @@ Lifted from partyserver/tldraw/LiveStore, considered settled:
   their full-row `sync.put`s silently strip any new field a new-bundle client
   set. A bump closes both. Never remove a mutator name shipped under a live
   version (D10).
+- **Opt-in exception: optional additions (2026-11-21).** A bump reloads every
+  open tab, so `checkSchemaEvolution(app, path, { allowOptionalAdditions: true })`
+  lets fields added as optional with no default pass unbumped (the snapshot
+  keeps table shapes to tell an addition from a change). That closes the first
+  hole (no default, so `RowOf` claims nothing old rows lack) but not the second,
+  so it is opt-in: only apps whose clients never send whole rows (no unguarded
+  `sync.put`; mutators take field-level args and merge on the server) qualify.
+  The runtime drift warning still fires once per such change.
 - **Import migrates older snapshots (2026-09-13).** A snapshot with
   `schemaVersion < app.version` replays `migrationPath` over its rows in a
   `MemoryRowStore` behind the same `WriteSet` (`validateAtFlush`) the wake
@@ -639,9 +658,9 @@ client-claimed, `clientId`/`principal` are not.
   a sparse snapshot that fills in as replies relay: presence is
   eventually-correct by construction.
 - **The ghost window (recorded trade).** No TTL/heartbeat expiry: keepalives
-  are auto-responded without waking the DO, so the server never observes
-  liveness — a silently-dead peer lingers until TCP teardown (~75s to
-  minutes). Same trade as y-partyserver (strips awareness's clock renewal) and
+  are auto-responded without waking the DO, so the server observes liveness
+  only when something else wakes it — a silently-dead peer lingers until TCP
+  teardown or the silent-socket sweep (150s, ARCHITECTURE.md#connections-and-lifecycle). Same trade as y-partyserver (strips awareness's clock renewal) and
   tldraw's CF template (`clientTimeout: Infinity`), for the same hibernation
   reason. Apps must treat "X is editing" as advisory — render with a staleness
   bound from `receivedAt` (stamped by the library), never hard-lock on it.
