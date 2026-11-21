@@ -126,6 +126,8 @@ describe('managed clientId', () => {
   })
 
   it('generates a fresh id per instance when sessionStorage is unavailable', () => {
+    // Node 25+ defines a working sessionStorage global, so remove it explicitly.
+    vi.stubGlobal('sessionStorage', undefined)
     const a = makeClient({ clientId: undefined }).client
     const b = makeClient({ clientId: undefined }).client
     expect(a.clientId).toMatch(/^[0-9a-f-]{36}$/)

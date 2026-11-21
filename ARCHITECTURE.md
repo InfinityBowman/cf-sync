@@ -122,7 +122,11 @@ promise). What the shapes don't say:
   attachment), never carried per-message — a connection cannot speak for
   another client mid-stream. A clientId names one contiguous mutation
   sequence: unique per SyncClient instance (per tab/session — sessionStorage,
-  not localStorage), or two tabs collide on mutation ids.
+  not localStorage), or two tabs collide on mutation ids. A duplicated tab
+  clones sessionStorage, so the managed id is confirmed with a Web Lock held
+  for the document's lifetime before hydration (`claimClientId`): a duplicate
+  finds it held and mints a fresh id; a reload or crash-restored tab finds it
+  free and keeps its outbox partition.
 - **Client-side validation** (from Replicache `handlePullResponseV1`,
   `sync/pull.ts:203-302`): a poke whose `baseCursor` doesn't match the current
   cursor is discarded and the client re-hellos with its cursor; cursors and

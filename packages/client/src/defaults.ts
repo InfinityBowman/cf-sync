@@ -36,7 +36,7 @@ export function withToken(url: string, token: string): string {
  * instance is always safe — it just forfeits reload continuity.
  */
 export function defaultClientId(workspaceId: string): string {
-  const key = `cf-sync:client-id:${encodeURIComponent(workspaceId)}`
+  const key = clientIdKey(workspaceId)
   try {
     const stored = sessionStorage.getItem(key)
     if (stored) return stored
@@ -46,6 +46,57 @@ export function defaultClientId(workspaceId: string): string {
   } catch {
     return crypto.randomUUID()
   }
+}
+
+function clientIdKey(workspaceId: string): string {
+  return `cf-sync:client-id:${encodeURIComponent(workspaceId)}`
+}
+
+/** Ids this document holds a lock on; a later client for the same workspace in this tab reuses its id. */
+const heldClientIds = new Set<string>()
+
+type Hold = 'held' | 'taken' | 'unavailable'
+
+function holdClientId(locks: LockManager, clientId: string): Promise<Hold> {
+  return new Promise((resolve) => {
+    locks
+      .request(`cf-sync:client:${clientId}`, { ifAvailable: true }, (lock) => {
+        if (!lock) {
+          resolve('taken')
+          return
+        }
+        heldClientIds.add(clientId)
+        resolve('held')
+        // Held for the document's lifetime; the browser releases it on unload or crash.
+        return new Promise<never>(() => {})
+      })
+      .catch(() => resolve('unavailable'))
+  })
+}
+
+/**
+ * Confirms the managed clientId belongs to this tab alone. Duplicating a tab
+ * clones its sessionStorage, so the copy would present the original's id: the
+ * server would supersede the original's socket, and both tabs would share one
+ * mutation sequence and outbox partition. A Web Lock held per id for the
+ * document's lifetime tells a duplicate (a live tab holds the lock) from a
+ * reload or a crash-restored tab (the lock died with the old document), so
+ * only the duplicate mints a fresh id and reloads keep replaying their outbox.
+ * Without Web Locks (outside a browser document, sandboxed frames) the id is
+ * kept as before.
+ */
+export async function claimClientId(workspaceId: string, clientId: string): Promise<string> {
+  const locks = typeof document !== 'undefined' && typeof navigator !== 'undefined' ? navigator.locks : undefined
+  if (!locks || heldClientIds.has(clientId)) return clientId
+  if ((await holdClientId(locks, clientId)) !== 'taken') return clientId
+  const fresh = crypto.randomUUID()
+  try {
+    sessionStorage.setItem(clientIdKey(workspaceId), fresh)
+  } catch {
+    // storage blocked: the fresh id still holds for this instance
+  }
+  await holdClientId(locks, fresh)
+  return fresh
 }
 
 const FATAL_RELOAD_MIN_INTERVAL_MS = 60_000
