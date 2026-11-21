@@ -56,7 +56,7 @@ This is the natural home for billing webhooks and app command handlers — see [
 
 ## Fixing data with `mutate`
 
-`import` replaces a whole workspace, so a targeted fix through it overwrites anything users changed since the export. `mutate` runs one of your registered mutators instead, through the same args validation, write gates, and single transaction as a client push, so a fix can only produce states your app itself can produce. Live clients see it as an ordinary change, it lands in the mutation log, and `onMutationCommitted` fires with principal `'admin'`.
+`import` replaces a whole workspace, so a targeted fix through it overwrites anything users changed since the export. `mutate` runs one of your registered mutators instead, through the same args validation, write gates, and single transaction as a client push, so a fix can only produce states your app itself can produce. Live clients see it as an ordinary change, a committed run lands in the mutation log, and `onMutationCommitted` fires with principal `'admin'`. A run that fails or writes nothing leaves no trace.
 
 Mutators see `ctx.auth` as the engine config's [`adminAuth`](/reference/server#adminauth), so set it to whatever your write gates require:
 

@@ -205,6 +205,10 @@ describe('mutate', () => {
 
     const unknown = await mutate(workspace, { name: 'no.such' })
     expect(((await unknown.json()) as any).code).toBe('UnknownMutator')
+    // Object.prototype keys are not mutators either.
+    const inherited = await mutate(workspace, { name: 'constructor' })
+    expect(inherited.status).toBe(422)
+    expect(((await inherited.json()) as any).code).toBe('UnknownMutator')
     const invalid = await mutate(workspace, { name: 'counter.increment', args: { id: 'c' } })
     expect(invalid.status).toBe(422)
     expect(((await invalid.json()) as any).code).toBe('InvalidArgs')

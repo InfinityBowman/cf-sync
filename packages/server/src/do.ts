@@ -1304,7 +1304,9 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
       ctx: MutatorContext,
       trackChanges: boolean,
     ): { args: unknown; written: number; changes: RowChange[] } {
-      const mutator = config.app.mutators[name]
+      // hasOwn: a name like "constructor" would otherwise resolve to an
+      // Object.prototype function and run as a no-op that reports success.
+      const mutator = Object.hasOwn(config.app.mutators, name) ? config.app.mutators[name] : undefined
       if (!mutator) throw new AppError('UnknownMutator', `no mutator named "${name}"`)
       const writes = new WriteSet(this.#rows, config.app.schema, { trackChanges })
       let args = rawArgs

@@ -172,7 +172,8 @@ export class TestEngine<S extends AnySyncSchema = AnySyncSchema, M extends AnyMu
   /** `mutate` as a specific clientId — for testing mutators that read `ctx.clientId`. */
   mutateAs<K extends keyof M & string>(clientId: string, name: K, ...rest: MutationArgs<M[K]>): TestMutationResult {
     const mutationId = (this.#lmids.get(clientId) ?? 0) + 1
-    const mutator = (this.#app.mutators as AnyMutators)[name]
+    const mutators = this.#app.mutators as AnyMutators
+    const mutator = Object.hasOwn(mutators, name) ? mutators[name] : undefined
     let appError: { code: string; message: string } | undefined
     let changes: RowChange[] = []
 
