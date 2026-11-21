@@ -115,6 +115,7 @@ export const testApp = defineApp({
 // public contract this fixture keeps compiling.
 export class WorkspaceDO extends createWorkspaceDO({
   app: testApp,
+  adminAuth: { role: 'owner', writeAllowed: true },
   export: {
     bucket: (env: Env) => env.EXPORT_BUCKET,
     maxBatchRows: 5, // small batches so tests exercise multi-object runs

@@ -267,6 +267,16 @@ describe('catch-up after disconnect', () => {
 })
 
 describe('schema validation (shape authority)', () => {
+  it('treats Object.prototype names as unknown mutators, not no-op successes', async () => {
+    const c1 = await TestClient.connect(ws(), 'c1')
+    await c1.syncOnce()
+    c1.push([{ id: 1, name: 'constructor', args: {} }])
+    const poke = await c1.nextPoke()
+    expect(poke.mutationResults[0]?.error?.code).toBe('UnknownMutator')
+    expect(poke.lastMutationIdChanges).toEqual({ c1: 1 })
+    c1.close()
+  })
+
   it('rejects writes to tables not in the schema as a permanent error', async () => {
     const c1 = await TestClient.connect(ws(), 'c1')
     await c1.syncOnce()

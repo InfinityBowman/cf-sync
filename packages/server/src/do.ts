@@ -117,6 +117,20 @@ const disconnectBodySchema = z.object({
   reason: z.string().optional(),
 })
 
+const mutateBodySchema = z.object({
+  name: z.string().min(1),
+  args: z.unknown().optional(),
+  dryRun: z.boolean().default(false),
+})
+
+/** The principal every admin `mutate` runs as. */
+const ADMIN_PRINCIPAL = 'admin'
+/** Its clientId; the `$` prefix keeps it apart from real clients, like `$system` for migrations. */
+const ADMIN_CLIENT_ID = '$admin'
+
+/** Thrown inside a dry run's transaction so SQLite rolls its writes back. */
+const DRY_RUN_ROLLBACK = Symbol('dry-run rollback')
+
 const PING = KEEPALIVE_PING
 const PONG = KEEPALIVE_PONG
 /** Close codes with no peer to reciprocate to (RFC 6455 reserved). */
@@ -885,6 +899,80 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
           return json({ backendId: this.#meta.backendId })
         }
 
+        case 'POST mutate': {
+          // One registered mutator, run as an operator through the same
+          // validation, write gates and single transaction as a client push,
+          // so a support fix can only produce states the app itself can.
+          let parsed
+          try {
+            parsed = mutateBodySchema.safeParse(await request.json())
+          } catch {
+            return json({ error: 'invalid JSON body' }, 400)
+          }
+          if (!parsed.success) return json({ error: 'invalid mutate request', detail: parsed.error.message }, 400)
+          const { name, args, dryRun } = parsed.data
+          const seed = crypto.randomUUID()
+          const ctx: MutatorContext = {
+            clientId: ADMIN_CLIENT_ID,
+            principal: ADMIN_PRINCIPAL,
+            auth: config.adminAuth,
+            authoritative: true,
+            seed,
+            nextId: createIdSource(seed),
+          }
+          // Synchronous from here to the poke (invariant 3 of ARCHITECTURE.md#invariants).
+          const startVersion = this.#meta.currentVersion
+          let run: { args: unknown; written: number; changes: RowChange[] } | undefined
+          let appError: { code: string; message: string } | undefined
+          let committedVersion: number | null = null
+          try {
+            this.ctx.storage.transactionSync(() => {
+              try {
+                run = this.#runMutator(name, args, ctx, true)
+              } catch (err) {
+                if (!(err instanceof AppError)) throw err
+                appError = { code: err.code, message: err.message }
+                return
+              }
+              if (dryRun) throw DRY_RUN_ROLLBACK
+              if (run.written === 0) return
+              const version = startVersion + 1
+              this.#sql.exec(`UPDATE meta SET current_version = ? WHERE id = 1`, version)
+              this.#sql.exec(
+                `INSERT INTO mutation_log (version, client_id, mutation_id, name, args, result, created_at)
+                 VALUES (?, ?, 0, ?, ?, 'ok', ?)`,
+                version,
+                ADMIN_CLIENT_ID,
+                name,
+                JSON.stringify(args ?? null),
+                new Date().toISOString(),
+              )
+              committedVersion = version
+            })
+          } catch (err) {
+            if (err !== DRY_RUN_ROLLBACK) throw err
+          }
+          if (appError) return json({ error: appError.message, code: appError.code }, 422)
+          if (committedVersion !== null) {
+            this.#meta.currentVersion = committedVersion
+            this.#snapshot = null
+            this.#sendPoke(this.#readySockets(), {
+              baseCursor: { backendId: this.#meta.backendId, version: startVersion },
+              patch: packPatch(this.#patchSince(startVersion)),
+            })
+            this.#notifyCommitted({
+              workspaceId: this.#meta.workspaceId,
+              name,
+              args: run!.args,
+              principal: ADMIN_PRINCIPAL,
+              clientId: ADMIN_CLIENT_ID,
+              version: committedVersion,
+              changes: run!.changes,
+            })
+          }
+          return json({ dryRun, version: committedVersion, changes: run!.changes })
+        }
+
         case 'POST disconnect': {
           // Revoke or refresh live sessions (ARCHITECTURE.md#session-control). No selector
           // means all sockets; given selectors must all match. kick closes
@@ -1133,7 +1221,6 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
      */
     #applyMutation(attachment: Attachment, mutation: Mutation): { code: string; message: string } | undefined {
       const { clientId } = attachment
-      const mutator = config.app.mutators[mutation.name]
       const ctx: MutatorContext = {
         clientId,
         principal: attachment.principal,
@@ -1149,44 +1236,18 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
 
       this.ctx.storage.transactionSync(() => {
         let wroteVersion: number | null = null
-        if (!mutator) {
-          // Unknown mutator names are permanent: schemaVersion matched at
-          // hello, so this is a registry bug, and retrying can never succeed.
-          appError = { code: 'UnknownMutator', message: `no mutator named "${mutation.name}"` }
-        } else {
+        try {
           // Before-images cost a read per blind write; only pay when a hook
           // will see them.
-          const writes = new WriteSet(this.#rows, config.app.schema, {
-            trackChanges: config.onMutationCommitted !== undefined,
-          })
-          try {
-            // Args are validated (and parsed: defaults applied) before apply
-            // runs; invalid args are permanent — retrying identical args can
-            // never succeed.
-            let args: unknown = mutation.args
-            if (mutator.args) {
-              const result = mutator.args['~standard'].validate(args)
-              if (result instanceof Promise) {
-                void result.catch(() => {})
-                throw new AppError('InvalidArgs', `mutator "${mutation.name}": async args validation is not supported`)
-              }
-              if (result.issues) {
-                throw new AppError('InvalidArgs', `invalid args for "${mutation.name}": ${formatIssues(result.issues)}`)
-              }
-              args = result.value
-            }
-            parsedArgs = args
-            mutator.apply(writes.tx, args, ctx)
-            const candidate = this.#meta.currentVersion + 1
-            const flushed = writes.flush(candidate)
-            changes = flushed.changes
-            if (flushed.written > 0) wroteVersion = candidate
-          } catch (err) {
-            if (err instanceof AppError) {
-              appError = { code: err.code, message: err.message }
-            } else {
-              throw err // transient: roll back, client retries the whole push
-            }
+          const run = this.#runMutator(mutation.name, mutation.args, ctx, config.onMutationCommitted !== undefined)
+          parsedArgs = run.args
+          changes = run.changes
+          if (run.written > 0) wroteVersion = this.#meta.currentVersion + 1
+        } catch (err) {
+          if (err instanceof AppError) {
+            appError = { code: err.code, message: err.message }
+          } else {
+            throw err // transient: roll back, client retries the whole push
           }
         }
         if (wroteVersion !== null) {
@@ -1228,6 +1289,41 @@ export function createWorkspaceDO<S extends AnySyncSchema, Env = unknown>(
         })
       }
       return appError
+    }
+
+    /**
+     * Validates args and runs one mutator into a WriteSet flushed at the next
+     * data version, inside the caller's transaction. Permanent failures throw
+     * AppError: an unknown name is a registry bug and invalid args stay
+     * invalid, so retrying either can never succeed. Args are parsed (defaults
+     * applied) before apply runs.
+     */
+    #runMutator(
+      name: string,
+      rawArgs: unknown,
+      ctx: MutatorContext,
+      trackChanges: boolean,
+    ): { args: unknown; written: number; changes: RowChange[] } {
+      // hasOwn: a name like "constructor" would otherwise resolve to an
+      // Object.prototype function and run as a no-op that reports success.
+      const mutator = Object.hasOwn(config.app.mutators, name) ? config.app.mutators[name] : undefined
+      if (!mutator) throw new AppError('UnknownMutator', `no mutator named "${name}"`)
+      const writes = new WriteSet(this.#rows, config.app.schema, { trackChanges })
+      let args = rawArgs
+      if (mutator.args) {
+        const result = mutator.args['~standard'].validate(args)
+        if (result instanceof Promise) {
+          void result.catch(() => {})
+          throw new AppError('InvalidArgs', `mutator "${name}": async args validation is not supported`)
+        }
+        if (result.issues) {
+          throw new AppError('InvalidArgs', `invalid args for "${name}": ${formatIssues(result.issues)}`)
+        }
+        args = result.value
+      }
+      mutator.apply(writes.tx, args, ctx)
+      const flushed = writes.flush(this.#meta.currentVersion + 1)
+      return { args, ...flushed }
     }
 
     /**

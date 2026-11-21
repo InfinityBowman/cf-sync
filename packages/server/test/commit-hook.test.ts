@@ -215,4 +215,23 @@ describe('onMutationCommitted', () => {
 
     expect(hook).not.toHaveBeenCalled()
   })
+  it('fires for admin mutate under the admin principal, not for its dry run', async () => {
+    const workspace = ws()
+    const hook = vi.fn()
+    rolloutConfig.onMutationCommitted = hook
+    const args = { tbl: 'todos', id: 't1', data: { title: 'fixed' } }
+
+    expect((await admin(workspace, 'mutate', { name: 'sync.put', args, dryRun: true })).status).toBe(200)
+    expect(hook).not.toHaveBeenCalled()
+
+    expect((await admin(workspace, 'mutate', { name: 'sync.put', args })).status).toBe(200)
+    expect(hook).toHaveBeenCalledTimes(1)
+    expect(hook.mock.calls[0]![0]).toMatchObject({
+      name: 'sync.put',
+      principal: 'admin',
+      clientId: '$admin',
+      version: 1,
+      changes: [{ tbl: 'todos', id: 't1', before: null, after: { title: 'fixed' } }],
+    })
+  })
 })

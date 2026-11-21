@@ -142,3 +142,85 @@ describe('reset', () => {
     c1.close()
   })
 })
+
+describe('mutate', () => {
+  const mutate = (workspace: string, body: unknown) => admin(workspace, 'mutate', { method: 'POST', body })
+
+  it('commits a mutator as the operator and pokes live clients', async () => {
+    const workspace = `mutate-${Date.now()}`
+    const c1 = await seed(workspace)
+
+    const res = await mutate(workspace, { name: 'sync.put', args: { tbl: 'todos', id: 't1', data: { title: 'fixed' } } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      dryRun: false,
+      version: 4,
+      changes: [{ tbl: 'todos', id: 't1', before: { title: 'a' }, after: { title: 'fixed' } }],
+    })
+
+    await c1.pokeUntilVersion(4)
+    expect(c1.rows.get('todos/t1')).toEqual({ title: 'fixed' })
+    const stats = (await (await admin(workspace, 'stats')).json()) as any
+    expect(stats).toMatchObject({ currentVersion: 4, mutationLogEntries: 4, knownClients: 1 })
+    c1.close()
+  })
+
+  it('runs with the admin principal and the configured auth stamp', async () => {
+    const workspace = `mutate-ctx-${Date.now()}`
+    await mutate(workspace, { name: 'ctx.echo', args: { id: 'e' } })
+    const snapshot = (await (await admin(workspace, 'export')).json()) as any
+    expect(snapshot.rows).toEqual([
+      {
+        tbl: 'todos',
+        id: 'e',
+        data: { principal: 'admin', auth: { role: 'owner', writeAllowed: true }, authoritative: true },
+      },
+    ])
+  })
+
+  it('reports a dry run and rolls it back', async () => {
+    const workspace = `mutate-dry-${Date.now()}`
+    const c1 = await seed(workspace)
+
+    const res = await mutate(workspace, { name: 'sync.del', args: { tbl: 'todos', id: 't1' }, dryRun: true })
+    expect(await res.json()).toEqual({
+      dryRun: true,
+      version: null,
+      changes: [{ tbl: 'todos', id: 't1', before: { title: 'a' }, after: null }],
+    })
+
+    await c1.expectNoMessage()
+    const snapshot = (await (await admin(workspace, 'export')).json()) as any
+    expect(snapshot).toMatchObject({ version: 3, rows: [{ tbl: 'todos', id: 't1', data: { title: 'a' } }] })
+    c1.close()
+  })
+
+  it('returns app errors without writing', async () => {
+    const workspace = `mutate-err-${Date.now()}`
+    await seed(workspace).then((c) => c.close())
+
+    const failed = await mutate(workspace, { name: 'writes.thenFails' })
+    expect(failed.status).toBe(422)
+    expect(await failed.json()).toEqual({ error: 'wrote then failed', code: 'Nope' })
+
+    const unknown = await mutate(workspace, { name: 'no.such' })
+    expect(((await unknown.json()) as any).code).toBe('UnknownMutator')
+    // Object.prototype keys are not mutators either.
+    const inherited = await mutate(workspace, { name: 'constructor' })
+    expect(inherited.status).toBe(422)
+    expect(((await inherited.json()) as any).code).toBe('UnknownMutator')
+    const invalid = await mutate(workspace, { name: 'counter.increment', args: { id: 'c' } })
+    expect(invalid.status).toBe(422)
+    expect(((await invalid.json()) as any).code).toBe('InvalidArgs')
+    expect((await mutate(workspace, { args: {} })).status).toBe(400)
+
+    const stats = (await (await admin(workspace, 'stats')).json()) as any
+    expect(stats).toMatchObject({ currentVersion: 3, mutationLogEntries: 3 })
+  })
+
+  it('commits nothing for a mutation whose writes net to no change', async () => {
+    const workspace = `mutate-noop-${Date.now()}`
+    const res = await mutate(workspace, { name: 'sync.del', args: { tbl: 'todos', id: 'missing' } })
+    expect(await res.json()).toEqual({ dryRun: false, version: null, changes: [] })
+  })
+})

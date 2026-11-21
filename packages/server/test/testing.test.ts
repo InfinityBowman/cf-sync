@@ -99,6 +99,8 @@ describe('createTestEngine: mutators', () => {
     const result = (engine as ReturnType<typeof createTestEngine>).mutate('no.such.thing')
     expect(result.error).toMatchObject({ code: 'UnknownMutator' })
     expect(engine.lastMutationId()).toBe(1)
+    const inherited = (engine as ReturnType<typeof createTestEngine>).mutate('constructor')
+    expect(inherited.error).toMatchObject({ code: 'UnknownMutator' })
   })
 
   it('non-AppError throws are transient: rethrown, nothing commits', () => {
