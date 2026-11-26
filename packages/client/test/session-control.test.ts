@@ -334,4 +334,34 @@ describe('wake-on-online', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('a second wake while a socket is still handshaking opens no second socket', async () => {
+    vi.useFakeTimers()
+    const wakeTarget = new EventTarget()
+    vi.stubGlobal('addEventListener', wakeTarget.addEventListener.bind(wakeTarget))
+    vi.stubGlobal('removeEventListener', wakeTarget.removeEventListener.bind(wakeTarget))
+    try {
+      const { client, sockets, latest } = makeClient()
+      client.start()
+      latest().open()
+      bootstrap(latest())
+      latest().serverClose(1006, 'network gone')
+      const socketsBefore = sockets.length
+
+      // A laptop lid opening fires `online` and `visibilitychange` back to back.
+      wakeTarget.dispatchEvent(new Event('online'))
+      wakeTarget.dispatchEvent(new Event('online'))
+      expect(client.status).toBe('reconnecting')
+      expect(sockets.length).toBe(socketsBefore + 1)
+
+      // The socket that is kept is the only one, so its close is the only one that counts.
+      const kept = latest()
+      kept.open()
+      expect(client.status).toBe('syncing')
+      void client.destroy()
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
 })
