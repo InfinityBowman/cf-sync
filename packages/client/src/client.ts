@@ -595,6 +595,10 @@ export class SyncClient<
    */
   readonly #wake = (): void => {
     if (this.#stopped || this.#status !== 'reconnecting') return
+    // A socket still handshaking already holds this clientId. A second one would
+    // race it to the DO, and if the abandoned one lands last it supersedes (4409)
+    // the socket this client kept, which is fatal.
+    if (this.#socket) return
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
     if (typeof navigator !== 'undefined' && 'onLine' in navigator && navigator.onLine === false) return
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer)
